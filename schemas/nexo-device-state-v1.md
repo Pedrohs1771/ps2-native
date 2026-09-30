@@ -146,7 +146,7 @@ privileged atomics, float payloads and latched presentation buffers. It also
 checks checksummed semantic corruption and transactional target rejection.
 
 These synthetic tests establish restoration of this model in these cases.
-An original Monster House VIF case, synchronized enclosing capture, complete
-external-input closure, independent reference and second-architecture replay
-remain required by root README section 31.1. Existing normalized VU captures
-cannot be relabeled as original VIF captures.
+An original Monster House call now has an enclosing current-model replay,
+documented in `nexo-observed-vif-case-v1.md`. Complete external-input closure,
+independent reference and second-architecture replay remain unfinished gates.
+Existing normalized VU captures cannot be relabeled as original VIF captures.

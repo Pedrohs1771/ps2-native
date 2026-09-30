@@ -5,6 +5,7 @@
 #include <memory>
 #if PS2X_NEXO_LAB
 #include "nexo/vif_parser_checkpoint.h"
+#include "nexo/vif_capture.h"
 #endif
 
 enum VIFCmd : uint8_t
@@ -372,6 +373,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
     if (!data || sizeBytes == 0u)
         return;
 
+#if PS2X_NEXO_LAB
+    ps2native::nexo::VifCaptureScope capture(*this,{data,sizeBytes});
+#endif
+
     uint32_t pos = 0;
     const auto direct = directStateFor(this);
     std::vector<uint8_t> resumed;
@@ -533,7 +538,12 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             vif1_regs.stat ^= (1u << 7); // toggle DBF
 
             if (m_vu1MscalCallback)
+            {
+#if PS2X_NEXO_LAB
+                ps2native::nexo::observeVifVuCall(*this,opcode,startPC,runTop,runItop);
+#endif
                 m_vu1MscalCallback(startPC, runTop, runItop);
+            }
             continue;
         }
         else if (opcode == VIF_MSCNT)
@@ -551,7 +561,12 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             vif1_regs.stat ^= (1u << 7); // toggle DBF
 
             if (m_vu1MscntCallback)
+            {
+#if PS2X_NEXO_LAB
+                ps2native::nexo::observeVifVuCall(*this,opcode,0,runTop,runItop);
+#endif
                 m_vu1MscntCallback(runTop, runItop);
+            }
             continue;
         }
         else if (opcode == VIF_STMASK)

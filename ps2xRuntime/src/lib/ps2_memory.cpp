@@ -1,4 +1,7 @@
 #include "runtime/ps2_memory.h"
+#if PS2X_NEXO_LAB
+#include "nexo/vif_capture.h"
+#endif
 #include "runtime/ps2_address.h"
 #include "runtime/gs/gs_frontend.h"
 #include "ps2_log.h"
@@ -248,6 +251,9 @@ PS2Memory::PS2Memory()
 
 PS2Memory::~PS2Memory()
 {
+#if PS2X_NEXO_LAB
+    ps2native::nexo::unbindVifCapture(*this);
+#endif
     ps2xResetVif1DirectState(this);
     if (m_rdram)
     {
@@ -298,6 +304,9 @@ PS2Memory::~PS2Memory()
 
 bool PS2Memory::initialize(size_t ramSize)
 {
+#if PS2X_NEXO_LAB
+    ps2native::nexo::unbindVifCapture(*this);
+#endif
     ps2xResetVif1DirectState(this);
     auto cleanup = [this]()
     {
@@ -1952,6 +1961,10 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 {
     if (!data || sizeBytes < 16)
         return;
+
+#if PS2X_NEXO_LAB
+    ps2native::nexo::observeVifGifSubmission(*this,pathId,data,sizeBytes,drainImmediately,path2DirectHl);
+#endif
 
     if (pathId == GifPathId::Path3)
     {

@@ -17,6 +17,9 @@
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
+#if PS2X_NEXO_LAB
+#include "nexo/vif_capture.h"
+#endif
 
 #include <iostream>
 #include <stdexcept>
@@ -550,6 +553,9 @@ namespace
 
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
+#if PS2X_NEXO_LAB
+    ps2native::nexo::VifPresentationScope presentation(*rt);
+#endif
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
     static bool s_hasLatchedInitialFrame = false;
     static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
@@ -561,7 +567,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     static std::vector<uint8_t> s_scratch;
     static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
 
-    const uint64_t currentTick = rt->eeScheduler().currentVSyncTick();
+    const uint64_t currentTick = rt->memory().gs().vsyncTick.load(std::memory_order_acquire);
     const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
     if (needsLatch)
     {
@@ -852,6 +858,10 @@ bool PS2Runtime::syncCoreSubsystems()
         return false;
     }
 
+#if PS2X_NEXO_LAB
+    ps2native::nexo::bindVifCapture(*this);
+#endif
+
     if (m_boundRdram == rdram && m_boundGSVram == gsVram)
     {
         return true;
@@ -859,7 +869,11 @@ bool PS2Runtime::syncCoreSubsystems()
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
-                                    { m_gs.processGIFPacket(data, size); });
+                                    {
+#if PS2X_NEXO_LAB
+                                        ps2native::nexo::observeVifGifDelivery(m_memory,data,size);
+#endif
+                                        m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {

@@ -39,6 +39,12 @@ def environment(state_path: Path) -> tuple[dict, dict]:
         raise RuntimeError("recorded runner no longer owns this test session")
     if not Path(state["xauthority"]).is_file():
         raise RuntimeError("virtual display authorization has expired")
+    if "xvfb_pid" in state:
+        server_pid = state["xvfb_pid"]
+        if type(server_pid) is not int or server_pid < 1 or \
+           os.getpgid(server_pid) != os.getpgid(pid) or \
+           int(Path(f"/tmp/.X{display[1:]}-lock").read_text()) != server_pid:
+            raise RuntimeError("recorded virtual server is not owned by this session")
     env = os.environ.copy()
     env.update(DISPLAY=display, XAUTHORITY=state["xauthority"])
     return state, env
@@ -56,19 +62,30 @@ def child(args: argparse.Namespace) -> None:
     display = os.environ["DISPLAY"]
     if not display.startswith(":") or int(display[1:]) < 90:
         raise RuntimeError("Xvfb did not provide an isolated display")
+    # Some xvfb-run versions still execute the client after Xvfb failed. A
+    # display string or a new xauth file alone does not prove server ownership.
+    server_pid = int(Path(f"/tmp/.X{display[1:]}-lock").read_text())
+    if os.getpgid(server_pid) != os.getpgrp() or \
+       Path(f"/proc/{server_pid}/comm").read_text().strip() != "Xvfb":
+        raise RuntimeError("Xvfb failed or selected another session's virtual server")
     state = args.state.resolve()
     package, iso = args.package.resolve(), args.iso.resolve()
-    runner = package / "bin/ps2EntryRunner"
+    runner = args.runner.resolve() if args.runner else package / "bin/ps2EntryRunner"
     record = {"version": 1, "display": display, "xauthority": os.environ["XAUTHORITY"],
               "runner_pid": os.getpid(), "package": str(package),
-              "iso": str(iso), "created_unix": time.time()}
+              "iso": str(iso), "runner": str(runner), "xvfb_pid": server_pid,
+              "created_unix": time.time()}
     os.environ["PS2X_HEADLESS_STATE"] = str(state)
     os.environ["PS2X_FUNCTION_TRACE"] = "0"
     os.environ["PS2X_TRACE_SIF_DMA"] = "0"
     os.environ["PS2X_NATIVE_OVERLAY_DRIVER"] = str(Path(__file__).with_name("native_overlay_driver.py"))
     # Captures are requested explicitly in separate correctness runs. Reusing a
     # desktop diagnostic directory adds unnecessary work to timing runs.
-    os.environ.pop("PS2X_CAPTURE_SCENE", None)
+    if args.capture_scene:
+        os.environ["PS2X_CAPTURE_SCENE"] = str(args.capture_scene.resolve())
+        record["capture_scene"] = os.environ["PS2X_CAPTURE_SCENE"]
+    else:
+        os.environ.pop("PS2X_CAPTURE_SCENE", None)
     temporary = state.with_suffix(".tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n")
     temporary.chmod(0o600)
@@ -82,8 +99,13 @@ def launch(args: argparse.Namespace) -> None:
         if not shutil.which(executable):
             raise RuntimeError(f"required executable is unavailable: {executable}")
     package, iso, state, log = (p.resolve() for p in (args.package, args.iso, args.state, args.log))
-    if not (package / "bin/ps2EntryRunner").is_file() or not (package / "game/boot.elf").is_file():
+    runner = args.runner.resolve() if args.runner else package / "bin/ps2EntryRunner"
+    if not runner.is_file() or not (package / "game/boot.elf").is_file():
         raise RuntimeError("native package is incomplete")
+    if args.capture_scene:
+        if not args.runner:
+            raise RuntimeError("scene capture requires an explicitly selected laboratory runner")
+        args.capture_scene.resolve().mkdir(parents=True, exist_ok=True)
     if not iso.is_file():
         raise RuntimeError("ISO is unavailable")
     if state.exists():
@@ -106,10 +128,16 @@ def launch(args: argparse.Namespace) -> None:
             env["PULSE_SINK"] = sink
     if module is None:
         raise RuntimeError("cannot create the isolated silent audio sink")
-    command = ["xvfb-run", "-a", "-n", "90", "-s",
+    # The installed T2/Debian wrapper computes a free number when it parses -a;
+    # -n must precede it. Save server errors and verify ownership in the child.
+    command = ["xvfb-run", "-n", "90", "-a", "-e", str(log.with_suffix(".xvfb.log")), "-s",
                "-screen 0 1024x768x24 -nolisten tcp +extension GLX",
                sys.executable, str(Path(__file__).resolve()), "_child", "--package", str(package),
                "--iso", str(iso), "--state", str(state)]
+    if args.runner:
+        command += ["--runner", str(runner)]
+    if args.capture_scene:
+        command += ["--capture-scene", str(args.capture_scene.resolve())]
 
     def stop(_signum, _frame):
         nonlocal stopped
@@ -168,6 +196,10 @@ def main() -> None:
         command.add_argument("--package", required=True, type=Path)
         command.add_argument("--iso", required=True, type=Path)
         command.add_argument("--state", required=True, type=Path)
+        command.add_argument("--runner", type=Path,
+                             help="Explicit laboratory runner; package game data remains local")
+        command.add_argument("--capture-scene", type=Path,
+                             help="Opt-in scene request directory for a laboratory runner")
         if name == "launch":
             command.add_argument("--log", required=True, type=Path)
     screenshot = commands.add_parser("screenshot")

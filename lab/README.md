@@ -3,7 +3,8 @@
 This implements a **partial preparation** for the first increment in the root
 README, section 31.1. It preserves the current VU runtime as a regression
 baseline and implements a laboratory AOT V0 backend for finite microcode banks.
-An independent hardware reference, the full VIF/GIF/GS causal boundary and a
+An original VIF-call replay now includes VU, GIF and CPU GS state. An independent
+reference, broader external-input closure, second-architecture validation and a
 qualified native game package remain unfinished.
 
 ## Build and run
@@ -127,9 +128,79 @@ receiving instance. Execution and all writers must be paused before capture.
 The headless device suite splits example VIF inputs at every byte and compares
 restored continuations. It tests GS/GIF continuation and corrupt states as well.
 See `schemas/nexo-device-state-v1.md` for exact scope, ordering and bounds.
-These codecs are preparatory components: existing VU replay CLIs still use
-their documented empty GIF receiver and synthesized input. No original full
-Monster House VIF/GS replay or independent graphics reference is implied.
+The older VU replay CLIs retain their documented empty GIF receiver and
+synthesized input. The separate original-call replay below restores these
+device codecs with the runtime's real GIF-to-GS routing. Neither comparison
+is an independent graphics reference.
+
+## Original VIF call and all observed native banks
+
+Create `.vif-request` in the lab runner's `PS2X_CAPTURE_SCENE` directory. The
+request remains pending until a completed call containing a VU callback. It
+captures the literal VIF argument before parser normalization, full VIF/VU/GIF/
+CPU-GS states, 16 KiB code/data memories, each actually executed code identity,
+and both GIF submissions and GS deliveries. Host presentation is serialized
+across acquisition; other writers must remain quiescent. See
+`schemas/nexo-observed-vif-case-v1.md` for the boundary and exclusions.
+
+```sh
+cmake --build build --target nexo_vif_replay nexo_vu_inspect --parallel 4
+build/lab/nexo_vif_replay /path/to/completed-vif-case 10
+python lab/generate_vif_banks.py --case /path/to/completed-vif-case \
+  --inspect build/lab/nexo_vu_inspect --output build/lab/vif-banks \
+  --cache build/lab/vif-bank-cache
+cmake -S . -B build -DPS2X_BUILD_NEXO_LAB=ON -DPS2X_FAST_ITERATION=ON \
+  -DPS2X_ENABLE_RELEASE_IPO=OFF \
+  -DNEXO_VIF_BANK_SOURCES="$(cat build/lab/vif-banks/cmake-sources.txt)"
+cmake --build build --target nexo_vif_native_replay --parallel 4
+build/lab/nexo_vif_native_replay /path/to/completed-vif-case 10
+ctest --test-dir build -R '^nexo_' --output-on-failure
+```
+
+Conversion processes the entire finite bank collection, rather than waiting for
+an unknown callback and manually adding one address. Metadata reuse binds the
+inspector/emitter/converter identities and full bank bytes. Corrupt cache is
+reinspected; unchanged generated C++ retains its timestamp. Changing unseen
+game code still requires conversion-time closure, rather than silent runtime
+interpretation. The collection manifest explicitly denies closure beyond the
+observed case.
+
+The native CLI installs strict owned native callbacks and eight fatal VU
+interpreter link traps. Both original-call CLIs open no user window, compare
+complete canonical component states and events, and produce JSON on stdout
+with diagnostics on stderr. The acquisition runner remains a laboratory
+producer with legacy IOP/VU and overlay paths; it is not a final game package.
+
+The headless launch tool supports `--runner` and explicit `--capture-scene`.
+It chooses a free display after the base display option and checks that the
+Xvfb lock PID belongs to its own process group before executing the game.
+This avoids an installed wrapper's behavior of launching a client even when
+its new server failed. An existing session's virtual server is rejected.
+
+### Original Monster House sample, 2026-09-30
+
+The captured original call contains nine VU callbacks and two distinct full
+code banks. All ten baseline repetitions and ten conservative AOT repetitions
+match the recorded VIF, VU, GIF, CPU GS/VRAM, code/data, relevant CPU status and
+ordered events exactly. No interpreter wrapper fired in the native path.
+These results are same-model `tested_only` evidence for one observed call.
+
+Compiling both banks and the native CLI took 23.489 seconds under concurrent
+host load, with six source compilations and zero generated EE compilations.
+An earlier diagnostic game relink took 11.621 seconds using existing EE objects.
+These are scoped development build measurements, not whole-ISO conversion,
+whole-game gameplay or a promise of 60 FPS.
+
+Repeated conversion of the unchanged collection used zero inspector runs,
+preserved every C++ source timestamp and took 0.348 seconds. The following
+unchanged native replay build took 0.307 seconds and compiled zero source
+files. These measurements cover local cache reuse, under uncontrolled host
+load, and exclude discovery of unobserved code.
+
+The eight current laboratory suites pass 82 cases: 14 VU checkpoints, 14 device
+checkpoints, 21 native VU cases, 11 original VIF cases, three Python generator
+suites of six cases each, and four headless isolation cases. The rebuilt general
+runtime suite passes 484/484 with DISPLAY, WAYLAND_DISPLAY and capture unset.
 
 ## Recorded checks, 2026-09-30
 
