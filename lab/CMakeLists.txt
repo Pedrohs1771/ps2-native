@@ -31,6 +31,43 @@ add_library(nexo_vu_replay_support STATIC src/vu_replay.cpp)
 target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(NEXO_PCSX2_VU_SOURCE_DIR "" CACHE PATH "Cached pinned PCSX2 sources for an optional laboratory reference")
+if(NEXO_PCSX2_VU_SOURCE_DIR)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        message(FATAL_ERROR "The isolated PCSX2 reference FP adapter currently requires Linux x86-64")
+    endif()
+    set(NEXO_PCSX2_STAGE "${CMAKE_CURRENT_BINARY_DIR}/pcsx2-reference")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/prepare_pcsx2_reference.py"
+        --source "${NEXO_PCSX2_VU_SOURCE_DIR}" --output "${NEXO_PCSX2_STAGE}"
+        RESULT_VARIABLE NEXO_PCSX2_PREPARE_RESULT OUTPUT_QUIET ERROR_VARIABLE NEXO_PCSX2_PREPARE_ERROR)
+    if(NOT NEXO_PCSX2_PREPARE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Cannot verify independent VU reference: ${NEXO_PCSX2_PREPARE_ERROR}")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS prepare_pcsx2_reference.py)
+    file(GLOB NEXO_PCSX2_STAGED_FILES CONFIGURE_DEPENDS "${NEXO_PCSX2_STAGE}/*")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NEXO_PCSX2_STAGED_FILES}
+        "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VUops.cpp" "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VUflags.cpp"
+        "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VU1microInterp.cpp" "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VU.h"
+        "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VUops.h" "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VUflags.h"
+        "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/VUmicro.h" "${NEXO_PCSX2_VU_SOURCE_DIR}/pcsx2/Gif_Unit.h"
+        "${NEXO_PCSX2_VU_SOURCE_DIR}/COPYING.GPLv3")
+    add_library(nexo_pcsx2_vu_reference STATIC src/pcsx2_vu_reference.cpp
+        "${NEXO_PCSX2_STAGE}/VUops.cpp" "${NEXO_PCSX2_STAGE}/VUflags.cpp" "${NEXO_PCSX2_STAGE}/VU1microInterp.cpp")
+    target_include_directories(nexo_pcsx2_vu_reference PRIVATE reference/pcsx2 "${NEXO_PCSX2_STAGE}")
+    target_link_libraries(nexo_pcsx2_vu_reference PUBLIC nexo_vu_snapshot)
+    target_compile_options(nexo_pcsx2_vu_reference PRIVATE -O1 -fno-lto -fno-strict-aliasing -ffp-contract=off)
+    set_property(TARGET nexo_pcsx2_vu_reference PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    add_executable(nexo_pcsx2_vu_reference_tests tests/pcsx2_vu_reference_tests.cpp tests/empty_ee_table.cpp)
+    target_include_directories(nexo_pcsx2_vu_reference_tests PRIVATE "${PROJECT_SOURCE_DIR}/ps2xTest/include")
+    target_link_libraries(nexo_pcsx2_vu_reference_tests PRIVATE nexo_pcsx2_vu_reference)
+    add_executable(nexo_vif_pcsx2_reference src/vif_pcsx2_reference_main.cpp tests/empty_ee_table.cpp)
+    target_link_libraries(nexo_vif_pcsx2_reference PRIVATE nexo_pcsx2_vu_reference nexo_vif_replay_support)
+    set_property(TARGET nexo_vif_pcsx2_reference PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    target_compile_options(nexo_vif_pcsx2_reference PRIVATE -O1 -fno-lto)
+    if(BUILD_TESTING)
+        add_test(NAME nexo_pcsx2_vu_reference_tests COMMAND nexo_pcsx2_vu_reference_tests)
+    endif()
+endif()
 set(NEXO_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(NEXO_VU_SEMANTICS "${NEXO_GENERATED_DIR}/nexo/vu_native_semantics.h")
 set(NEXO_VU_MACHINE "${NEXO_GENERATED_DIR}/nexo/vu_native_machine.inc")
@@ -150,6 +187,8 @@ foreach(nexo_target nexo_vu_replay_support nexo_vu_replay nexo_vu_snapshot_tests
 endforeach()
 
 if(BUILD_TESTING)
+    add_test(NAME nexo_pcsx2_reference_source_tests COMMAND "${Python3_EXECUTABLE}"
+        -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_pcsx2_reference_source.py)
     add_test(NAME nexo_vu_snapshot_tests COMMAND nexo_vu_snapshot_tests)
     add_test(NAME nexo_device_snapshot_tests COMMAND nexo_device_snapshot_tests)
     add_test(NAME nexo_vif_capture_tests COMMAND nexo_vif_capture_tests)

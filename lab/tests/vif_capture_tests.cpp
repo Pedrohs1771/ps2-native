@@ -239,6 +239,37 @@ int main()
             t.IsTrue(measured.timing.gifSubmission.calls>0 && measured.timing.gsDelivery.calls>0,
                      "The actual GIF submission and GS delivery are bracketed");
         });
+        tc.Run("reference clock is explicit and filtered by memory owner",[](TestCase& t)
+        {
+            auto r=runtime(); auto foreign=runtime(); unsigned calls=0;
+            VifObservation observation(*r,true,false,[&] { ++calls; return uint64_t(123456); });
+            observeVifVuCall(foreign->memory(),0x14,0,0,0);
+            observeVifVuCall(r->memory(),0x14,0,0,0);
+            std::array<uint8_t,16> packet{};
+            observeVifGifSubmission(r->memory(),GifPathId::Path1,packet.data(),16,true,false);
+            observeVifGifDelivery(r->memory(),packet.data(),16);
+            const auto events=observation.events();
+            binary::Reader a(events,{'N','E','X','O','V','T','R',0},1,64u*1024u*1024u);
+            uint32_t count=0; a(count); t.Equals(count,3u,"All three event categories are recorded");
+            for (uint32_t i=0;i<count;++i)
+            {
+                uint8_t kind=0; uint64_t cycle=0; std::array<uint32_t,5> args{}; std::vector<uint8_t> bytes;
+                a(kind); a(cycle); a(args); a(bytes);
+                t.Equals(cycle,uint64_t(123456),"The independent clock is recorded without mutating runtime state");
+            }
+            a.finish(); t.Equals(calls,3u,"Foreign memory never queries the reference clock");
+            t.Equals(r->vu1().state().cycles,uint64_t(0),"The dormant model clock remains untouched");
+        });
+        tc.Run("reference clock failure prevents a complete trace",[](TestCase& t)
+        {
+            auto r=runtime(); VifObservation observation(*r,true,false,[]()->uint64_t
+                { throw std::runtime_error("reference clock failure"); });
+            bool rejected=false;
+            try { observeVifVuCall(r->memory(),0x14,0,0,0); } catch (const std::runtime_error&) { rejected=true; }
+            t.IsTrue(rejected && observation.failed(),"A reference-clock failure propagates in strict observation");
+            rejected=false; try { observation.events(); } catch (const std::invalid_argument&) { rejected=true; }
+            t.IsTrue(rejected,"Failed observations cannot publish successful events");
+        });
     });
     return MiniTest::Run();
 }

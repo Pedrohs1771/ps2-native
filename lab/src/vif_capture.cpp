@@ -77,9 +77,11 @@ struct VifObservation::Impl
     std::vector<Event> trace;
     std::vector<std::vector<uint8_t>> banks;
     VifTiming timing;
+    ClockSource clock;
     static thread_local Impl *active;
-    Impl(PS2Runtime &r,bool s,bool profile):runtime(r),previous(active),strict(s)
+    Impl(PS2Runtime &r,bool s,bool profile,ClockSource source={}):runtime(r),previous(active),strict(s),clock(std::move(source))
     { timing.enabled=profile; active=this; }
+    uint64_t cycle() const { return clock?clock():runtime.vu1().state().cycles; }
     ~Impl() { active=previous; }
     template <typename F> void record(F &&f)
     {
@@ -98,6 +100,8 @@ struct VifObservation::Impl
 };
 thread_local VifObservation::Impl *VifObservation::Impl::active=nullptr;
 VifObservation::VifObservation(PS2Runtime &r,bool strict,bool profile):impl(std::make_unique<Impl>(r,strict,profile)) {}
+VifObservation::VifObservation(PS2Runtime &r,bool strict,bool profile,ClockSource clock):
+    impl(std::make_unique<Impl>(r,strict,profile,std::move(clock))) {}
 VifObservation::~VifObservation()=default;
 uint32_t VifObservation::vuCalls() const { return impl->calls; }
 bool VifObservation::failed() const { return impl->failed; }
@@ -159,7 +163,7 @@ void observeVifVuCall(PS2Memory &memory,uint8_t opcode,uint32_t pc,uint32_t top,
         const auto *code=memory.getVU1Code(); size_t bank=0;
         for (;bank<s->banks.size();++bank) if (std::equal(s->banks[bank].begin(),s->banks[bank].end(),code)) break;
         if (bank==s->banks.size()) s->banks.emplace_back(code,code+PS2_VU1_CODE_SIZE);
-        s->append({1,s->runtime.vu1().state().cycles,{opcode,pc,top,itop,uint32_t(bank)},{}}); ++s->calls;
+        s->append({1,s->cycle(),{opcode,pc,top,itop,uint32_t(bank)},{}}); ++s->calls;
     });
 }
 void observeVifGifSubmission(PS2Memory &memory,GifPathId path,const uint8_t *data,uint32_t bytes,bool drain,bool hl)
@@ -168,7 +172,7 @@ void observeVifGifSubmission(PS2Memory &memory,GifPathId path,const uint8_t *dat
     s->record([&]
     {
         if (!data || bytes<16 || bytes>detail::vifEventBound-33) throw std::invalid_argument("invalid VIF GIF submission extent");
-        s->append({2,s->runtime.vu1().state().cycles,{uint32_t(path),uint32_t(drain),uint32_t(hl),0,0},{data,data+bytes}});
+        s->append({2,s->cycle(),{uint32_t(path),uint32_t(drain),uint32_t(hl),0,0},{data,data+bytes}});
     });
 }
 void observeVifGifDelivery(PS2Memory &memory,const uint8_t *data,uint32_t bytes)
@@ -177,7 +181,7 @@ void observeVifGifDelivery(PS2Memory &memory,const uint8_t *data,uint32_t bytes)
     s->record([&]
     {
         if (!data || bytes<16 || bytes>detail::vifEventBound-33) throw std::invalid_argument("invalid VIF GIF delivery extent");
-        s->append({3,s->runtime.vu1().state().cycles,{},{data,data+bytes}});
+        s->append({3,s->cycle(),{},{data,data+bytes}});
     });
 }
 std::vector<uint8_t> encodeVifBoundary(PS2Runtime &r)

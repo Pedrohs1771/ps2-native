@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -57,7 +58,11 @@ class VifObservation
     friend class VifCaptureScope;
     friend class VifTimingScope;
 public:
+    using ClockSource=std::function<uint64_t()>;
     explicit VifObservation(PS2Runtime &runtime, bool strict = true, bool profile = false);
+    // A separate reference engine supplies its own guest clock. The default
+    // overload above retains the existing runtime clock and symbol signature.
+    VifObservation(PS2Runtime &runtime, bool strict, bool profile, ClockSource clock);
     ~VifObservation();
     std::vector<uint8_t> events() const;
     const std::vector<std::vector<uint8_t>> &codeBanks() const;
