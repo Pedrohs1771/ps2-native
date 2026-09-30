@@ -12,6 +12,25 @@ enum class GifPathId : uint8_t;
 namespace ps2native::nexo
 {
 struct VuNativeProgram;
+enum class VifTimingKind : uint8_t { VuCallback, GifSubmission, GsDelivery };
+struct VifTimingValue
+{
+    uint64_t calls=0, inclusiveNanoseconds=0, exclusiveNanoseconds=0;
+};
+struct VifTiming
+{
+    bool enabled=false;
+    VifTimingValue vuCallback, gifSubmission, gsDelivery;
+};
+// Optional host profiling, separate from canonical guest state/events.
+class VifTimingScope
+{
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+public:
+    VifTimingScope(PS2Memory &memory, VifTimingKind kind);
+    ~VifTimingScope();
+};
 // Laboratory binding only; no public runtime/memory layout changes. A reset
 // of parser state does not erase the owner. Memory destruction does.
 void bindVifCapture(PS2Runtime &runtime);
@@ -36,13 +55,15 @@ class VifObservation
     friend void observeVifGifSubmission(PS2Memory &, GifPathId, const uint8_t *, uint32_t, bool, bool);
     friend void observeVifGifDelivery(PS2Memory &, const uint8_t *, uint32_t);
     friend class VifCaptureScope;
+    friend class VifTimingScope;
 public:
-    explicit VifObservation(PS2Runtime &runtime, bool strict = true);
+    explicit VifObservation(PS2Runtime &runtime, bool strict = true, bool profile = false);
     ~VifObservation();
     std::vector<uint8_t> events() const;
     const std::vector<std::vector<uint8_t>> &codeBanks() const;
     uint32_t vuCalls() const;
     bool failed() const;
+    VifTiming timing() const;
 };
 
 class VifCaptureScope
@@ -66,8 +87,9 @@ struct VifReplayResult
     std::vector<uint8_t> state, events;
     std::vector<std::vector<uint8_t>> codeBanks;
     uint64_t executionNanoseconds = 0;
+    VifTiming timing;
 };
-VifReplayResult replayVifCase(const std::filesystem::path &directory);
+VifReplayResult replayVifCase(const std::filesystem::path &directory, bool profile = false);
 VifReplayResult replayVifCaseNative(const std::filesystem::path &directory,
-    std::span<const VuNativeProgram> programs);
+    std::span<const VuNativeProgram> programs, bool profile = false);
 }

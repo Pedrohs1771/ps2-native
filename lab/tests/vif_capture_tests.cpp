@@ -200,6 +200,45 @@ int main()
             t.IsFalse(complete,"No successful case is published after unwinding");
             t.IsTrue(std::filesystem::exists(d.path/".vif-request"),"The failed capture does not consume the request");
         });
+        tc.Run("host timing subtracts nested work and filters foreign memory",[](TestCase &t)
+        {
+            auto r=runtime(); auto foreign=runtime(); VifObservation observation(*r,true,true);
+            {
+                VifTimingScope parent(r->memory(),VifTimingKind::VuCallback);
+                { VifTimingScope ignored(foreign->memory(),VifTimingKind::GsDelivery); }
+                { VifTimingScope child(r->memory(),VifTimingKind::GsDelivery); }
+            }
+            const auto measured=observation.timing();
+            t.IsTrue(measured.enabled,"Profiling was requested explicitly");
+            t.Equals(measured.vuCallback.calls,uint64_t(1),"Exactly one owner callback scope is counted");
+            t.Equals(measured.gsDelivery.calls,uint64_t(1),"Foreign memory cannot pollute timing");
+            t.IsTrue(measured.gsDelivery.inclusiveNanoseconds>0,"The child is measured");
+            t.Equals(measured.vuCallback.inclusiveNanoseconds-measured.vuCallback.exclusiveNanoseconds,
+                     measured.gsDelivery.inclusiveNanoseconds,"Nested time is not counted twice in exclusive totals");
+        });
+        tc.Run("host timing restores nesting after exceptions",[](TestCase &t)
+        {
+            auto r=runtime(); VifObservation observation(*r,true,true);
+            try { VifTimingScope scope(r->memory(),VifTimingKind::GifSubmission); throw std::runtime_error("timing unwind"); }
+            catch (const std::runtime_error &) {}
+            { VifTimingScope scope(r->memory(),VifTimingKind::GsDelivery); }
+            const auto measured=observation.timing();
+            t.Equals(measured.gifSubmission.calls,uint64_t(1),"The unwound scope is recorded");
+            t.Equals(measured.gsDelivery.calls,uint64_t(1),"The next scope is usable");
+            t.Equals(measured.gsDelivery.inclusiveNanoseconds,measured.gsDelivery.exclusiveNanoseconds,
+                     "The unwound scope is no longer its parent");
+        });
+        tc.Run("profiled original replay retains canonical state and trace",[](TestCase &t)
+        {
+            auto r=runtime(); Directory d; const auto b=stream(); r->memory().processVIF1Data(b.data(),b.size());
+            const auto c=d.captured(); const auto plain=replayVifCase(c); const auto measured=replayVifCase(c,true);
+            t.Equals(measured.state,plain.state,"Host instrumentation cannot change the canonical guest boundary");
+            t.Equals(measured.events,plain.events,"Timing is not inserted into the guest trace");
+            t.IsFalse(plain.timing.enabled,"Default replay performs no timing scopes");
+            t.Equals(measured.timing.vuCallback.calls,uint64_t(1),"The actual VIF callback is bracketed");
+            t.IsTrue(measured.timing.gifSubmission.calls>0 && measured.timing.gsDelivery.calls>0,
+                     "The actual GIF submission and GS delivery are bracketed");
+        });
     });
     return MiniTest::Run();
 }

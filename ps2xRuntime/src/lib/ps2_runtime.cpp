@@ -872,6 +872,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                     {
 #if PS2X_NEXO_LAB
                                         ps2native::nexo::observeVifGifDelivery(m_memory,data,size);
+                                        ps2native::nexo::VifTimingScope timing(m_memory,ps2native::nexo::VifTimingKind::GsDelivery);
 #endif
                                         m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);

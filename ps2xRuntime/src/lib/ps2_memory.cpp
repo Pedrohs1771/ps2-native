@@ -1964,6 +1964,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 
 #if PS2X_NEXO_LAB
     ps2native::nexo::observeVifGifSubmission(*this,pathId,data,sizeBytes,drainImmediately,path2DirectHl);
+    ps2native::nexo::VifTimingScope timing(*this,ps2native::nexo::VifTimingKind::GifSubmission);
 #endif
 
     if (pathId == GifPathId::Path3)

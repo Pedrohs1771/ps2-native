@@ -541,6 +541,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             {
 #if PS2X_NEXO_LAB
                 ps2native::nexo::observeVifVuCall(*this,opcode,startPC,runTop,runItop);
+                ps2native::nexo::VifTimingScope timing(*this,ps2native::nexo::VifTimingKind::VuCallback);
 #endif
                 m_vu1MscalCallback(startPC, runTop, runItop);
             }
@@ -564,6 +565,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             {
 #if PS2X_NEXO_LAB
                 ps2native::nexo::observeVifVuCall(*this,opcode,0,runTop,runItop);
+                ps2native::nexo::VifTimingScope timing(*this,ps2native::nexo::VifTimingKind::VuCallback);
 #endif
                 m_vu1MscntCallback(runTop, runItop);
             }

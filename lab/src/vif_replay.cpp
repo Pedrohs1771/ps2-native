@@ -27,7 +27,7 @@ std::vector<uint8_t> readVifFile(const std::filesystem::path &p,size_t minimum,s
 }
 namespace
 {
-VifReplayResult replay(const std::filesystem::path &directory,std::span<const VuNativeProgram> banks,bool native)
+VifReplayResult replay(const std::filesystem::path &directory,std::span<const VuNativeProgram> banks,bool native,bool profile)
 {
     if (native && banks.empty()) throw std::invalid_argument("native VIF case requires compiled banks");
     if (detail::readVifFile(directory/".complete",1,1)!=std::vector<uint8_t>{1})
@@ -48,7 +48,7 @@ VifReplayResult replay(const std::filesystem::path &directory,std::span<const Vu
     std::memcpy(m.getVU1Code(),s.code.data(),s.code.size()); std::memcpy(m.getVU1Data(),s.data.data(),s.data.size());
     m.m_vu1CodeGeneration.store(s.codeGeneration,std::memory_order_relaxed);
     r->cpu().vu0_fbrst=s.fbrst; r->cpu().vu0_vpu_stat=s.vpuStat;
-    VifObservation observation(*r);
+    VifObservation observation(*r,true,profile);
     struct RoundingScope
     {
         int previous=std::fegetround();
@@ -57,10 +57,10 @@ VifReplayResult replay(const std::filesystem::path &directory,std::span<const Vu
     const auto begin=std::chrono::steady_clock::now(); m.processVIF1Data(input.data(),input.size());
     const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-begin).count();
     if (!observation.vuCalls()) throw std::invalid_argument("VIF case did not execute a VU callback");
-    return {encodeVifBoundary(*r),observation.events(),observation.codeBanks(),uint64_t(elapsed)};
+    return {encodeVifBoundary(*r),observation.events(),observation.codeBanks(),uint64_t(elapsed),observation.timing()};
 }
 }
-VifReplayResult replayVifCase(const std::filesystem::path &directory) { return replay(directory,{},false); }
-VifReplayResult replayVifCaseNative(const std::filesystem::path &directory,std::span<const VuNativeProgram> banks)
-{ return replay(directory,banks,true); }
+VifReplayResult replayVifCase(const std::filesystem::path &directory,bool profile) { return replay(directory,{},false,profile); }
+VifReplayResult replayVifCaseNative(const std::filesystem::path &directory,std::span<const VuNativeProgram> banks,bool profile)
+{ return replay(directory,banks,true,profile); }
 }

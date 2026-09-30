@@ -14,6 +14,7 @@ namespace ps2native::nexo { std::span<const VuNativeProgram> compiledVifBanks();
 #endif
 namespace
 {
+using ps2native::nexo::VifTimingValue;
 // Runtime diagnostics must not corrupt the machine-readable result. Replay
 // owns this single-threaded process; preserve the existing diagnostics on
 // stderr and restore cout even when execution throws.
@@ -28,6 +29,17 @@ uint32_t iterations(std::string_view value)
     if (p.ec!=std::errc{} || p.ptr!=value.data()+value.size() || n<1 || n>1000)
         throw std::invalid_argument("invalid VIF iteration count");
     return n;
+}
+void add(VifTimingValue &total,const VifTimingValue &sample)
+{
+    total.calls+=sample.calls; total.inclusiveNanoseconds+=sample.inclusiveNanoseconds;
+    total.exclusiveNanoseconds+=sample.exclusiveNanoseconds;
+}
+void profileValue(const char *name,const VifTimingValue &value,uint32_t count)
+{
+    std::cout << '"' << name << "\":{\"calls\":" << value.calls
+              << ",\"mean_inclusive_us\":" << double(value.inclusiveNanoseconds)/(1000.0*count)
+              << ",\"mean_exclusive_us\":" << double(value.exclusiveNanoseconds)/(1000.0*count) << '}';
 }
 void comparison(const char *name,const std::vector<uint8_t> &actual,const std::vector<uint8_t> &expected)
 {
@@ -46,8 +58,11 @@ int main(int argc,char **argv)
 {
     try
     {
-        if (argc<2 || argc>3) throw std::invalid_argument("usage: nexo_vif_replay <observed-vif-case> [iterations]");
-        const std::filesystem::path directory(argv[1]); const uint32_t count=argc==3?iterations(argv[2]):1;
+        if (argc<2 || argc>4) throw std::invalid_argument("usage: nexo_vif_replay <observed-vif-case> [iterations] [--profile]");
+        const bool profile=argc>=3 && std::string_view(argv[argc-1])=="--profile";
+        const int positional=argc-int(profile);
+        if (positional>3) throw std::invalid_argument("unknown VIF replay option");
+        const std::filesystem::path directory(argv[1]); const uint32_t count=positional==3?iterations(argv[2]):1;
         unsetenv("PS2X_CAPTURE_SCENE");
         setenv("PS2X_FUNCTION_TRACE","0",1);
         using namespace ps2native::nexo;
@@ -61,19 +76,22 @@ int main(int argc,char **argv)
             banks.push_back(detail::readVifFile(p,16384,16384));
         }
         if (banks.empty()) throw std::invalid_argument("VIF case has no recorded executed bank");
-        uint64_t time=0; uint32_t done=0; bool matches=true; VifReplayResult result;
+        uint64_t time=0; uint32_t done=0; bool matches=true; VifReplayResult result; VifTiming timing;
+        timing.enabled=profile;
         {
             RuntimeDiagnostics diagnostics;
             for (;done<count;++done)
             {
 #if defined(NEXO_VIF_SINGLE_BANK)
-                const std::array compiled{compiledVuProgram()}; result=replayVifCaseNative(directory,compiled);
+                const std::array compiled{compiledVuProgram()}; result=replayVifCaseNative(directory,compiled,profile);
 #elif defined(NEXO_VIF_COMPILED_BANKS)
-                result=replayVifCaseNative(directory,compiledVifBanks());
+                result=replayVifCaseNative(directory,compiledVifBanks(),profile);
 #else
-                result=replayVifCase(directory);
+                result=replayVifCase(directory,profile);
 #endif
                 time+=result.executionNanoseconds;
+                add(timing.vuCallback,result.timing.vuCallback); add(timing.gifSubmission,result.timing.gifSubmission);
+                add(timing.gsDelivery,result.timing.gsDelivery);
                 if (result.state!=expected || result.events!=expectedEvents || result.codeBanks!=banks)
                 { matches=false; ++done; break; }
             }
@@ -98,7 +116,12 @@ int main(int argc,char **argv)
         comparison("events",result.events,expectedEvents);
         std::cout << ",\"cpu_and_code_generation_equal\":"
             << (actual.fbrst==recorded.fbrst && actual.vpuStat==recorded.vpuStat && actual.codeGeneration==recorded.codeGeneration?"true":"false")
-            << "}\n";
+            << ",\"host_profile\":{\"enabled\":" << (profile?"true":"false")
+            << ",\"scope\":\"nested_callback_wall_time_with_observation\",";
+        profileValue("vu_callback",timing.vuCallback,done); std::cout << ',';
+        profileValue("gif_submission",timing.gifSubmission,done); std::cout << ',';
+        profileValue("gs_delivery",timing.gsDelivery,done);
+        std::cout << "}}\n";
         return matches?0:2;
     }
     catch (const std::exception &e) { std::cerr << "[nexo-vif-replay:error] " << e.what() << '\n'; return 1; }

@@ -76,8 +76,10 @@ struct VifObservation::Impl
     size_t eventBytes=28;
     std::vector<Event> trace;
     std::vector<std::vector<uint8_t>> banks;
+    VifTiming timing;
     static thread_local Impl *active;
-    Impl(PS2Runtime &r,bool s):runtime(r),previous(active),strict(s) { active=this; }
+    Impl(PS2Runtime &r,bool s,bool profile):runtime(r),previous(active),strict(s)
+    { timing.enabled=profile; active=this; }
     ~Impl() { active=previous; }
     template <typename F> void record(F &&f)
     {
@@ -95,10 +97,50 @@ struct VifObservation::Impl
     }
 };
 thread_local VifObservation::Impl *VifObservation::Impl::active=nullptr;
-VifObservation::VifObservation(PS2Runtime &r,bool strict):impl(std::make_unique<Impl>(r,strict)) {}
+VifObservation::VifObservation(PS2Runtime &r,bool strict,bool profile):impl(std::make_unique<Impl>(r,strict,profile)) {}
 VifObservation::~VifObservation()=default;
 uint32_t VifObservation::vuCalls() const { return impl->calls; }
 bool VifObservation::failed() const { return impl->failed; }
+VifTiming VifObservation::timing() const { return impl->timing; }
+struct VifTimingScope::Impl
+{
+    VifObservation::Impl &owner;
+    VifTimingValue &value;
+    Impl *previous=nullptr,*parent=nullptr;
+    uint64_t children=0;
+    std::chrono::steady_clock::time_point started;
+    static thread_local Impl *active;
+    static VifTimingValue &counter(VifTiming &timing,VifTimingKind kind)
+    {
+        switch (kind)
+        {
+        case VifTimingKind::VuCallback: return timing.vuCallback;
+        case VifTimingKind::GifSubmission: return timing.gifSubmission;
+        case VifTimingKind::GsDelivery: return timing.gsDelivery;
+        }
+        throw std::invalid_argument("unknown VIF profiling category");
+    }
+    Impl(VifObservation::Impl &o,VifTimingKind kind):owner(o),value(counter(o.timing,kind)),
+        previous(active),parent(active && &active->owner==&o?active:nullptr),
+        started(std::chrono::steady_clock::now()) { active=this; }
+    ~Impl()
+    {
+        const uint64_t elapsed=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-started).count());
+        ++value.calls; value.inclusiveNanoseconds+=elapsed;
+        value.exclusiveNanoseconds+=elapsed-children;
+        if (parent) parent->children+=elapsed;
+        active=previous;
+    }
+};
+thread_local VifTimingScope::Impl *VifTimingScope::Impl::active=nullptr;
+VifTimingScope::VifTimingScope(PS2Memory &memory,VifTimingKind kind)
+{
+    auto *observer=VifObservation::Impl::active;
+    if (observer && observer->timing.enabled && &observer->runtime.memory()==&memory)
+        impl=std::make_unique<Impl>(*observer,kind);
+}
+VifTimingScope::~VifTimingScope()=default;
 const std::vector<std::vector<uint8_t>> &VifObservation::codeBanks() const { return impl->banks; }
 std::vector<uint8_t> VifObservation::events() const
 {

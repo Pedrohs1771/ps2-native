@@ -129,6 +129,29 @@ reporting a first payload divergence. Timing covers the VIF call, VU callbacks,
 GIF/CPU-GS work and trace recording; it excludes file input, machine construction,
 restore, final encoding and comparison. It is not game FPS.
 
+## Optional host profiling
+
+`nexo_vif_replay case [iterations] --profile` and the native CLI add
+`host_profile` to their JSON. Default execution leaves profiling disabled and
+all profiling counters zero. Profiling does not change this canonical format
+or insert wall clocks into the event trace.
+
+Three RAII scopes bracket VU callbacks, GIF submission and actual GS receiver
+execution. Each reports call count and inclusive/exclusive wall nanoseconds.
+Exclusive time subtracts directly nested measured scopes belonging to the
+same observation; inclusive values must not be added together. Observations
+and nesting are thread-local and filter the owning memory instance. Scopes
+must be nested in stack order and destroyed before their observation owner.
+Exception unwinding closes the scope and restores its previous parent.
+
+The GS scope starts after delivery observation and encloses `processGIFPacket`.
+The VU scope starts after bank/callback observation. Time spent copying packet
+bytes, constructing timing scopes or performing other work outside a child
+scope can remain in its parent's exclusive value or the VIF residual. These
+are instrumented callback wall measurements, not isolated ISA throughput or
+certified hardware timings. Host contention and instrumentation overhead must
+be reported. State/events must still match when profiling is enabled.
+
 ## Remaining acceptance gates
 
 Root README section 31.1 still requires an identified independent reference
