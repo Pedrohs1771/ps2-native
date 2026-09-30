@@ -7,6 +7,8 @@
 #include <mutex>
 #include <vector>
 
+namespace ps2native::nexo { class GsSnapshotCodec; }
+
 class GSCpuBackend final : public GSRasterBackend
 {
 public:
@@ -34,6 +36,7 @@ public:
     GSTransferSnapshot GetTransferSnapshot() const override;
 
 private:
+    friend class ps2native::nexo::GsSnapshotCodec;
     void ResetUnlocked();
     void LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
     uint32_t ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const;

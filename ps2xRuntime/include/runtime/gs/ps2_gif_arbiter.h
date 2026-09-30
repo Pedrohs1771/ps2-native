@@ -5,6 +5,8 @@
 #include <functional>
 #include <vector>
 
+namespace ps2native::nexo { class GifSnapshotCodec; }
+
 enum class GifPathId : uint8_t
 {
     Path1 = 1,
@@ -36,6 +38,7 @@ public:
     bool empty() const { return m_queue.empty(); }
 
 private:
+    friend class ps2native::nexo::GifSnapshotCodec;
     ProcessPacketFn m_processFn;
     std::vector<GifArbiterPacket> m_queue;
 

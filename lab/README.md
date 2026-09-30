@@ -1,4 +1,4 @@
-# NEXO laboratory: canonical VU replay and conservative native V0
+# NEXO laboratory: canonical device state and conservative native V0
 
 This implements a **partial preparation** for the first increment in the root
 README, section 31.1. It preserves the current VU runtime as a regression
@@ -10,8 +10,8 @@ qualified native game package remain unfinished.
 
 ```sh
 cmake -S . -B build -DPS2X_BUILD_NEXO_LAB=ON -DPS2X_FAST_ITERATION=ON
-cmake --build build --target nexo_vu_snapshot_tests nexo_vu_native_tests nexo_vu_replay nexo_vu_inspect --parallel 4
-ctest --test-dir build -R '^nexo_vu_' --output-on-failure
+cmake --build build --target nexo_vu_snapshot_tests nexo_device_snapshot_tests nexo_vu_native_tests nexo_vu_replay nexo_vu_inspect --parallel 4
+ctest --test-dir build -R '^nexo_(vu_|device_)' --output-on-failure
 build/lab/nexo_vu_replay /path/to/canonical-capture 65536 100
 ```
 
@@ -114,8 +114,36 @@ Both native replay executables link the same compiled bank archive, avoiding
 duplicate bank compilation. Semantic generation updates both output timestamps
 so unchanged outputs do not make Make rerun generation for each dependent target.
 
+## Transport and CPU graphics checkpoints
+
+`Vif1SnapshotCodec`, `GifSnapshotCodec` and `GsSnapshotCodec` preserve the current
+runtime's incremental VIF parser/transport, queued GIF submissions, and CPU GS
+frontend/backend plus VRAM. Restore is bounded and transactional. GS includes
+partially assembled primitives, loaded palettes and remembered CBPs, stale
+texture page bytes, partly consumed readbacks, private register values, and
+latched presentation data. Host pointers and callbacks remain owned by the
+receiving instance. Execution and all writers must be paused before capture.
+
+The headless device suite splits example VIF inputs at every byte and compares
+restored continuations. It tests GS/GIF continuation and corrupt states as well.
+See `schemas/nexo-device-state-v1.md` for exact scope, ordering and bounds.
+These codecs are preparatory components: existing VU replay CLIs still use
+their documented empty GIF receiver and synthesized input. No original full
+Monster House VIF/GS replay or independent graphics reference is implied.
+
 ## Recorded checks, 2026-09-30
 
+- Device checkpoint cycle: all six initial cases first failed against explicit
+  stubs; VIF/GIF implementation passed five, then GS completed all six. The
+  expanded suite passes 14/14 cases, including checksummed semantic corruption,
+  transactional rejection, partial transfers/vertices, cached palettes and
+  texture visibility, atomics and presentation state. Together with the other
+  four lab suites this is 61 passing cases. General runtime regressions remain
+  484/484 after rebuilding against the new sources, with no user display.
+- A development rebuild after touching only `lab/src/gs_snapshot.cpp` took
+  7.537 seconds under concurrent CPU load, compiled exactly one source unit
+  and rebuilt no generated EE functions. This is a codec rebuild measurement,
+  not ISO conversion time or whole-game compilation.
 - Initial codec test cycle: 6 failures / 1 pass, then 7/7 passes; expanded to 10/10.
 - Capture integration: the new MSCAL/MSCNT tests first failed, then 12/12 passed.
 - Timed PATH1 capture: the added XGKICK test first failed, then 13/13 passed.
@@ -186,7 +214,9 @@ Integrated runtime replay evidence is identified by
 ## Remaining first-increment work
 
 1. Capture/replay VIF input and hidden state at the same boundary.
-2. Preserve GIF arbitration and full GS/transfer/VRAM state and effects.
+2. Integrate the transport/CPU GS checkpoints into the synchronized original
+   VIF case and compare GIF/GS effects with identified references. Synthetic
+   checkpoint tests do not complete this integration gate.
 3. Add an identified independent reference and extend V0 validation to more
    programs, both VUs, additional operations and code-upload variants.
 4. Map divergences to semantic fields and causal events; current CLI reports

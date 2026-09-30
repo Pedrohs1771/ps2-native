@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#if PS2X_NEXO_LAB
+#include "nexo/vif_parser_checkpoint.h"
+#endif
 
 enum VIFCmd : uint8_t
 {
@@ -127,6 +130,28 @@ void ps2xResetVif1DirectState(PS2Memory *memory)
     std::lock_guard<std::mutex> lock(directStateMutex);
     directStates.erase(memory);
 }
+
+#if PS2X_NEXO_LAB
+namespace ps2native::nexo
+{
+Vif1ParserCheckpoint snapshotVif1Parser(const PS2Memory &memory)
+{
+    std::lock_guard<std::mutex> lock(directStateMutex);
+    const auto it = directStates.find(const_cast<PS2Memory *>(&memory));
+    if (it == directStates.end()) return {};
+    const auto &s = *it->second;
+    return {s.remainingBytes, s.directHl, s.payload, s.pendingCommand};
+}
+void restoreVif1Parser(PS2Memory &memory, Vif1ParserCheckpoint checkpoint)
+{
+    auto state = std::make_shared<Vif1DirectState>();
+    state->remainingBytes = checkpoint.remainingBytes; state->directHl = checkpoint.directHl;
+    state->payload.swap(checkpoint.payload); state->pendingCommand.swap(checkpoint.pendingCommand);
+    std::lock_guard<std::mutex> lock(directStateMutex);
+    directStates[&memory] = std::move(state);
+}
+}
+#endif
 
 void PS2Memory::processVIF0Data(uint32_t srcPhys, uint32_t sizeBytes)
 {

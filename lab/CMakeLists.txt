@@ -10,6 +10,12 @@ target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DI
 target_link_libraries(nexo_vu_snapshot INTERFACE ps2_runtime)
 target_compile_features(nexo_vu_snapshot INTERFACE cxx_std_20)
 
+add_library(nexo_device_snapshot STATIC src/device_snapshot.cpp src/gs_snapshot.cpp)
+target_link_libraries(nexo_device_snapshot PUBLIC nexo_vu_snapshot)
+add_executable(nexo_device_snapshot_tests tests/device_snapshot_tests.cpp)
+target_include_directories(nexo_device_snapshot_tests PRIVATE "${PROJECT_SOURCE_DIR}/ps2xTest/include")
+target_link_libraries(nexo_device_snapshot_tests PRIVATE nexo_device_snapshot)
+
 add_library(nexo_vu_replay_support STATIC src/vu_replay.cpp)
 target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
@@ -92,7 +98,7 @@ target_link_libraries(nexo_vu_snapshot_tests PRIVATE nexo_vu_replay_support)
 
 foreach(nexo_target nexo_vu_replay_support nexo_vu_replay nexo_vu_snapshot_tests
         nexo_vu_native nexo_vu_native_frontend nexo_vu_runtime_binding nexo_vu_runtime_replay_support
-        nexo_vu_native_tests nexo_vu_inspect)
+        nexo_vu_native_tests nexo_vu_inspect nexo_device_snapshot nexo_device_snapshot_tests)
     set_property(TARGET ${nexo_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         target_compile_options(${nexo_target} PRIVATE -O1 -fno-lto)
@@ -101,6 +107,7 @@ endforeach()
 
 if(BUILD_TESTING)
     add_test(NAME nexo_vu_snapshot_tests COMMAND nexo_vu_snapshot_tests)
+    add_test(NAME nexo_device_snapshot_tests COMMAND nexo_device_snapshot_tests)
     add_test(NAME nexo_vu_native_tests COMMAND nexo_vu_native_tests)
     add_test(NAME nexo_vu_semantics_codegen_tests COMMAND "${Python3_EXECUTABLE}"
         -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_vu_semantics_codegen.py)

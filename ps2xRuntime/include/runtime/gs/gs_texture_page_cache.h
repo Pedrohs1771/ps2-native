@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 
+namespace ps2native::nexo { class GsSnapshotCodec; }
+
 namespace GSMem
 {
     class TexturePageCache
@@ -31,6 +33,7 @@ namespace GSMem
         }
 
     private:
+        friend class ps2native::nexo::GsSnapshotCodec;
         alignas(64) std::array<uint8_t, kPageSize> m_bytes{};
         uint32_t m_pageBase = UINT32_MAX;
     };
