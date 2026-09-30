@@ -11,6 +11,7 @@ option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2Entry
 option(PS2X_ENABLE_RELEASE_IPO "Enable whole-program optimization/LTO for final release packaging" OFF)
 option(PS2X_FAST_ITERATION "Use -O1 and no LTO for fast development relinks" ON)
 option(PS2X_FAST_ITERATION_OPTIMIZE_VU "Use -O2 for private VU sources during fast iteration" ON)
+option(PS2X_FAST_ITERATION_OPTIMIZE_GS_CPU "Use -O2 with FP contraction disabled for the private CPU GS backend" OFF)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 option(PS2X_ENABLE_LARGE_GENERATED_FAST_COMPILE
     "Compile very large generated game functions with lower optimization and without LTO" ON)
@@ -391,7 +392,6 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_audio_vag.cpp
     src/lib/gs/ps2_gs_memory.cpp
     src/lib/gs/gs_frontend.cpp
-    src/lib/gs/gs_cpu_backend.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
@@ -405,6 +405,18 @@ add_library(ps2_runtime STATIC
     src/lib/vu/ps2_vu1_lower.cpp
     src/lib/games_database.cpp
 )
+
+# Keep this hot kernel's flags in a separate Makefile. Per-source custom
+# options in ps2_runtime/flags.make invalidate every runtime object on Make.
+add_library(ps2_gs_cpu_backend OBJECT src/lib/gs/gs_cpu_backend.cpp)
+target_include_directories(ps2_gs_cpu_backend PRIVATE
+    "$<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>")
+target_compile_definitions(ps2_gs_cpu_backend PRIVATE
+    "$<TARGET_PROPERTY:ps2_runtime,COMPILE_DEFINITIONS>")
+target_compile_options(ps2_gs_cpu_backend PRIVATE
+    "$<TARGET_PROPERTY:ps2_runtime,COMPILE_OPTIONS>")
+set_property(TARGET ps2_gs_cpu_backend PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+target_sources(ps2_runtime PRIVATE $<TARGET_OBJECTS:ps2_gs_cpu_backend>)
 
 target_include_directories(ps2_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/iso_inspect/include")
@@ -689,6 +701,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
                     src/lib/vu/ps2_vu1_lower.cpp
                     APPEND PROPERTY COMPILE_OPTIONS -O2)
             endif()
+            if(PS2X_FAST_ITERATION_OPTIMIZE_GS_CPU)
+                target_compile_options(ps2_gs_cpu_backend PRIVATE -O2 -ffp-contract=off)
+            endif()
             foreach(PS2X_GENERATED_FUNCTION_SOURCE IN LISTS PS2X_GENERATED_GAME_SOURCES)
                 if(PS2X_GENERATED_FUNCTION_SOURCE STREQUAL PS2X_GENERATED_FUNCTION_REGISTRY OR
                    PS2X_GENERATED_FUNCTION_SOURCE IN_LIST PS2X_GENERATED_LARGE_SOURCES)
@@ -704,6 +719,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     elseif(PS2X_ENABLE_RELEASE_IPO)
         EnableFastReleaseMode(ps2_runtime)
         EnableFastReleaseMode(ps2EntryRunner)
+        EnableFastReleaseMode(ps2_gs_cpu_backend)
     else()
         message(STATUS "Release IPO/LTO disabled for faster native iteration")
         set_property(TARGET ps2_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)

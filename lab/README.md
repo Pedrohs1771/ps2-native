@@ -197,10 +197,70 @@ unchanged native replay build took 0.307 seconds and compiled zero source
 files. These measurements cover local cache reuse, under uncontrolled host
 load, and exclude discovery of unobserved code.
 
-The eight current laboratory suites pass 82 cases: 14 VU checkpoints, 14 device
+At commit `ea497eb`, the eight laboratory suites passed 82 cases: 14 VU checkpoints, 14 device
 checkpoints, 21 native VU cases, 11 original VIF cases, three Python generator
 suites of six cases each, and four headless isolation cases. The rebuilt general
 runtime suite passes 484/484 with DISPLAY, WAYLAND_DISPLAY and capture unset.
+
+## Profiling the original call and CPU GS compilation
+
+```sh
+build/lab/nexo_vif_native_replay /path/to/completed-vif-case 10 --profile
+cmake -S . -B build -DPS2X_FAST_ITERATION=ON \
+  -DPS2X_FAST_ITERATION_OPTIMIZE_GS_CPU=ON -DPS2X_ENABLE_RELEASE_IPO=OFF
+cmake --build build --target nexo_vif_native_replay --parallel 4
+```
+
+Profiling brackets actual VU callbacks, GIF submission and GS delivery using
+thread-local host timers. Nested exclusive totals avoid counting GS work again
+as VU work. Profiling remains outside canonical states/events, is disabled by
+default, and includes observation overhead according to the documented scope.
+There is no guest interpreter fallback in the native replay.
+
+In ten instrumented repetitions of the original Monster House case, the GS
+receiver used 247.990 ms out of 250.813 ms of VIF-call wall time (about 98.9%).
+VU callback exclusive time was 1.296 ms. These are one-case measurements under
+uncontrolled host load, not whole-game throughput.
+
+A paired `ABBA ABBA` experiment compared CPU GS at `-O1` with `-O2` and FP
+contraction disabled. Each mode replayed the original case 20 times. Median
+call execution was 251.435 ms versus 212.890 ms (measured ratio 1.181), with
+identical full states and events. No new graphics algorithm, hardware fidelity
+proof, GPU backend, game FPS or whole-game qualification follows from this.
+
+The kernel lives in `ps2_gs_cpu_backend`, a separate object target included in
+the runtime archive. It inherits the runtime's includes, definitions and common
+compile options. Its private optimization flags have their own Makefile: the
+previous per-source-option placement changed `ps2_runtime/flags.make` and
+recompiled 52 runtime units. This target split isolates later option changes.
+The first structural migration still invalidates the old monolithic flags.
+Linux GNU/Make is the configuration exercised for this change.
+
+After that migration, switching the GS option off and on compiled exactly one
+source each time, taking 2.192 and 2.742 seconds respectively. The global
+runtime flags file remained byte-identical; generated EE compilation count
+remained zero. Each switch replayed the original case five times with exact
+state/event equality. The optimization remains an opt-in development variant.
+
+The final CTest run passes all 55 registered groups, including the expanded 85
+laboratory cases and 484 general runtime cases. Original-call reference,
+native and instrumented native paths each match ten repetitions of the
+recording with the split object target. The three new timing cases initially
+failed, then passed after nested timing and the actual callback brackets were
+implemented. They cover memory filtering, nested exclusive subtraction,
+exception unwinding, disabled timing and preservation of canonical state/trace.
+
+The external gprofng sampling attempt was rejected because the collector
+reported a changed interval timer and unreliable data. Its 49 samples cannot
+support whole-run CPU percentages. Direct scope measurements replaced that
+attempt; matching game state alone does not approve a profiler.
+
+For independent-reference investigation, upstream PCSX2 revision
+`94d86c891b1621c0b252e4fc2e155bf90274dcc0` was acquired with source hashes and
+its GPL license in ignored local reference storage. It has not executed this
+canonical case. An adapter must establish its state correspondence and device
+boundary before it can provide independent evidence. No Android device was
+attached at the latest ADB inventory.
 
 ## Recorded checks, 2026-09-30
 
