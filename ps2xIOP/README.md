@@ -12,14 +12,20 @@ authoritative for its SID.
 
 Generic HLE services remain available when no loaded IRX provides an endpoint:
 
-| Service | SID | Activation |
-| --- | --- | --- |
-| MCSERV | `0x80000400`, `0x80000480` | Recognized module load |
-| LIBSD | `0x80000701` | Recognized module load |
-| DBCMAN | `0x80001300` | Recognized module load |
+| Service | SID | Activation | Implemented operations |
+| --- | --- | --- | --- |
+| LOADFILE | `0x80000006` | IOP boot/reset | Version query and path based module load |
+| MCSERV | `0x80000400`, `0x80000480` | Recognized module load | Memory-card RPC subset |
+| LIBSD | `0x80000701` | Recognized module load | Runtime audio dispatch |
+| DBCMAN | `0x80001300` | Recognized module load | Version query |
 
-These services are dormant before module load and after reset or the final
-module stop. Unknown modules fail to load; unknown RPC SIDs remain unhandled.
+LOADFILE is part of the no-BIOS boot profile and is registered whenever the
+IOP resets. Its module-load RPC delegates to the same IOP module manager used by
+the direct runtime calls. The other HLE services are dormant before module
+load and after reset or the final module stop. Unsupported LOADFILE operations
+remain unhandled and appear in its counters; this is not a full LOADFILE
+protocol implementation yet. Unknown modules fail to load; unknown RPC SIDs
+remain unhandled.
 Games previously using TSNDDRV, CRI DTX, CLFILE, SOUND or SDRDRV profiles now
 require their IRX modules and support for the imports and hardware they use.
 

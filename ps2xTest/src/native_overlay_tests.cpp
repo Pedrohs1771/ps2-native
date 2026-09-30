@@ -1,0 +1,113 @@
+#include "MiniTest.h"
+#include "ps2recomp/native_overlay.h"
+#include "ps2_native_overlay.h"
+#include "ps2_runtime_macros.h"
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+namespace
+{
+    std::vector<uint8_t> words(std::initializer_list<uint32_t> values)
+    {
+        std::vector<uint8_t> bytes(values.size() * 4u);
+        size_t offset = 0;
+        for (uint32_t value : values)
+        {
+            std::memcpy(bytes.data() + offset, &value, 4);
+            offset += 4;
+        }
+        return bytes;
+    }
+}
+
+void register_native_overlay_tests()
+{
+    MiniTest::Case("Native overlay", [](TestCase &suite)
+    {
+    suite.Run("native_overlay_emits_real_code_and_all_resume_entries", [](TestCase &tc)
+    {
+        const auto bytes = words({0x2402002a, 0x03e00008, 0x24420001});
+        const auto code = ps2recomp::generateNativeOverlay(bytes, 0xf00000, 0xf00000);
+        tc.IsTrue(code.find("PS2NativeOverlayBinding") != std::string::npos, "Exports native bindings");
+        tc.IsTrue(code.find("0xf00004u") != std::string::npos, "Registers interior branch entry");
+        tc.IsTrue(code.find("0xf00008u") != std::string::npos, "Registers independent delay entry");
+        tc.IsTrue(code.find("in_delay_slot = true") != std::string::npos, "Reuses delay-slot semantics");
+    });
+    suite.Run("native_overlay_rejects_unaligned_and_truncated_snapshots", [](TestCase &tc)
+    {
+        const auto bytes = words({0x03e00008});
+        bool rejected = false;
+        try { (void)ps2recomp::generateNativeOverlay(bytes, 0xf00000, 0xf00002); }
+        catch (const std::exception &) { rejected = true; }
+        tc.IsTrue(rejected, "Unaligned entry is rejected");
+        rejected = false;
+        try { (void)ps2recomp::generateNativeOverlay(bytes, 0xf00000, 0xf00000); }
+        catch (const std::exception &) { rejected = true; }
+        tc.IsTrue(rejected, "Missing delay slot must not become a synthetic NOP");
+    });
+    suite.Run("native_overlay_executes_and_invalidates_replaced_code", [](TestCase &tc)
+    {
+        // Integration is opt-in because it requires the host C++ compiler.
+        #if defined(__linux__) && !defined(__ANDROID__)
+        const char *driver = std::getenv("PS2X_TEST_NATIVE_OVERLAY_DRIVER");
+        if (!driver) return;
+        struct DriverScope
+        {
+            bool existed = false;
+            std::string previous;
+            explicit DriverScope(const char *path)
+            {
+                if (const char *old = std::getenv("PS2X_NATIVE_OVERLAY_DRIVER")) { existed = true; previous = old; }
+                setenv("PS2X_NATIVE_OVERLAY_DRIVER", path, 1);
+            }
+            ~DriverScope()
+            {
+                if (existed) setenv("PS2X_NATIVE_OVERLAY_DRIVER", previous.c_str(), 1);
+                else unsetenv("PS2X_NATIVE_OVERLAY_DRIVER");
+            }
+        } scope(driver);
+        PS2Runtime runtime;
+        tc.IsTrue(runtime.memory().initialize(), "Allocates EE RAM");
+        uint8_t *ram = runtime.memory().getRDRAM();
+        const auto bytes = words({0x2402002a, 0x03e00008, 0x24420001});
+        std::memcpy(ram + 0xf00000, bytes.data(), bytes.size());
+        R5900Context ctx{};
+        ctx.pc = 0xf00000;
+        SET_GPR_U32(&ctx, 31, 0x100000);
+        const bool ready = runtime.hasFunction(ctx.pc);
+        tc.IsTrue(ready, "Compiles a missing native target automatically");
+        if (!ready) return;
+        runtime.lookupFunction(ctx.pc)(ram, &ctx, &runtime);
+        tc.Equals(GPR_U32((&ctx), 2), 43u, "Native arithmetic plus return delay slot");
+        tc.Equals(ctx.pc, 0x100000u, "Returns to the AOT caller");
+        uint32_t replacement = 0x24020064;
+        std::memcpy(ram + 0xf00000, &replacement, 4);
+        ctx.pc = 0xf00000;
+        runtime.lookupFunction(ctx.pc)(ram, &ctx, &runtime);
+        tc.Equals(GPR_U32((&ctx), 2), 101u, "Recompiles overwritten guest code, avoiding stale native code");
+        ctx.pc = 0xf00008;
+        runtime.lookupFunction(ctx.pc)(ram, &ctx, &runtime);
+        tc.Equals(GPR_U32((&ctx), 2), 102u, "Delay slot can execute independently");
+        tc.Equals(ctx.pc, 0xf0000cu, "Independent slot advances without repeating JR");
+        const auto boundaryBytes = words({0x2402002a, 0u, 0u, 0u, 0u, 0u, 0x03e00008, 0x24420001});
+        std::memcpy(ram + 0xf0ffe4u, boundaryBytes.data(), boundaryBytes.size());
+        ctx.pc = 0xf0ffe4u;
+        SET_GPR_U32(&ctx, 31, 0x100000u);
+        const bool boundaryReady = runtime.hasFunction(ctx.pc);
+        tc.IsTrue(boundaryReady, "Compiles a branch whose delay slot crosses the snapshot boundary");
+        if (boundaryReady)
+        {
+            runtime.lookupFunction(ctx.pc)(ram, &ctx, &runtime);
+            tc.Equals(GPR_U32((&ctx), 2), 43u, "Executes the delay slot beyond the original 64 KiB window");
+        }
+        const auto invalidBytes = words({0x2402002au, 0u, 0u, 0u, 0u, 0x03e00008u, 0x03e00008u});
+        std::memcpy(ram + 0xf20000u, invalidBytes.data(), invalidBytes.size());
+        tc.IsTrue(!runtime.hasFunction(0xf20000u), "Rejects a branch inside the root delay slot");
+        const uint32_t nop = 0u;
+        std::memcpy(ram + 0xf20018u, &nop, 4u);
+        tc.IsTrue(runtime.hasFunction(0xf20000u), "Retries a failed overlay after a change beyond its first 16 bytes");
+#endif
+    });
+    });
+}

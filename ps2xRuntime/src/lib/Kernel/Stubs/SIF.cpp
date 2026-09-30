@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -24,30 +25,48 @@ namespace ps2_stubs
 
     void sceSifSendCmd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        const uint32_t commandId = getRegU32(ctx, 4);
+        const uint32_t packetAddress = getRegU32(ctx, 5);
+        const uint32_t packetSize = getRegU32(ctx, 6);
         const uint32_t srcAddr = getRegU32(ctx, 7); // $a3
-        const uint32_t dstAddr = readStackU32(rdram, ctx, 16);
-        const uint32_t size = readStackU32(rdram, ctx, 20);
-        if (size != 0u && srcAddr != 0u && dstAddr != 0u)
+        // EE n32 places arguments five and six in $t0/$t1. The IOP-side
+        // import uses o32 stack arguments; these are separate guest ABIs.
+        const uint32_t dstAddr = getRegU32(ctx, 8);
+        const uint32_t size = getRegU32(ctx, 9);
+        if (!runtime || !rdram || !packetAddress || packetSize < 16u || packetSize > 112u ||
+            size > 2u * 1024u * 1024u)
         {
-            std::vector<uint8_t> payload(size);
-            bool valid = runtime != nullptr;
-            for (uint32_t i = 0; i < size; ++i)
-            {
-                const uint8_t *src = getConstMemPtr(rdram, srcAddr + i);
-                if (!src)
-                {
-                    valid = false;
-                    break;
-                }
-                payload[i] = *src;
-            }
-            if (!valid || !runtime->writeIopMemory(dstAddr, payload.data(), payload.size()))
+            setReturnS32(ctx, 0);
+            return;
+        }
+        const uint8_t *const first = getConstMemPtr(rdram, packetAddress);
+        const uint8_t *const last = getConstMemPtr(rdram, packetAddress + packetSize - 1u);
+        if (!first || !last || last < first || static_cast<size_t>(last - first) != packetSize - 1u)
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        std::array<uint8_t, 112> packet{};
+        std::memcpy(packet.data(), first, packetSize);
+        if (size)
+        {
+            const uint8_t *const source = getConstMemPtr(rdram, srcAddr);
+            const uint8_t *const sourceEnd = getConstMemPtr(rdram, srcAddr + size - 1u);
+            if (!srcAddr || !dstAddr || !source || !sourceEnd || sourceEnd < source ||
+                static_cast<size_t>(sourceEnd - source) != size - 1u ||
+                !runtime->writeIopMemory(dstAddr, source, size))
             {
                 setReturnS32(ctx, 0);
                 return;
             }
         }
-
+        const uint32_t sizeWord = packetSize | (size << 8u);
+        std::memcpy(packet.data(), &sizeWord, 4);
+        std::memcpy(packet.data() + 4, &dstAddr, 4);
+        std::memcpy(packet.data() + 8, &commandId, 4);
+        std::memcpy(getMemPtr(rdram, packetAddress), packet.data(), 16);
+        // Delivery without a registered handler still completes the DMA.
+        (void)PS2IopTransport::sendCommand(runtime, rdram, ctx, commandId, packet.data(), packetSize);
         setReturnS32(ctx, 1);
     }
 
@@ -74,8 +93,12 @@ namespace ps2_stubs
         };
 
         std::unordered_map<uint32_t, SifCmdHandler> g_sifCmdHandlers;
-        uint32_t g_sifCmdBuffer = 0u;
-        uint32_t g_sifSysCmdBuffer = 0u;
+        struct SifCmdBuffer
+        {
+            uint32_t address = 0u;
+            uint32_t count = 0u;
+        };
+        SifCmdBuffer g_sifCmdBuffers[2]{};
         bool g_sifCmdInitialized = false;
         uint32_t g_sifGetRegLogCount = 0u;
         uint32_t g_sifSetRegLogCount = 0u;
@@ -91,8 +114,8 @@ namespace ps2_stubs
             g_sifRegs.clear();
             g_sifSregs.clear();
             g_sifCmdHandlers.clear();
-            g_sifCmdBuffer = 0u;
-            g_sifSysCmdBuffer = 0u;
+            g_sifCmdBuffers[0] = {};
+            g_sifCmdBuffers[1] = {};
             g_sifCmdInitialized = false;
             g_sifGetRegLogCount = 0u;
             g_sifSetRegLogCount = 0u;
@@ -218,6 +241,44 @@ namespace ps2_stubs
             }
             return true;
         }
+
+        SifCmdHandler *commandTableEntry(uint8_t *rdram, uint32_t commandId)
+        {
+            const auto &buffer = g_sifCmdBuffers[commandId >> 31u];
+            const uint32_t index = commandId & 0x7FFFFFFFu;
+            if (index >= buffer.count)
+                return nullptr;
+            return reinterpret_cast<SifCmdHandler *>(getMemPtr(rdram, buffer.address + index * 8u));
+        }
+
+        uint32_t setCommandTable(uint8_t *rdram, uint32_t address, uint32_t count, bool system)
+        {
+            auto &buffer = g_sifCmdBuffers[system ? 1u : 0u];
+            const uint32_t previous = buffer.address;
+            if (count > 4096u || (count != 0u &&
+                (!rdram || !address || (address & 3u) != 0u ||
+                 !canAccessEeRange(rdram, address, count * 8u))))
+                return previous;
+            if (count != 0u)
+            {
+                const auto *first = getConstMemPtr(rdram, address);
+                const auto *last = getConstMemPtr(rdram, address + count * 8u - 1u);
+                if (!first || !last || last < first || static_cast<size_t>(last - first) != count * 8u - 1u)
+                    return previous;
+            }
+
+            buffer = {address, count};
+            const uint32_t namespaceBit = system ? 0x80000000u : 0u;
+            std::erase_if(g_sifCmdHandlers, [namespaceBit](const auto &item)
+                          { return (item.first & 0x80000000u) == namespaceBit; });
+            for (uint32_t index = 0u; index < count; ++index)
+            {
+                const auto *entry = commandTableEntry(rdram, namespaceBit | index);
+                if (entry && entry->function != 0u)
+                    g_sifCmdHandlers[namespaceBit | index] = *entry;
+            }
+            return previous;
+        }
     }
 
     void resetSifState()
@@ -239,9 +300,20 @@ namespace ps2_stubs
         {
             std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
             const auto handler = g_sifCmdHandlers.find(commandId);
-            if (handler == g_sifCmdHandlers.end() || handler->second.function == 0u)
-                return false;
-            registered = handler->second;
+            if (g_sifCmdBuffers[commandId >> 31u].count != 0u)
+            {
+                // Games also inspect and update these SDK tables directly.
+                const auto *entry = commandTableEntry(rdram, commandId);
+                if (!entry || entry->function == 0u)
+                    return false;
+                registered = *entry;
+            }
+            else
+            {
+                if (handler == g_sifCmdHandlers.end() || handler->second.function == 0u)
+                    return false;
+                registered = handler->second;
+            }
         }
 
         if (!runtime->hasFunction(registered.function))
@@ -295,6 +367,12 @@ namespace ps2_stubs
         const uint32_t handler = getRegU32(ctx, 5);
         const uint32_t argument = getRegU32(ctx, 6);
         std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
+        if (g_sifCmdBuffers[cid >> 31u].count != 0u)
+        {
+            auto *entry = commandTableEntry(rdram, cid);
+            if (!entry) { setReturnS32(ctx, -1); return; }
+            *entry = SifCmdHandler{handler, argument};
+        }
         g_sifCmdHandlers[cid] = SifCmdHandler{handler, argument};
         setReturnS32(ctx, 0);
     }
@@ -367,7 +445,7 @@ namespace ps2_stubs
     void sceSifGetDataTable(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
-        setReturnU32(ctx, g_sifCmdBuffer);
+        setReturnU32(ctx, g_sifCmdBuffers[0].address);
     }
 
     void sceSifGetIopAddr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -572,6 +650,8 @@ namespace ps2_stubs
     {
         const uint32_t cid = getRegU32(ctx, 4);
         std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
+        if (auto *entry = commandTableEntry(rdram, cid))
+            entry->function = 0u;
         g_sifCmdHandlers.erase(cid);
         setReturnS32(ctx, 0);
     }
@@ -599,14 +679,8 @@ namespace ps2_stubs
 
     void sceSifSetCmdBuffer(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t newBuffer = getRegU32(ctx, 4);
-        uint32_t prev = 0u;
-        {
-            std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
-            prev = g_sifCmdBuffer;
-            g_sifCmdBuffer = newBuffer;
-        }
-        setReturnU32(ctx, prev);
+        std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
+        setReturnU32(ctx, setCommandTable(rdram, getRegU32(ctx, 4), getRegU32(ctx, 5), false));
     }
 
     void isceSifSetDChain(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -633,6 +707,9 @@ namespace ps2_stubs
 
         const uint32_t listAddr = getRegU32(ctx, 4);
         PS2_IF_AGRESSIVE_LOGS({
+            const char *traceDma = std::getenv("PS2X_TRACE_SIF_DMA");
+            if (traceDma != nullptr && std::strcmp(traceDma, "0") == 0)
+                break;
             std::cerr << "[sceSifSetDma:CALL] pc=0x" << std::hex << ctx->pc
                       << " ra=0x" << getRegU32(ctx, 31)
                       << " list=0x" << listAddr
@@ -820,14 +897,8 @@ namespace ps2_stubs
 
     void sceSifSetSysCmdBuffer(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t newBuffer = getRegU32(ctx, 4);
-        uint32_t prev = 0u;
-        {
-            std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
-            prev = g_sifSysCmdBuffer;
-            g_sifSysCmdBuffer = newBuffer;
-        }
-        setReturnU32(ctx, prev);
+        std::lock_guard<std::mutex> lock(g_sifCmdStateMutex);
+        setReturnU32(ctx, setCommandTable(rdram, getRegU32(ctx, 4), getRegU32(ctx, 5), true));
     }
 
     void sceSifStopDma(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

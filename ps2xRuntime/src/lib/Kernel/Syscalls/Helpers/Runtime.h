@@ -134,7 +134,7 @@ inline std::string translatePs2Path(const char *ps2Path)
     case ps2x::iop::Ps2PathDevice::Host:
         return resolveWithBase(getConfiguredHostRoot(), parsed.path);
     case ps2x::iop::Ps2PathDevice::Cdrom:
-        return resolveWithBase(getConfiguredCdRoot(), parsed.path);
+        return resolveCdPathCaseInsensitive(getConfiguredCdRoot(), parsed.path).string();
     case ps2x::iop::Ps2PathDevice::MemoryCard0:
         return resolveWithBase(getConfiguredMcRoot(), parsed.path);
     case ps2x::iop::Ps2PathDevice::NativeHost:

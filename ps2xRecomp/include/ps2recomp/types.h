@@ -178,6 +178,11 @@ namespace ps2recomp
         std::string inputPath;
         std::string outputPath;
         std::string ghidraMapPath;
+        // A non-empty module identity emits sparse runtime registration.
+        // The boot ELF keeps its legacy dense table when the flag below is true.
+        std::vector<std::string> moduleKeys;
+        std::string moduleSymbolPrefix;
+        bool moduleEmitDenseFunctionTable = true;
         bool singleFileOutput = false;
         bool lowMemoryMode = false;
         uint32_t outputWorkerThreads = 0;

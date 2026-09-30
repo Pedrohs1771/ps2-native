@@ -1,14 +1,18 @@
 #include "MiniTest.h"
 #include "ps2_runtime.h"
+#include "ps2_guest_startup_args.h"
 #include "ps2_runtime_macros.h"
 #include "ps2_syscalls.h"
 #include "ps2_stubs.h"
 #include "runtime/ee_scheduler.h"
+#include "ps2_scene_capture.h"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -532,6 +536,70 @@ namespace
         ctx->pc = 0u;
     }
 
+    constexpr uint32_t K_COUNT_MAIN = 0x302000u;
+    constexpr uint32_t K_COUNT_CHILD = 0x302010u;
+    constexpr uint32_t K_COUNT_CALLBACK = 0x302020u;
+    constexpr uint32_t K_COUNT_RESUME = 0x302030u;
+    std::vector<uint32_t> gCountTrace;
+
+    void schedulerCountAdvance(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gCountTrace.push_back(ctx->cop0_count);
+        runtime->eeScheduler().accountCycles(32u);
+        gCountTrace.push_back(ctx->cop0_count);
+        ctx->cop0_count = 0xfffffff0u; // MTC0 Count, followed by wraparound.
+        runtime->eeScheduler().accountCycles(32u);
+        gCountTrace.push_back(ctx->cop0_count);
+        ctx->pc = 0;
+        runtime->requestStop();
+    }
+
+    void schedulerCountChild(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gCountTrace.push_back(ctx->cop0_count);
+        ctx->pc = 0;
+        runtime->requestStop();
+    }
+
+    void schedulerCountThread(uint8_t *ram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        ctx->cop0_count = 0x10000u;
+        gCountTrace.push_back(ctx->cop0_count);
+        const int child = runtime->eeScheduler().createThread(
+            EeThreadCreateParams{0, K_COUNT_CHILD, 0x22000u, 0x800u, 0, 5, 0});
+        runtime->eeScheduler().startThread(child, 0, *ctx, false);
+        ExitThread(ram, ctx, runtime);
+    }
+
+    void schedulerCountCallback(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        gCountTrace.push_back(ctx->cop0_count);
+        ctx->cop0_count = 0x20000u;
+        ctx->pc = 0;
+    }
+
+    void schedulerCountInvoke(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        ctx->cop0_count = 0x10000u;
+        ctx->pc = K_COUNT_RESUME;
+        GuestInvocation callback{};
+        callback.context.pc = K_COUNT_CALLBACK;
+        runtime->eeScheduler().invokeCurrent(std::move(callback));
+    }
+
+    void schedulerCountResume(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gCountTrace.push_back(ctx->cop0_count);
+        ctx->pc = 0;
+        runtime->requestStop();
+    }
+
+    void schedulerCountIdle(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gCountTrace.push_back(ctx->cop0_count);
+        runtime->eeWaitVSyncTicks(1, K_COUNT_RESUME);
+    }
+
     struct TestEnv
     {
         std::vector<uint8_t> rdram;
@@ -549,6 +617,105 @@ void register_ps2_runtime_kernel_tests()
 {
     MiniTest::Case("PS2RuntimeKernel", [](TestCase &tc)
     {
+        tc.Run("scene capture records memory and graphics without modifying guest state", [](TestCase &t)
+        {
+            TestEnv env;
+            t.IsTrue(env.runtime.memory().initialize(), "Initializes diagnostic memory");
+            env.runtime.gs().init(env.runtime.memory().getGSVRAM(), PS2_GS_VRAM_SIZE,
+                                  &env.runtime.memory().gs());
+            env.ctx.pc = 0x123456u;
+            env.ctx.cop0_count = 0x987654u;
+            env.runtime.cpu().pc = 0x234568u;
+            env.runtime.cpu().f[21] = 3.25f;
+            env.runtime.memory().getRDRAM()[0x1000] = 0xA5u;
+            env.runtime.memory().getVU1Code()[12] = 0xB6u;
+            const auto dir = std::filesystem::temp_directory_path() /
+                ("ps2-scene-fixture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{dir};
+            t.IsTrue(ps2xCaptureSceneState(env.runtime, env.ctx, dir), "Captures the requested scene");
+            if (!std::filesystem::is_regular_file(dir / "ee.bin")) return;
+            t.Equals(std::filesystem::file_size(dir / "ee.bin"), uintmax_t(PS2_RAM_SIZE), "Records all EE RAM");
+            t.Equals(std::filesystem::file_size(dir / "gs-vram.bin"), uintmax_t(PS2_GS_VRAM_SIZE), "Records GS VRAM");
+            t.Equals(std::filesystem::file_size(dir / "vu1-code.bin"), uintmax_t(PS2_VU1_CODE_SIZE), "Records VU microcode");
+            t.Equals(std::filesystem::file_size(dir / "ee-context.bin"), uintmax_t(sizeof(env.ctx)), "Records the active context ABI");
+            t.Equals(std::filesystem::file_size(dir / "main-ee-context.bin"), uintmax_t(sizeof(env.ctx)), "Records the published main context ABI");
+            R5900Context savedMain{};
+            std::ifstream mainContext(dir / "main-ee-context.bin", std::ios::binary);
+            mainContext.read(reinterpret_cast<char *>(&savedMain), sizeof(savedMain));
+            t.Equals(savedMain.pc, 0x234568u, "Main context remains distinct from the active callback");
+            t.Equals(savedMain.f[21], 3.25f, "Main floating-point values are captured");
+            std::ifstream ee(dir / "ee.bin", std::ios::binary);
+            ee.seekg(0x1000);
+            t.Equals(ee.get(), 0xA5, "Snapshot preserves guest bytes");
+            t.Equals(env.runtime.memory().getRDRAM()[0x1000], uint8_t(0xA5), "Capture does not change guest RAM");
+            t.Equals(env.ctx.pc, 0x123456u, "Capture does not change guest PC");
+            t.Equals(env.ctx.cop0_count, 0x987654u, "Capture does not change guest clock");
+            std::ifstream info(dir / "scene.txt");
+            const std::string text((std::istreambuf_iterator<char>(info)), {});
+            t.IsTrue(text.find("pc=0x123456") != std::string::npos, "Metadata identifies the active PC");
+            t.IsTrue(text.find("VU1") != std::string::npos, "Metadata includes the VU state");
+            t.IsTrue(text.find("FPR 21") != std::string::npos, "Metadata includes floating-point registers");
+            t.IsTrue(text.find("MAIN_EE pc=0x234568") != std::string::npos, "Metadata identifies the main context");
+        });
+        tc.Run("scene capture rejects uninitialized memory", [](TestCase &t)
+        {
+            TestEnv env;
+            t.IsTrue(!ps2xCaptureSceneState(env.runtime, env.ctx, {}), "No capture before memory is available");
+        });
+        tc.Run("COP0 Count advances and wraps after guest writes", [](TestCase &t)
+        {
+            TestEnv env;
+            env.ctx.pc = K_COUNT_MAIN;
+            env.ctx.cop0_count = 0x1234u;
+            env.runtime.registerFunction(K_COUNT_MAIN, schedulerCountAdvance);
+            gCountTrace.clear();
+            env.runtime.eeScheduler().reset(env.rdram.data(), env.ctx);
+            env.runtime.eeScheduler().run();
+            t.Equals(gCountTrace.size(), size_t(3), "Executes the clock probe");
+            t.Equals(gCountTrace[1] - gCountTrace[0], 32u, "Count uses EE clock cycles");
+            t.Equals(gCountTrace[2], 16u, "Guest Count writes and 32-bit wrap are honored");
+            t.Equals(env.runtime.cpu().cop0_count, 16u, "Publishes the current hardware counter");
+        });
+        tc.Run("COP0 Count is shared between guest threads", [](TestCase &t)
+        {
+            TestEnv env;
+            env.ctx.pc = K_COUNT_MAIN;
+            env.runtime.registerFunction(K_COUNT_MAIN, schedulerCountThread);
+            env.runtime.registerFunction(K_COUNT_CHILD, schedulerCountChild);
+            gCountTrace.clear();
+            env.runtime.eeScheduler().reset(env.rdram.data(), env.ctx);
+            env.runtime.eeScheduler().run();
+            t.Equals(gCountTrace.size(), size_t(2), "Both threads execute");
+            t.IsTrue(gCountTrace[1] >= 0x10000u, "New threads inherit the hardware clock, not a zero counter");
+            t.Equals(env.runtime.cpu().cop0_count, gCountTrace[1], "Stopped main thread does not overwrite Count");
+        });
+        tc.Run("COP0 Count survives callback context restoration", [](TestCase &t)
+        {
+            TestEnv env;
+            env.ctx.pc = K_COUNT_MAIN;
+            env.runtime.registerFunction(K_COUNT_MAIN, schedulerCountInvoke);
+            env.runtime.registerFunction(K_COUNT_CALLBACK, schedulerCountCallback);
+            env.runtime.registerFunction(K_COUNT_RESUME, schedulerCountResume);
+            gCountTrace.clear();
+            env.runtime.eeScheduler().reset(env.rdram.data(), env.ctx);
+            env.runtime.eeScheduler().run();
+            t.Equals(gCountTrace.size(), size_t(2), "Callback and resumed caller execute");
+            t.IsTrue(gCountTrace[0] >= 0x10000u, "Callback sees Count written by its caller");
+            t.IsTrue(gCountTrace[1] >= 0x20000u, "Returning from a callback retains hardware Count writes");
+        });
+        tc.Run("COP0 Count continues during guest VSync waits", [](TestCase &t)
+        {
+            TestEnv env;
+            env.ctx.pc = K_COUNT_MAIN;
+            env.runtime.registerFunction(K_COUNT_MAIN, schedulerCountIdle);
+            env.runtime.registerFunction(K_COUNT_RESUME, schedulerCountResume);
+            gCountTrace.clear();
+            env.runtime.eeScheduler().reset(env.rdram.data(), env.ctx);
+            env.runtime.eeScheduler().run();
+            t.Equals(gCountTrace.size(), size_t(2), "VSync resumes the caller");
+            t.IsTrue(gCountTrace[1] - gCountTrace[0] >= EeScheduler::kEeClockHz / 60u,
+                     "Hardware Count advances while no guest thread executes");
+        });
         tc.Run("unsigned loads and ABI word writes extend independently", [](TestCase &t)
         {
             constexpr uint64_t kUpper = 0x1122334455667788ull;
@@ -1074,6 +1241,7 @@ void register_ps2_runtime_kernel_tests()
             setRegU32(env.ctx, 5, 0u);
             setRegU32(env.ctx, 6, 0u);
             setRegU32(env.ctx, 29, 0x0010FFF0u);
+            ps2_guest_startup_args::set({});
             t.IsTrue(callSyscall(0x3Cu, env.rdram.data(), &env.ctx, &env.runtime), "SetupThread syscall should dispatch");
             const uint32_t setupSp = static_cast<uint32_t>(getRegS32(env.ctx, 2));
             t.Equals(setupSp & 0xFu, 0u, "SetupThread should always return a 16-byte aligned stack pointer");
@@ -1084,9 +1252,12 @@ void register_ps2_runtime_kernel_tests()
             TestEnv env;
             constexpr uint32_t kInitialLoaderSp = PS2_RAM_SIZE - 0x10u;
             constexpr uint32_t kMainStackSize = 0x00020000u;
-            constexpr uint32_t kExpectedStack = PS2_RAM_SIZE - kMainStackSize;
+            constexpr uint32_t kStackTop = PS2_RAM_SIZE - 0x1000u;
+            constexpr uint32_t kExpectedStack = kStackTop - kMainStackSize;
+            constexpr uint32_t kExpectedSp = kStackTop - 0x2A0u;
             constexpr uint32_t kMainGp = 0x0036A7F0u;
 
+            ps2_guest_startup_args::set({});
             env.ctx.pc = 0x00100000u;
             setRegU32(env.ctx, 29, kInitialLoaderSp);
             setRegU32(env.ctx, 4, kMainGp);
@@ -1094,12 +1265,12 @@ void register_ps2_runtime_kernel_tests()
             setRegU32(env.ctx, 6, kMainStackSize);
             t.IsTrue(callSyscall(0x3Cu, env.rdram.data(), &env.ctx, &env.runtime),
                      "SetupThread syscall should dispatch");
-            t.Equals(::getRegU32(&env.ctx, 2), kExpectedStack,
-                     "automatic main stack should start below the reserved top-of-RDRAM area");
+            t.Equals(::getRegU32(&env.ctx, 2), kExpectedSp,
+                     "SetupThread must return the upper stack pointer, leaving kernel context space");
 
             // ReferThreadStatus can be called after many nested frames have moved $sp.
             // It must report the initial stack recorded by SetupThread, not this live snapshot.
-            constexpr uint32_t kTransientSp = kExpectedStack - 0x80u;
+            constexpr uint32_t kTransientSp = kExpectedSp - 0x80u;
             setRegU32(env.ctx, 29, kTransientSp);
             setRegU32(env.ctx, 4, 0u);
             setRegU32(env.ctx, 5, K_STATUS_ADDR);
@@ -1117,6 +1288,76 @@ void register_ps2_runtime_kernel_tests()
                      "main thread status must preserve SetupThread's global pointer");
             t.IsTrue(status.stack != kInitialLoaderSp && status.stack != kTransientSp,
                      "main thread status must never expose a live stack-pointer snapshot");
+        });
+
+        tc.Run("SetupThread explicit stacks grow within their reserved allocation", [](TestCase &t)
+        {
+            TestEnv env;
+            constexpr uint32_t base = 0x00180000u;
+            constexpr uint32_t size = 0x00008000u;
+            setRegU32(env.ctx, 5, base);
+            setRegU32(env.ctx, 6, size);
+            SetupThread(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(::getRegU32(&env.ctx, 2), base + size - 0x2A0u,
+                     "explicit stack must also leave space for the EE kernel context");
+        });
+
+        tc.Run("callback stacks do not occupy the game heap or main stack", [](TestCase &t)
+        {
+            TestEnv env;
+            const uint32_t top = env.runtime.reserveAsyncCallbackStack(0x4000u);
+            t.IsTrue(top >= 0x00040000u + 0x4000u && top < 0x00100000u,
+                     "host callback frames belong in reserved kernel RAM below game allocations");
+        });
+
+        tc.Run("SetupThread writes startup arguments using the PS2 sargs layout", [](TestCase &t)
+        {
+            TestEnv env;
+            constexpr uint32_t kSargsAddr = 0x00003000u;
+            constexpr uint32_t kArgvOffset = 4u;
+            constexpr uint32_t kMaxArgs = 16u;
+            constexpr uint32_t kPayloadOffset = kArgvOffset + kMaxArgs * 4u;
+            const std::vector<std::string> args{"-w", "cdrom0:\\"};
+            ps2_guest_startup_args::set(args);
+
+            setRegU32(env.ctx, 4, 0x0036A7F0u);
+            setRegU32(env.ctx, 5, 0xFFFFFFFFu);
+            setRegU32(env.ctx, 6, 0x00020000u);
+            setRegU32(env.ctx, 7, kSargsAddr);
+            setRegU32(env.ctx, 29, PS2_RAM_SIZE - 0x10u);
+            t.IsTrue(callSyscall(0x3Cu, env.rdram.data(), &env.ctx, &env.runtime),
+                     "SetupThread syscall should accept a startup argument block");
+
+            t.Equals(readGuestU32(env.rdram.data(), kSargsAddr), 2u,
+                     "sargs argc should equal the number of guest arguments");
+            t.Equals(readGuestU32(env.rdram.data(), kSargsAddr + kArgvOffset),
+                     kSargsAddr + kPayloadOffset,
+                     "argv[0] should point at the first payload string");
+            t.Equals(readGuestU32(env.rdram.data(), kSargsAddr + kArgvOffset + 4u),
+                     kSargsAddr + kPayloadOffset + 3u,
+                     "argv[1] should point immediately after argv[0]");
+            const char *payload = reinterpret_cast<const char *>(env.rdram.data() + kSargsAddr + kPayloadOffset);
+            t.Equals(std::string(payload), std::string("-w"), "first payload string should be NUL terminated");
+            t.Equals(std::string(payload + 3), std::string("cdrom0:\\"), "second payload string should be NUL terminated");
+            ps2_guest_startup_args::set({});
+        });
+
+        tc.Run("SetupThread leaves the guest sargs block untouched when no host arguments are configured", [](TestCase &t)
+        {
+            TestEnv env;
+            ps2_guest_startup_args::set({});
+            constexpr uint32_t kSargsAddr = 0x00003400u;
+            constexpr uint32_t kSentinel = 0xA5A55A5Au;
+            writeGuestU32(env.rdram.data(), kSargsAddr, kSentinel);
+            setRegU32(env.ctx, 4, 0x0036A7F0u);
+            setRegU32(env.ctx, 5, 0xFFFFFFFFu);
+            setRegU32(env.ctx, 6, 0x00020000u);
+            setRegU32(env.ctx, 7, kSargsAddr);
+            setRegU32(env.ctx, 29, PS2_RAM_SIZE - 0x10u);
+            t.IsTrue(callSyscall(0x3Cu, env.rdram.data(), &env.ctx, &env.runtime),
+                     "SetupThread syscall should still initialize the thread without host arguments");
+            t.Equals(readGuestU32(env.rdram.data(), kSargsAddr), kSentinel,
+                     "empty host arguments must preserve guest-provided sargs data");
         });
 
         tc.Run("OSD config2 syscalls round-trip extended config", [](TestCase &t)

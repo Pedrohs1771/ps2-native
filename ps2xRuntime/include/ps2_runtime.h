@@ -309,6 +309,21 @@ public:
 
     using RecompiledFunction = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
 
+    struct ExecutableCodeRange
+    {
+        uint32_t begin = 0u;
+        uint32_t end = 0u; // exclusive
+    };
+
+    struct CompiledFunctionBinding
+    {
+        uint32_t address = 0u;
+        RecompiledFunction function = nullptr;
+    };
+
+    using GeneratedModuleRegistrar = void (*)(PS2Runtime &runtime);
+    static void setGeneratedModuleRegistrar(GeneratedModuleRegistrar registrar);
+
     enum class GuestBranchKind
     {
         DirectJump,
@@ -336,6 +351,15 @@ public:
     bool replaceFunction(uint32_t address, RecompiledFunction func);
     // TODO remove this later need to update all tests
     bool registerFunction(uint32_t address, RecompiledFunction func);
+    // Register generated functions by canonical PS2 module path, for example
+    // "cdrom0:\\modules\\engine.elf" normalized to lowercase slashes.
+    // Registrations are per runtime instance and never alter the boot ELF table.
+    bool registerCompiledModuleFunctions(std::string moduleKey,
+                                         const std::vector<CompiledFunctionBinding> &functions);
+    // Mark a successfully loaded secondary EE ELF as the owner of these guest
+    // executable ranges. A later loaded module takes precedence on overlap.
+    bool activateLoadedEeModule(std::string moduleKey,
+                                const std::vector<ExecutableCodeRange> &ranges);
     RecompiledFunction lookupFunction(uint32_t address);
     bool hasFunction(uint32_t address) const;
     bool dispatchGuestBranch(uint8_t *rdram,
@@ -532,6 +556,16 @@ public:
     std::atomic<uint32_t> m_debugGp{0};
 
 private:
+    struct LoadedEeModule
+    {
+        std::string key;
+        std::vector<ExecutableCodeRange> ranges;
+    };
+
+    RecompiledFunction resolveLoadedEeModuleFunction(uint32_t address,
+                                                      bool &moduleOwnsAddress,
+                                                      std::string *moduleKey = nullptr) const;
+
     struct LoadedModule
     {
         std::string name;
@@ -541,6 +575,10 @@ private:
     };
 
     std::vector<LoadedModule> m_loadedModules;
+    mutable std::mutex m_compiledModuleMutex;
+    std::unordered_map<std::string, std::unordered_map<uint32_t, RecompiledFunction>> m_compiledModuleFunctions;
+    std::vector<LoadedEeModule> m_loadedEeModules;
+    std::atomic<bool> m_hasLoadedEeModules{false};
     uint8_t *m_boundRdram = nullptr;
     uint8_t *m_boundGSVram = nullptr;
 };

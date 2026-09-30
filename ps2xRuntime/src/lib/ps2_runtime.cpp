@@ -1,4 +1,8 @@
 #include "ps2_runtime.h"
+#include "ps2_native_overlay.h"
+#include "ps2_scene_capture.h"
+#include "ps2_guest_startup_args.h"
+#include "ps2_guest_loop_optimization.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
@@ -20,12 +24,170 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <chrono>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
 #include <sstream>
+
+bool ps2xCaptureSceneState(PS2Runtime &runtime, const R5900Context &context,
+                          const std::filesystem::path &directory) noexcept
+{
+    auto &memory = runtime.memory();
+    if (directory.empty() || !memory.getRDRAM() || !memory.getGSVRAM() ||
+        !memory.getVU1Code() || !memory.getVU1Data())
+        return false;
+    try
+    {
+        std::filesystem::create_directories(directory);
+        const auto binary = [&directory](const char *name, const void *data, size_t size)
+        {
+            std::ofstream out(directory / name, std::ios::binary | std::ios::trunc);
+            out.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
+            out.close();
+            if (!out) throw std::runtime_error(std::string("cannot write scene capture ") + name);
+        };
+        binary("ee.bin", memory.getRDRAM(), PS2_RAM_SIZE);
+        binary("ee-context.bin", &context, sizeof(context));
+        binary("main-ee-context.bin", &runtime.cpu(), sizeof(R5900Context));
+        binary("gs-vram.bin", memory.getGSVRAM(), PS2_GS_VRAM_SIZE);
+        binary("vu1-code.bin", memory.getVU1Code(), PS2_VU1_CODE_SIZE);
+        binary("vu1-data.bin", memory.getVU1Data(), PS2_VU1_DATA_SIZE);
+
+        const auto gs = runtime.gs().getDebugSnapshot();
+        const auto history = runtime.gs().getDebugHistory();
+        const auto &vu = runtime.vu1().state();
+        const auto &vif = memory.vif1_regs;
+        const auto ee = runtime.eeScheduler().snapshot();
+        std::ofstream out(directory / "scene.txt", std::ios::trunc);
+        out << "PS2 native scene diagnostics v1; host ABI; no restore support\n"
+            << "EE pc=0x" << std::hex << context.pc << " ra=0x" << getRegU32(&context, 31)
+            << " sp=0x" << getRegU32(&context, 29) << " count=0x" << context.cop0_count
+            << std::dec << " cycles=" << ee.eeCycle << " thread=" << ee.runningThreadId << '\n';
+        for (int reg = 0; reg < 32; ++reg)
+            out << "GPR " << reg << " 0x" << std::hex << GPR_U64((&context), reg) << std::dec << '\n';
+        for (unsigned reg = 0; reg < 32; ++reg)
+        {
+            uint32_t bits;
+            std::memcpy(&bits, &context.f[reg], sizeof(bits));
+            out << "FPR " << reg << " 0x" << std::hex << bits << std::dec << ' ' << context.f[reg] << '\n';
+        }
+        out << "FPU acc=" << context.f_acc << " fcr31=0x" << std::hex << context.fcr31 << std::dec << '\n';
+        const auto &main = runtime.cpu();
+        out << "MAIN_EE pc=0x" << std::hex << main.pc << " ra=0x" << getRegU32(&main, 31)
+            << " sp=0x" << getRegU32(&main, 29) << std::dec << '\n';
+        for (unsigned reg = 0; reg < 32; ++reg)
+            out << "MAIN_FPR " << reg << ' ' << main.f[reg] << '\n';
+        out << "VU1 pc=0x" << std::hex << vu.pc << " status=0x" << vu.status
+            << " mac=0x" << vu.mac << " clip=0x" << vu.clip << std::dec
+            << " cycles=" << vu.cycles << " codeGeneration=" << memory.getVU1CodeGeneration()
+            << " top=" << vu.top << " itop=" << vu.itop << " ebit=" << vu.ebit
+            << " branchPending=" << vu.branchPending << " branchTarget=" << vu.branchTarget << '\n';
+        for (unsigned reg = 0; reg < 16; ++reg)
+            out << "VI " << reg << " 0x" << std::hex << vu.vi[reg] << std::dec << '\n';
+        for (unsigned reg = 0; reg < 32; ++reg)
+            out << "VF " << reg << ' ' << vu.vf[reg][0] << ' ' << vu.vf[reg][1]
+                << ' ' << vu.vf[reg][2] << ' ' << vu.vf[reg][3] << '\n';
+        out << "VIF1 stat=0x" << std::hex << vif.stat << " code=0x" << vif.code
+            << " mode=0x" << vif.mode << " cycle=0x" << vif.cycle << std::dec
+            << " num=" << vif.num << " base=" << vif.base << " offset=" << vif.ofst
+            << " top=" << vif.top << " tops=" << vif.tops << " itop=" << vif.itop << '\n';
+        out << "GS displayFbp=" << gs.hostPresentationDisplayFbp
+            << " sourceFbp=" << gs.hostPresentationSourceFbp
+            << " width=" << gs.hostPresentationWidth << " height=" << gs.hostPresentationHeight
+            << " preferred=" << gs.hostPresentationUsedPreferred << " historyEntries=" << history.size() << '\n';
+        for (unsigned index = 0; index < 2; ++index)
+        {
+            const auto &c = gs.ctx[index];
+            out << "GS_CONTEXT " << index << " fbp=" << c.frame.fbp << " fbw=" << c.frame.fbw
+                << " psm=" << unsigned(c.frame.psm) << " mask=0x" << std::hex << c.frame.fbmsk
+                << " test=0x" << c.test << " alpha=0x" << c.alpha << std::dec
+                << " zbp=" << c.zbuf.zbp << " zpsm=" << unsigned(c.zbuf.psm) << " zmask=" << c.zbuf.zmask
+                << " texture=" << c.tex0.tbp0 << " tpsm=" << unsigned(c.tex0.psm)
+                << " xyoffset=" << c.xyoffset.ofx << ',' << c.xyoffset.ofy
+                << " scissor=" << c.scissor.x0 << ',' << c.scissor.y0 << ',' << c.scissor.x1 << ',' << c.scissor.y1 << '\n';
+        }
+        for (const auto &entry : history)
+        {
+            out << "GS_EVENT seq=" << entry.seq << " frame=" << entry.frameIndex
+                << " kind=" << unsigned(entry.kind) << " prim=" << unsigned(entry.prim.type)
+                << " tme=" << entry.prim.tme << " fbp=" << entry.frame.fbp
+                << " vertices=" << entry.vertexCount << " bbox=" << entry.xMin << ',' << entry.yMin
+                << ',' << entry.xMax << ',' << entry.yMax << " z=" << entry.zMin << ',' << entry.zMax
+                << " a=" << unsigned(entry.aMin) << ',' << unsigned(entry.aMax)
+                << " reg=0x" << std::hex << unsigned(entry.reg) << " value=0x" << entry.regValue
+                << " test=0x" << entry.test << " alpha=0x" << entry.alpha << std::dec
+                << " texture=" << entry.tex0.tbp0 << " tpsm=" << unsigned(entry.tex0.psm)
+                << " gifBytes=" << entry.gifSizeBytes << " nloop=" << entry.gifNloop << " flg=" << unsigned(entry.gifFlg) << '\n';
+        }
+        out.close();
+        if (!out) throw std::runtime_error("cannot write scene metadata");
+        std::cerr << "[scene-capture] directory=" << directory << '\n';
+        return true;
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << "[scene-capture:error] " << error.what() << '\n';
+        return false;
+    }
+}
+
+void ps2xPollSceneCapture(PS2Runtime &runtime, const R5900Context &context) noexcept
+{
+    try
+    {
+        static const std::filesystem::path base = []
+        {
+            const char *value = std::getenv("PS2X_CAPTURE_SCENE");
+            return value && *value ? std::filesystem::path(value) : std::filesystem::path{};
+        }();
+        if (base.empty()) return;
+        // Retain the bounded GS ring while this opt-in diagnostic session runs.
+        if (runtime.gs().isDebugHistoryPaused())
+            runtime.gs().setDebugHistoryPaused(false);
+        std::error_code error;
+        // A one-shot request avoids repeated disk writes while a scene runs.
+        if (!std::filesystem::remove(base / ".request", error)) return;
+        const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+        ps2xCaptureSceneState(runtime, context, base / ("capture-" + std::to_string(stamp)));
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << "[scene-capture:error] " << error.what() << '\n';
+    }
+}
+
+namespace ps2_guest_startup_args
+{
+    namespace
+    {
+        std::mutex &argumentsMutex()
+        {
+            static std::mutex mutex;
+            return mutex;
+        }
+
+        std::vector<std::string> &argumentStorage()
+        {
+            static std::vector<std::string> arguments;
+            return arguments;
+        }
+    }
+
+    void set(std::vector<std::string> arguments)
+    {
+        std::lock_guard<std::mutex> lock(argumentsMutex());
+        argumentStorage() = std::move(arguments);
+    }
+
+    std::vector<std::string> get()
+    {
+        std::lock_guard<std::mutex> lock(argumentsMutex());
+        return argumentStorage();
+    }
+}
 
 namespace ps2_stubs
 {
@@ -42,6 +204,15 @@ static constexpr int FB_HEIGHT = 512;
 static constexpr int DEFAULT_DISPLAY_HEIGHT = 448;
 static constexpr uint32_t DEFAULT_FB_SIZE = FB_WIDTH * FB_HEIGHT * 4;
 static constexpr uint32_t DEFAULT_FB_ADDR = (PS2_RAM_SIZE - DEFAULT_FB_SIZE - 0x10000u);
+namespace
+{
+    std::atomic<PS2Runtime::GeneratedModuleRegistrar> &generatedModuleRegistrarSlot()
+    {
+        static std::atomic<PS2Runtime::GeneratedModuleRegistrar> registrar{nullptr};
+        return registrar;
+    }
+}
+
 #if defined(PLATFORM_VITA)
 static constexpr int HOST_WINDOW_WIDTH = 960;
 static constexpr int HOST_WINDOW_HEIGHT = 544;
@@ -91,6 +262,10 @@ namespace
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
     constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
+    // Host invocation frames must not occupy the game's top-of-RAM stack or
+    // heap. Keep them in the kernel region below the usual 1 MiB ELF base.
+    constexpr uint32_t kAsyncStackFloor = 0x00040000u;
+    constexpr uint32_t kAsyncStackTop = 0x00100000u;
 
     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
@@ -479,6 +654,13 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
 
 PS2Runtime::PS2Runtime()
 {
+    // Generated functions may already contain tracing calls. Disable their
+    // shared stream without rebuilding every translated compilation unit.
+    PS2_IF_AGRESSIVE_LOGS({
+        const char *functionTrace = std::getenv("PS2X_FUNCTION_TRACE");
+        if (functionTrace != nullptr && std::strcmp(functionTrace, "0") == 0)
+            ps2_log::log_stream().setstate(std::ios::badbit);
+    });
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
 
@@ -503,8 +685,18 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    m_asyncCallbackStackFloor = kAsyncStackFloor;
+    m_asyncCallbackStackTop = kAsyncStackTop;
+
+    if (GeneratedModuleRegistrar registrar = generatedModuleRegistrarSlot().load(std::memory_order_acquire))
+    {
+        registrar(*this);
+    }
+}
+
+void PS2Runtime::setGeneratedModuleRegistrar(GeneratedModuleRegistrar registrar)
+{
+    generatedModuleRegistrarSlot().store(registrar, std::memory_order_release);
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -553,6 +745,7 @@ PS2Runtime::~PS2Runtime()
         }
 
         m_loadedModules.clear();
+        ps2xReleaseNativeOverlays(this);
     }
     catch (const std::exception &e)
     {
@@ -802,6 +995,12 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         return false;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(m_compiledModuleMutex);
+        m_loadedEeModules.clear();
+        m_hasLoadedEeModules.store(false, std::memory_order_release);
+    }
+
     if (header.phnum != 0u && header.phentsize < sizeof(ProgramHeader))
     {
         std::cerr << "Unsupported ELF program-header entry size: " << header.phentsize << std::endl;
@@ -824,6 +1023,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     uint32_t moduleBase = std::numeric_limits<uint32_t>::max();
     uint32_t moduleEnd = 0u;
     bool loadedAnySegment = false;
+    uint32_t availableCallbackStackTop = kAsyncStackTop;
 
     for (uint16_t i = 0; i < header.phnum; i++)
     {
@@ -922,6 +1122,10 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         if (!scratch)
         {
             maxLoadedRdramEnd = std::max(maxLoadedRdramEnd, static_cast<uint32_t>(segmentMemEnd));
+            if (segmentMemEnd > kAsyncStackFloor && physAddr < availableCallbackStackTop)
+            {
+                availableCallbackStackTop = physAddr;
+            }
         }
 
         if (ph.flags & 0x1u) // PF_X
@@ -971,9 +1175,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        // Loading another module must not recycle already allocated stacks.
+        m_asyncCallbackStackTop = std::min(m_asyncCallbackStackTop, availableCallbackStackTop);
     }
 
     LoadedModule module;
@@ -1109,10 +1312,144 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
     return replaceFunction(address, func);
 }
 
+bool PS2Runtime::registerCompiledModuleFunctions(
+    std::string moduleKey,
+    const std::vector<CompiledFunctionBinding> &functions)
+{
+    if (moduleKey.empty())
+    {
+        return false;
+    }
+
+    std::unordered_map<uint32_t, RecompiledFunction> functionMap;
+    functionMap.reserve(functions.size());
+    for (const CompiledFunctionBinding &binding : functions)
+    {
+        if ((binding.address & 3u) != 0u || binding.function == nullptr ||
+            !functionMap.emplace(binding.address, binding.function).second)
+        {
+            return false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_compiledModuleMutex);
+    m_compiledModuleFunctions[std::move(moduleKey)] = std::move(functionMap);
+    return true;
+}
+
+bool PS2Runtime::activateLoadedEeModule(
+    std::string moduleKey,
+    const std::vector<ExecutableCodeRange> &ranges)
+{
+    if (moduleKey.empty() || ranges.empty())
+    {
+        return false;
+    }
+
+    for (const ExecutableCodeRange &range : ranges)
+    {
+        if (range.begin >= range.end)
+        {
+            return false;
+        }
+    }
+
+    LoadedEeModule module;
+    module.key = std::move(moduleKey);
+    module.ranges = ranges;
+
+    std::lock_guard<std::mutex> lock(m_compiledModuleMutex);
+    auto sameActivation = std::find_if(
+        m_loadedEeModules.begin(), m_loadedEeModules.end(),
+        [&module](const LoadedEeModule &loaded)
+        {
+            if (loaded.key != module.key || loaded.ranges.size() != module.ranges.size())
+            {
+                return false;
+            }
+            for (size_t index = 0; index < loaded.ranges.size(); ++index)
+            {
+                if (loaded.ranges[index].begin != module.ranges[index].begin ||
+                    loaded.ranges[index].end != module.ranges[index].end)
+                {
+                    return false;
+                }
+            }
+            return true;
+        });
+    if (sameActivation != m_loadedEeModules.end())
+    {
+        m_loadedEeModules.erase(sameActivation);
+    }
+    m_loadedEeModules.push_back(std::move(module));
+    m_hasLoadedEeModules.store(true, std::memory_order_release);
+    return true;
+}
+
+PS2Runtime::RecompiledFunction PS2Runtime::resolveLoadedEeModuleFunction(
+    uint32_t address,
+    bool &moduleOwnsAddress,
+    std::string *moduleKey) const
+{
+    moduleOwnsAddress = false;
+    if (moduleKey)
+    {
+        moduleKey->clear();
+    }
+    if (!m_hasLoadedEeModules.load(std::memory_order_acquire))
+    {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(m_compiledModuleMutex);
+    for (auto moduleIt = m_loadedEeModules.rbegin(); moduleIt != m_loadedEeModules.rend(); ++moduleIt)
+    {
+        const bool ownsAddress = std::any_of(
+            moduleIt->ranges.begin(), moduleIt->ranges.end(),
+            [address](const ExecutableCodeRange &range)
+            {
+                return address >= range.begin && address < range.end;
+            });
+        if (!ownsAddress)
+        {
+            continue;
+        }
+
+        moduleOwnsAddress = true;
+        if (moduleKey)
+        {
+            *moduleKey = moduleIt->key;
+        }
+
+        const auto functionsIt = m_compiledModuleFunctions.find(moduleIt->key);
+        if (functionsIt == m_compiledModuleFunctions.end())
+        {
+            return nullptr;
+        }
+        const auto functionIt = functionsIt->second.find(address);
+        return functionIt == functionsIt->second.end() ? nullptr : functionIt->second;
+    }
+
+    return nullptr;
+}
+
 bool PS2Runtime::hasFunction(uint32_t address) const
 {
+    bool moduleOwnsAddress = false;
+    if (RecompiledFunction moduleFunction = resolveLoadedEeModuleFunction(address, moduleOwnsAddress))
+    {
+        return true;
+    }
+    if (moduleOwnsAddress)
+    {
+        return false;
+    }
+
     uint32_t slot = 0u;
-    return generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr;
+    if (generatedFunctionTableSlot(address, slot) && g_ps2RecompiledFunctionTable[slot] != nullptr)
+        return true;
+    auto *self = const_cast<PS2Runtime *>(this);
+    return ps2xResolveNativeOverlay(self, self->m_memory.getRDRAM(), address) != nullptr;
 }
 
 const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
@@ -1138,8 +1475,16 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);
 
+    bool moduleOwnsAddress = false;
+    std::string moduleKey;
+    RecompiledFunction moduleFunction = resolveLoadedEeModuleFunction(address, moduleOwnsAddress, &moduleKey);
+    if (moduleFunction != nullptr)
+    {
+        return moduleFunction;
+    }
+
     uint32_t slot = 0u;
-    if (generatedFunctionTableSlot(address, slot))
+    if (!moduleOwnsAddress && generatedFunctionTableSlot(address, slot))
     {
         RecompiledFunction fn = g_ps2RecompiledFunctionTable[slot];
         if (fn != nullptr)
@@ -1148,9 +1493,13 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
         }
     }
 
+    if (RecompiledFunction native = ps2xResolveNativeOverlay(this, m_memory.getRDRAM(), address))
+        return native;
+
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
               << " tableBase=0x" << g_ps2RecompiledFunctionTableBase
               << " tableEnd=0x" << g_ps2RecompiledFunctionTableEnd
+              << (moduleOwnsAddress ? " module=\"" + moduleKey + "\"" : "")
               << " codeRegion=" << (m_memory.isCodeAddress(address) ? "yes" : "no")
               << " trace=" << formatDispatchHistory()
               << std::dec << std::endl;
@@ -2214,6 +2563,21 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
     return m_eeScheduler->checkpointDue(cycles);
 }
 
+bool ps2xFastForwardGuestCountdownLoop(PS2Runtime *runtime,
+                                       R5900Context *ctx,
+                                       uint32_t counterReg,
+                                       uint32_t sentinelReg,
+                                       uint32_t loopPc,
+                                       uint32_t fallthroughPc) noexcept
+{
+    return runtime &&
+           runtime->eeScheduler().fastForwardGuestCountdownLoop(ctx,
+                                                                counterReg,
+                                                                sentinelReg,
+                                                                loopPc,
+                                                                fallthroughPc);
+}
+
 [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
 {
     const uint64_t currentTick = m_eeScheduler->currentVSyncTick();
@@ -2412,11 +2776,23 @@ void PS2Runtime::run()
                                                << " display1=0x" << gs.display1
                                                << std::dec
                                                << " activeThreads=" << eeSnapshot.threads.size()
+                                               << " eeCycle=" << eeSnapshot.eeCycle
+                                               << " runningThread=" << eeSnapshot.runningThreadId
                                                << " dma=" << curDma
                                                << " gif=" << curGif
                                                << " gsw=" << curGs
                                                << " vif=" << curVif
                                                << std::endl);
+
+                for (const auto &thread : eeSnapshot.threads)
+                {
+                    RUNTIME_LOG("[run:thread] tick=" << tick << " id=" << thread.id
+                                << " pc=0x" << std::hex << thread.pc << " ra=0x" << thread.ra
+                                << std::dec << " status=" << static_cast<unsigned>(thread.status)
+                                << " wait=" << static_cast<unsigned>(thread.waitReason)
+                                << " waitId=" << thread.waitId << " invocations=" << thread.invocationDepth
+                                << std::endl);
+                }
 
             }
         });

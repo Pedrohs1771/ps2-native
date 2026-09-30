@@ -98,6 +98,15 @@ namespace ps2x::iop
 
         virtual std::string hostPath(HostPathKind kind) const = 0;
         virtual std::string translateGuestPath(std::string_view path) const = 0;
+        // Resolves a CD/DVD filename to the 32-byte sceCdlFILE metadata used
+        // by the CDVDFSV SearchFile RPC. Layer 0 is the first disc layer.
+        virtual bool searchCdFile(std::string_view path, uint32_t layer, CdFileInfo &result)
+        {
+            (void)path;
+            (void)layer;
+            (void)result;
+            return false;
+        }
         virtual uint64_t openHostFile(std::string_view path) = 0;
         virtual bool hostFileSize(uint64_t handle, uint64_t &size) const = 0;
         virtual bool readHostFile(uint64_t handle,

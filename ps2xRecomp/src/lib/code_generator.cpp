@@ -110,6 +110,15 @@ namespace ps2recomp
         m_renamedFunctions = renames;
     }
 
+    void CodeGenerator::setModuleIdentity(std::vector<std::string> moduleKeys,
+                                          std::string symbolPrefix,
+                                          bool emitDenseFunctionTable)
+    {
+        m_moduleKeys = std::move(moduleKeys);
+        m_moduleSymbolPrefix = std::move(symbolPrefix);
+        m_moduleEmitDenseFunctionTable = emitDenseFunctionTable;
+    }
+
     void CodeGenerator::setBootstrapInfo(const BootstrapInfo &info)
     {
         m_bootstrapInfo = info;
@@ -163,10 +172,19 @@ namespace ps2recomp
 
     std::string CodeGenerator::getFunctionName(uint32_t address) const
     {
+        auto qualify = [this](std::string name)
+        {
+            if (!m_moduleSymbolPrefix.empty() && name.find("::") == std::string::npos)
+            {
+                name.insert(0, m_moduleSymbolPrefix);
+            }
+            return name;
+        };
+
         auto it = m_renamedFunctions.find(address);
         if (it != m_renamedFunctions.end())
         {
-            return it->second;
+            return qualify(it->second);
         }
 
         const Symbol *sym = findSymbolByAddress(address);
@@ -204,9 +222,10 @@ namespace ps2recomp
         const Instruction &branchInst,
         const Instruction &delaySlot,
         const Function &function,
+        const std::vector<Instruction> &functionInstructions,
         const AnalysisResult &analysisResult)
     {
-        ControlFlowEmitter emitter(*this, branchInst, delaySlot, function, analysisResult);
+        ControlFlowEmitter emitter(*this, branchInst, delaySlot, function, functionInstructions, analysisResult);
         return emitter.emit();
     }
 
@@ -214,10 +233,17 @@ namespace ps2recomp
         const Instruction &branchInst,
         const Instruction &delaySlot,
         const Function &function,
+        const std::vector<Instruction> &functionInstructions,
         const AnalysisResult &analysisResult,
         std::string delaySlotOverride)
     {
-        ControlFlowEmitter emitter(*this, branchInst, delaySlot, function, analysisResult, std::move(delaySlotOverride));
+        ControlFlowEmitter emitter(*this,
+                                   branchInst,
+                                   delaySlot,
+                                   function,
+                                   functionInstructions,
+                                   analysisResult,
+                                   std::move(delaySlotOverride));
         return emitter.emit();
     }
 
@@ -286,7 +312,7 @@ namespace ps2recomp
             m_reporter->recordUnhandledInstruction(m_currentFunctionName, inst.address, inst.raw, message);
         }
 
-        return fmt::format("throw std::runtime_error(\"{} at 0x{:X} raw=0x{:08X}\");", message, inst.address, inst.raw);
+        return "runtime->SignalException(ctx, EXCEPTION_RESERVED_INSTRUCTION);\nreturn;";
     }
 
     std::string CodeGenerator::generateFunctionRegistration(const std::vector<Function> &functions, const std::map<uint32_t, std::string> &stubs)

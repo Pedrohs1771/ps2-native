@@ -1,8 +1,86 @@
 #include "Common.h"
 #include "System.h"
+#include "ps2_guest_startup_args.h"
+#include "../../ps2_iop_transport.h"
+
+#include <cstddef>
+#include <limits>
 
 namespace ps2_syscalls
 {
+    namespace
+    {
+        struct GuestStartupArgs
+        {
+            int32_t argc;
+            uint32_t argv[16];
+            char payload[256];
+        };
+
+        static_assert(offsetof(GuestStartupArgs, payload) == 68u);
+        static_assert(sizeof(GuestStartupArgs) == 324u);
+
+        void populateGuestStartupArgs(uint8_t *rdram,
+                                      uint32_t guestAddress,
+                                      const std::vector<std::string> &arguments)
+        {
+            if (!rdram || arguments.empty())
+            {
+                return;
+            }
+
+            constexpr size_t kMaxArgs = 16u;
+            constexpr size_t kPayloadSize = 256u;
+            size_t payloadBytes = 0u;
+            if (arguments.size() > kMaxArgs)
+            {
+                std::cerr << "PS2 SetupThread: guest startup args exceed the PS2 limit of "
+                          << kMaxArgs << " entries; leaving guest sargs unchanged." << std::endl;
+                return;
+            }
+            for (const std::string &argument : arguments)
+            {
+                if (argument.find('\0') != std::string::npos ||
+                    argument.size() + 1u > kPayloadSize - payloadBytes)
+                {
+                    std::cerr << "PS2 SetupThread: guest startup args exceed the 256-byte PS2 payload "
+                                 "or contain an embedded NUL; leaving guest sargs unchanged."
+                              << std::endl;
+                    return;
+                }
+                payloadBytes += argument.size() + 1u;
+            }
+
+            GuestStartupArgs *guestArgs = getEeGuestStruct<GuestStartupArgs>(rdram, guestAddress);
+            if (!guestArgs)
+            {
+                std::cerr << "PS2 SetupThread: invalid guest sargs address 0x"
+                          << std::hex << guestAddress << std::dec << std::endl;
+                return;
+            }
+
+            std::memset(guestArgs, 0, sizeof(*guestArgs));
+            guestArgs->argc = static_cast<int32_t>(arguments.size());
+            size_t payloadOffset = 0u;
+            const uint64_t payloadAddress = static_cast<uint64_t>(guestAddress) + offsetof(GuestStartupArgs, payload);
+            for (size_t i = 0u; i < arguments.size(); ++i)
+            {
+                const uint64_t stringAddress = payloadAddress + payloadOffset;
+                if (stringAddress > std::numeric_limits<uint32_t>::max())
+                {
+                    std::memset(guestArgs, 0, sizeof(*guestArgs));
+                    std::cerr << "PS2 SetupThread: guest sargs address overflow." << std::endl;
+                    return;
+                }
+
+                guestArgs->argv[i] = static_cast<uint32_t>(stringAddress);
+                const std::string &argument = arguments[i];
+                std::memcpy(guestArgs->payload + payloadOffset, argument.c_str(), argument.size() + 1u);
+                payloadOffset += argument.size() + 1u;
+            }
+        }
+    }
+
     void GsSetCrt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         int interlaced = getRegU32(ctx, 4); // $a0 - 0=non-interlaced, 1=interlaced
@@ -296,7 +374,7 @@ namespace ps2_syscalls
             return;
         }
 
-        const std::string moduleTag = makeSifModuleBufferTag(rdram, bufferAddr);
+        const std::string moduleTag = "iop-buffer@" + std::to_string(bufferAddr);
         std::vector<uint8_t> arguments;
         constexpr uint32_t kMaxIopModuleArguments = 64u * 1024u;
         if (!copyGuestBytesBounded(rdram, argumentAddr, argumentSize, kMaxIopModuleArguments, arguments))
@@ -311,7 +389,24 @@ namespace ps2_syscalls
             return;
         }
 
-        const auto loaded = runtime->loadIopModuleBuffer(bufferAddr, arguments.empty() ? nullptr : arguments.data(), static_cast<uint32_t>(arguments.size()));
+        const auto loaded = PS2IopTransport::loadIopBuffer(runtime, rdram, ctx, bufferAddr,
+                                                         arguments.empty() ? nullptr : arguments.data(),
+                                                         static_cast<uint32_t>(arguments.size()));
+        const uint32_t resultAddress = getRegU32(ctx, 7);
+        if (resultAddress != 0u)
+        {
+            uint32_t offset = 0u;
+            bool scratch = false;
+            if (resolveEeGuestRange(resultAddress, sizeof(uint32_t), offset, scratch))
+            {
+                if (auto *result = getMemPtr(rdram, resultAddress))
+                {
+                    const uint32_t value = static_cast<uint32_t>(loaded.startResult);
+                    for (unsigned i = 0; i < 4u; ++i)
+                        result[i] = static_cast<uint8_t>(value >> (i * 8u));
+                }
+            }
+        }
         if (!loaded.handled || loaded.moduleId <= 0)
         {
             setReturnS32(ctx, -1);
@@ -475,15 +570,30 @@ namespace ps2_syscalls
         const uint32_t gp = getRegU32(ctx, 4);
         const uint32_t stack = getRegU32(ctx, 5);
         const int32_t stackSizeSigned = static_cast<int32_t>(getRegU32(ctx, 6));
+        const uint32_t startupArgsAddress = getRegU32(ctx, 7);
         const uint32_t currentSp = getRegU32(ctx, 29);
         EeScheduler &scheduler = runtime->eeScheduler();
         scheduler.bindMainContextForSyscall(*ctx, rdram);
+
+        // PS2SDK's crt0 passes its sargs block in $a3. When host arguments are
+        // configured, seed that guest ABI block after the game's BSS clear and
+        // before its startup code reads argc/argv.
+        if (runtime)
+        {
+            populateGuestStartupArgs(rdram, startupArgsAddress, ps2_guest_startup_args::get());
+        }
 
         if (gp != 0u)
         {
             setRegU32(ctx, 28, gp);
         }
 
+        // SetupThread returns the upper end of a downward-growing stack, not
+        // its allocation base. The EE kernel leaves 4 KiB at the end of RAM
+        // and a 0x2A0-byte thread context below the stack top.
+        // Reference: Play! CPS2OS::sc_SetupThread and THREADCONTEXT.
+        constexpr uint32_t kKernelRamReserve = 0x1000u;
+        constexpr uint32_t kKernelContextSize = 0x2A0u;
         uint32_t sp = currentSp;
         uint32_t initialStack = 0u;
         const uint32_t stackSize = stackSizeSigned > 0
@@ -491,28 +601,26 @@ namespace ps2_syscalls
                                        : 0u;
         if (stack == 0xFFFFFFFFu)
         {
-            if (stackSizeSigned > 0)
+            const uint32_t stackTop = PS2_RAM_SIZE - kKernelRamReserve;
+            if (stackSize > stackTop)
             {
-                const uint32_t requestedSize = static_cast<uint32_t>(stackSizeSigned);
-                if (requestedSize < PS2_RAM_SIZE)
-                {
-                    sp = PS2_RAM_SIZE - requestedSize;
-                }
-                else
-                {
-                    sp = PS2_RAM_SIZE;
-                }
+                setReturnS32(ctx, KE_ERROR);
+                return;
             }
-            else
-            {
-                sp = PS2_RAM_SIZE;
-            }
+            initialStack = stackTop - stackSize;
+            sp = stackTop - kKernelContextSize;
         }
         else if (stack != 0u)
         {
             if (stackSizeSigned > 0)
             {
-                sp = stack + static_cast<uint32_t>(stackSizeSigned);
+                const uint64_t stackTop = static_cast<uint64_t>(stack) + stackSize;
+                if (stackTop > PS2_RAM_SIZE || stackSize < kKernelContextSize)
+                {
+                    setReturnS32(ctx, KE_ERROR);
+                    return;
+                }
+                sp = static_cast<uint32_t>(stackTop) - kKernelContextSize;
             }
             else
             {
@@ -521,11 +629,7 @@ namespace ps2_syscalls
         }
 
         sp &= ~0xFu;
-        if (stack == 0xFFFFFFFFu)
-        {
-            initialStack = sp;
-        }
-        else if (stack != 0u)
+        if (stack != 0u && stack != 0xFFFFFFFFu)
         {
             initialStack = stack;
         }

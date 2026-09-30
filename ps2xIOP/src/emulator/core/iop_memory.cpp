@@ -13,9 +13,9 @@ namespace ps2x::iop::detail
         constexpr int kDmaSpu0Irq = 0x24;
         constexpr int kDmaSpu1Irq = 0x28;
 
-        uint32_t alignUp(uint32_t value, uint32_t alignment)
+        uint64_t alignUp(uint64_t value, uint32_t alignment)
         {
-            return (value + alignment - 1u) & ~(alignment - 1u);
+            return (value + alignment - 1u) & ~static_cast<uint64_t>(alignment - 1u);
         }
     }
 
@@ -32,7 +32,6 @@ namespace ps2x::iop::detail
         std::fill(m_scratch.begin(), m_scratch.end(), uint8_t{0});
         m_hardware.clear();
         m_allocations.clear();
-        m_heapCursor = HeapBase;
         m_interruptStatus = 0;
         m_interruptMask = 0;
         m_interruptControl = 1;
@@ -269,9 +268,16 @@ namespace ps2x::iop::detail
         const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
         const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
         const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
+        const uint32_t autoDmaAddress = 0x1F9001B0u + (secondCore ? 0x400u : 0u);
+        const uint32_t autoDmaBit = secondCore ? 2u : 1u;
+        const bool autoDma = (value & 1u) != 0u &&
+                             (readHardware32(autoDmaAddress) & autoDmaBit) != 0u;
+        // AutoDMA feeds 16-bit stereo PCM at 48 kHz: one 32-bit word per
+        // sample frame, 36.864 MHz / 48 kHz = 768 IOP clocks. Treating it
+        // as a RAM copy floods the EE with audio buffer refill callbacks.
         m_dmaStart = DmaStart{
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
-            std::max<uint64_t>(transferWords * 2u, 64u),
+            std::max<uint64_t>(transferWords * (autoDma ? 768u : 2u), 64u),
         };
     }
 
@@ -284,43 +290,44 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::allocate(uint32_t size, uint32_t alignment, std::optional<uint32_t> fixed)
     {
-        size = alignUp(std::max(size, 1u), 16u);
         alignment = std::max<uint32_t>(alignment, 4u);
+        if ((alignment & (alignment - 1u)) != 0u)
+            return 0u;
+        const uint64_t roundedSize = alignUp(std::max(size, 1u), 16u);
+        if (roundedSize > HeapLimit - HeapBase)
+            return 0u;
+        size = static_cast<uint32_t>(roundedSize);
+        const auto insert = [&](uint32_t address)
+        {
+            const auto next = std::lower_bound(m_allocations.begin(), m_allocations.end(), address,
+                                               [](const Allocation &block, uint32_t position)
+                                               { return block.address < position; });
+            m_allocations.insert(next, {address, size});
+            markOwned(address, size);
+            return address;
+        };
         if (fixed)
         {
             const uint32_t address = *fixed;
-            if (address < HeapBase || address + size > HeapLimit)
+            if (address < HeapBase || address > HeapLimit || size > HeapLimit - address)
                 return 0u;
             for (const auto &block : m_allocations)
                 if (address < block.address + block.size && block.address < address + size)
                     return 0u;
-            m_allocations.push_back({address, size});
-            markOwned(address, size);
-            return address;
+            return insert(address);
         }
 
-        uint32_t candidate = alignUp(m_heapCursor, alignment);
-        for (;;)
+        uint64_t candidate = alignUp(HeapBase, alignment);
+        for (const auto &block : m_allocations)
         {
-            bool overlap = false;
-            for (const auto &block : m_allocations)
-            {
-                if (candidate < block.address + block.size && block.address < candidate + size)
-                {
-                    candidate = alignUp(block.address + block.size, alignment);
-                    overlap = true;
-                    break;
-                }
-            }
-            if (!overlap)
+            if (candidate + size <= block.address)
                 break;
+            if (candidate < static_cast<uint64_t>(block.address) + block.size)
+                candidate = alignUp(static_cast<uint64_t>(block.address) + block.size, alignment);
         }
         if (candidate > HeapLimit || size > HeapLimit - candidate)
             return 0u;
-        m_allocations.push_back({candidate, size});
-        markOwned(candidate, size);
-        m_heapCursor = std::max(m_heapCursor, candidate + size);
-        return candidate;
+        return insert(static_cast<uint32_t>(candidate));
     }
 
     bool IopMemory::freeAllocation(uint32_t address)
@@ -339,7 +346,14 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::maxFreeMemory() const
     {
-        return m_heapCursor < HeapLimit ? HeapLimit - m_heapCursor : 0u;
+        uint32_t cursor = HeapBase;
+        uint32_t largest = 0u;
+        for (const auto &block : m_allocations)
+        {
+            largest = std::max(largest, block.address - cursor);
+            cursor = block.address + block.size;
+        }
+        return std::max(largest, HeapLimit - cursor);
     }
 
     std::optional<IopMemory::Allocation> IopMemory::allocationContaining(uint32_t address) const

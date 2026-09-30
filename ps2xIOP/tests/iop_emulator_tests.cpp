@@ -72,10 +72,18 @@ namespace
         bool hasGuestFunction(uint32_t) const override { return false; }
         bool invokeGuestFunction(uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *) override { return false; }
         void log(LogLevel, std::string_view message) override { logs.emplace_back(message); }
+        bool sendSifCommand(uint32_t id, const void *packet, size_t size) override
+        {
+            lastCommandId = id;
+            lastCommand.assign(static_cast<const uint8_t *>(packet), static_cast<const uint8_t *>(packet) + size);
+            return true;
+        }
 
         std::vector<uint8_t> guest;
         std::vector<std::string> logs;
         std::string cdRoot;
+        uint32_t lastCommandId = 0;
+        std::vector<uint8_t> lastCommand;
     };
 
 #pragma pack(push, 1)
@@ -561,7 +569,7 @@ namespace
         std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
     }
 
-    void writeSifDmaIrx(TestHost &host, uint32_t address)
+    void writeSifDmaIrx(TestHost &host, uint32_t address, bool interruptCompletion = false)
     {
         constexpr uint32_t codeOffset = 0x100u;
         constexpr uint32_t loadAddress = 0x00010000u;
@@ -581,7 +589,7 @@ namespace
 
         ProgramHeader program{};
         program.type = 1u; program.offset = codeOffset; program.vaddr = loadAddress; program.paddr = loadAddress;
-        program.filesz = 0x200u; program.memsz = 0x200u; program.flags = 7u; program.align = 4u;
+        program.filesz = 0x240u; program.memsz = 0x240u; program.flags = 7u; program.align = 4u;
 
         const auto jal = [](uint32_t target) { return 0x0C000000u | ((target >> 2u) & 0x03FFFFFFu); };
         const uint32_t entry[] = {
@@ -595,7 +603,7 @@ namespace
         const uint32_t imports[] = {
             0x41E00000u, 0u, 0x00000101u,
             0x6D666973u, 0x00006E61u, // "sifman"
-            0x03E00008u, 0x24000007u, // sceSifSetDma
+            0x03E00008u, 0x24000000u | (interruptCompletion ? 32u : 7u),
             0x03E00008u, 0x24000008u, // sceSifDmaStat
             0u, 0u,
         };
@@ -606,9 +614,66 @@ namespace
 
         std::vector<uint8_t> segment(program.filesz, 0u);
         std::memcpy(segment.data(), entry, sizeof(entry));
+        if (interruptCompletion)
+        {
+            const uint32_t callbackEntry[] = {
+                0x27BDFFF0u, 0xAFBF000Cu,
+                0x3C040001u, 0x34840180u, 0x24050001u,
+                0x3C060001u, 0x34C60060u, 0x24075678u, 0x241C1234u,
+                jal(setDmaStub), 0x00000000u,
+                0x00001021u, // module entry returns resident status
+                0x8FBF000Cu, 0x27BD0010u, 0x03E00008u, 0x00000000u,
+            };
+            const uint32_t callback[] = {
+                0x3C010001u, 0xAC240200u, 0xAC3C0204u,
+                0x03E00008u, 0x00000000u,
+            };
+            std::memcpy(segment.data(), callbackEntry, sizeof(callbackEntry));
+            std::memcpy(segment.data() + 0x60u, callback, sizeof(callback));
+        }
         std::memcpy(segment.data() + 0x100u, imports, sizeof(imports));
         std::memcpy(segment.data() + 0x180u, descriptor, sizeof(descriptor));
         std::memcpy(segment.data() + 0x1A0u, &payload, sizeof(payload));
+        std::memset(host.guest.data() + address, 0, codeOffset + program.filesz);
+        std::memcpy(host.guest.data() + address, &header, sizeof(header));
+        std::memcpy(host.guest.data() + address + sizeof(header), &program, sizeof(program));
+        std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
+    }
+
+    void writeSifCommandIrx(TestHost &host, uint32_t address)
+    {
+        constexpr uint32_t codeOffset = 0x100;
+        constexpr uint32_t base = 0x10000;
+        constexpr uint32_t addStub = base + 0x114;
+        constexpr uint32_t sendStub = addStub + 8;
+        ElfHeader header{};
+        header.ident[0] = 0x7f; header.ident[1] = 'E'; header.ident[2] = 'L'; header.ident[3] = 'F';
+        header.ident[4] = 1; header.ident[5] = 1; header.ident[6] = 1;
+        header.type = 2; header.machine = 8; header.version = 1;
+        header.entry = base; header.phoff = sizeof(header); header.ehsize = sizeof(header);
+        header.phentsize = sizeof(ProgramHeader); header.phnum = 1;
+        ProgramHeader program{1, codeOffset, base, base, 0x240, 0x240, 7, 4};
+        const auto jal = [](uint32_t target) { return 0x0c000000u | ((target >> 2) & 0x03ffffffu); };
+        const uint32_t entry[] = {
+            0x27bdffe0, 0xafbf0010, 0x2404002a, 0x3c050001, 0x34a50060, 0x24065678, 0x241c1234,
+            jal(addStub), 0, 0x00001021, 0x8fbf0010, 0x27bd0020, 0x03e00008, 0,
+        };
+        const uint32_t callback[] = {
+            0x27bdffc0, 0xafbf001c, 0x3c010001, 0xac250200, 0xac3c0204,
+            0x8c880010, 0, 0xac280208, 0x8c880008, 0, 0xac28020c,
+            // A real SDK caller initializes its body, leaving the header for
+            // sceSifSendCmd to construct on this valid but unwritten stack.
+            0x8c880010, 0, 0xafa80030, 0x27a50020,
+            0x2404002b, 0x24060014, 0x00003821,
+            0xafa00010, 0xafa00014, jal(sendStub), 0,
+            0x8fbf001c, 0x27bd0040, 0x03e00008, 0,
+        };
+        const uint32_t imports[] = {0x41e00000, 0, 0x101, 0x63666973, 0x0000646d,
+            0x03e00008, 0x2400000a, 0x03e00008, 0x2400000c, 0, 0};
+        std::vector<uint8_t> segment(program.filesz, 0);
+        std::memcpy(segment.data(), entry, sizeof(entry));
+        std::memcpy(segment.data() + 0x60, callback, sizeof(callback));
+        std::memcpy(segment.data() + 0x100, imports, sizeof(imports));
         std::memset(host.guest.data() + address, 0, codeOffset + program.filesz);
         std::memcpy(host.guest.data() + address, &header, sizeof(header));
         std::memcpy(host.guest.data() + address + sizeof(header), &program, sizeof(program));
@@ -911,6 +976,62 @@ int main()
     if (!expect(stopResult == 0, "Emulated module stop result mismatch")) return 1;
     if (!expect(iop.debugSnapshot().emulatorLoadedModules == 0u, "Module was not released")) return 1;
 
+    // LOADFILE buffer RPC addresses physical IOP RAM after an EE-to-IOP DMA.
+    // Give EE RAM different bytes at that address to catch address-space confusion.
+    {
+        TestHost bufferHost(0x20000u);
+        IopSubsystem bufferIop(bufferHost);
+        bufferIop.reset();
+        writeMinimalIrx(bufferHost, 0x100u);
+        const uint32_t iopBuffer = bufferIop.allocateMemory(0x200u);
+        if (!expect(iopBuffer != 0u && bufferIop.writeMemory(iopBuffer, bufferHost.guest.data() + 0x100u, 0x118u),
+                    "IOP module DMA setup failed")) return 1;
+        uint32_t packet[128]{};
+        packet[0] = iopBuffer;
+        packet[1] = 3u;
+        std::memcpy(reinterpret_cast<uint8_t *>(packet) + 260u, "42", 3u);
+        bufferHost.writeGuest(0x1000u, packet, sizeof(packet));
+        RpcRequest load{};
+        load.sid = 0x80000006u;
+        load.function = 6u;
+        load.send = {0x1000u, sizeof(packet)};
+        load.receive = {0x2000u, 8u};
+        if (!expect(bufferIop.handleRpc(load).handled, "LOADFILE physical-buffer RPC not handled")) return 1;
+        uint32_t response[2]{};
+        bufferHost.readGuest(0x2000u, response, sizeof(response));
+        if (!expect(static_cast<int32_t>(response[0]) > 0 && response[1] == 7u,
+                    "LOADFILE failed to start the IRX from physical IOP RAM")) return 1;
+        packet[1] = 253u;
+        bufferHost.writeGuest(0x1000u, packet, sizeof(packet));
+        if (!expect(bufferIop.handleRpc(load).handled, "Malformed buffer request not claimed")) return 1;
+        bufferHost.readGuest(0x2000u, response, sizeof(response));
+        if (!expect(static_cast<int32_t>(response[0]) == -1, "Oversized module arguments were accepted")) return 1;
+        packet[1] = 0u;
+        packet[0] = 0x1ffff0u;
+        bufferHost.writeGuest(0x1000u, packet, sizeof(packet));
+        (void)bufferIop.handleRpc(load);
+        bufferHost.readGuest(0x2000u, response, sizeof(response));
+        if (!expect(static_cast<int32_t>(response[0]) == -1, "Truncated physical ELF was accepted")) return 1;
+
+        const uint32_t argvCode[] = {
+            0x24080003u, 0x14880006u, 0x00000000u, // require argc == 3
+            0x8CA80004u, 0x00000000u, 0x91020000u, // return argv[1][0]
+            0x03E00008u, 0x00000000u,
+            0x2402FFFFu, 0x03E00008u, 0x00000000u,
+        };
+        writeMinimalIrx(bufferHost, 0x100u);
+        ProgramHeader argvProgram{};
+        std::memcpy(&argvProgram, bufferHost.guest.data() + 0x100u + sizeof(ElfHeader), sizeof(argvProgram));
+        argvProgram.filesz = argvProgram.memsz = sizeof(argvCode);
+        std::memcpy(bufferHost.guest.data() + 0x100u + sizeof(ElfHeader), &argvProgram, sizeof(argvProgram));
+        std::memcpy(bufferHost.guest.data() + 0x200u, argvCode, sizeof(argvCode));
+        bufferIop.writeMemory(iopBuffer, bufferHost.guest.data() + 0x100u, 0x100u + sizeof(argvCode));
+        const char argvPayload[] = {'4', '2', '\0', 'f', 'l', 'a', 'g', '\0'};
+        const auto argvModule = bufferIop.loadModuleIopBuffer(iopBuffer, argvPayload, sizeof(argvPayload));
+        if (!expect(argvModule.moduleId > 0 && argvModule.startResult == '4',
+                    "IOP module entry did not receive argc and argv including module name")) return 1;
+    }
+
     constexpr uint32_t rpcSid = 0xF00DCAFEu;
     writeRpcServerIrx(host, 0x100u);
     const ModuleLoadResult rpcModule = iop.loadModuleBuffer(0x100u);
@@ -1031,6 +1152,43 @@ int main()
                 "sceSifDmaStat did not report the synchronous transfer as complete")) return 1;
     if (!expect(sifDmaPayload == 0x53494621u,
                 "IOP sceSifSetDma did not copy the payload into EE memory")) return 1;
+
+    iop.reset();
+    std::memset(host.guest.data() + sifDmaDestination, 0, sizeof(uint32_t));
+    writeSifDmaIrx(host, 0x100u, true);
+    const ModuleLoadResult sifDmaIntrModule = iop.loadModuleBuffer(0x100u);
+    std::memcpy(&sifDmaPayload, host.guest.data() + sifDmaDestination, sizeof(sifDmaPayload));
+    if (!expect(sifDmaIntrModule.handled && sifDmaIntrModule.startResult == 0 && sifDmaPayload == 0x53494621u,
+                "sifman:32 must transfer the payload before reporting completion")) return 1;
+    uint32_t callbackArgument = 0u;
+    uint32_t callbackGp = 0u;
+    if (!expect(iop.readMemory(0x10200u, &callbackArgument, sizeof(callbackArgument)) && callbackArgument == 0u,
+                "SIF DMA callback ran before its scheduled completion")) return 1;
+    iop.runEeCycles(4096u);
+    if (!expect(iop.readMemory(0x10200u, &callbackArgument, sizeof(callbackArgument)) && callbackArgument == 0x5678u &&
+                    iop.readMemory(0x10204u, &callbackGp, sizeof(callbackGp)) && callbackGp == 0x1234u,
+                "SIF DMA completion lost its callback, userdata, or GP")) return 1;
+
+    iop.reset();
+    writeSifCommandIrx(host, 0x100u);
+    const auto commandModule = iop.loadModuleBuffer(0x100u);
+    const uint32_t commandPacket[] = {20, 0, 0x2a, 0, 0xdeadbeef};
+    if (!expect(commandModule.moduleId > 0 && commandModule.startResult == 0 &&
+                    iop.receiveSifCommand(0x2a, commandPacket, sizeof(commandPacket)),
+                "EE command did not reach the registered IOP handler")) return 1;
+    uint32_t callbackBody = 0, callbackCommand = 0;
+    if (!expect(iop.readMemory(0x10200, &callbackArgument, 4) && callbackArgument == 0x5678 &&
+                iop.readMemory(0x10204, &callbackGp, 4) && callbackGp == 0x1234 &&
+                iop.readMemory(0x10208, &callbackBody, 4) && callbackBody == 0xdeadbeef &&
+                iop.readMemory(0x1020c, &callbackCommand, 4) && callbackCommand == 0x2a,
+                "IOP command delivery lost packet data, callback argument or GP")) return 1;
+    if (!expect(host.lastCommandId == 0x2b && host.lastCommand.size() == sizeof(commandPacket),
+                "IOP command callback did not deliver its EE reply")) return 1;
+    if (!expect(!iop.receiveSifCommand(0x2a, commandPacket, 8), "Truncated SIF command was accepted")) return 1;
+    int32_t stoppedResult = 0;
+    if (!expect(iop.stopModule(commandModule.moduleId, &stoppedResult) &&
+                !iop.receiveSifCommand(0x2a, commandPacket, sizeof(commandPacket)),
+                "Unloaded IOP command handler was retained")) return 1;
 
     iop.reset();
     writeVblankSchedulingIrx(host, 0x100u);

@@ -648,6 +648,24 @@ namespace ps2_stubs
         setReturnS32(ctx, 1);
     }
 
+    bool findCdFileForIop(std::string_view path, uint32_t layer, CdSearchResult &result)
+    {
+        if (layer != 0u || path.empty())
+            return false;
+
+        CdFileEntry entry;
+        if (!registerCdFile(std::string(path), entry))
+            return false;
+
+        result = {};
+        result.lsn = entry.baseLbn;
+        result.sizeBytes = entry.sizeBytes;
+        const std::filesystem::path leafPath(normalizeCdPathNoPrefix(std::string(path)));
+        const std::string leaf = stripIsoVersionSuffix(leafPath.filename().string());
+        std::copy_n(leaf.data(), std::min(leaf.size(), result.name.size() - 1u), result.name.data());
+        return true;
+    }
+
     void sceCdSeek(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         restartCdStreamAt(getRegU32(ctx, 4), runtime);

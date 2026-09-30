@@ -2,11 +2,26 @@
 #include "ps2_vu1_detail.h"
 
 #include <cmath>
+#include <bit>
 #include <cstring>
 #include <limits>
 
 namespace
 {
+    float vuMinMaxRaw(float lhs, float rhs, bool maximum)
+    {
+        const uint32_t a = std::bit_cast<uint32_t>(lhs);
+        const uint32_t b = std::bit_cast<uint32_t>(rhs);
+        // VU MIN/MAX select raw operands using their encoded numeric ordering.
+        // They also preserve values used as integer/GIF fields in VF registers.
+        const auto key = [](uint32_t bits)
+        {
+            return (bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u;
+        };
+        const bool takeA = maximum ? key(a) > key(b) : key(a) < key(b);
+        return std::bit_cast<float>(takeA ? a : b);
+    }
+
     int32_t vuFloatToInt(float value, float scale)
     {
         const double scaled = static_cast<double>(value) * static_cast<double>(scale);
@@ -99,9 +114,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
     case 0x12:
     case 0x13: // MAXbc
     {
-        float bc = broadcast(vt, op & 3);
+        const float bc = m_state.vf[ft][op & 3u];
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > bc) ? vs[c] : bc;
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], bc, true);
         applyDest(vd, result, dest);
         return;
     }
@@ -110,9 +125,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
     case 0x16:
     case 0x17: // MINIbc
     {
-        float bc = broadcast(vt, op & 3);
+        const float bc = m_state.vf[ft][op & 3u];
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < bc) ? vs[c] : bc;
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], bc, false);
         applyDest(vd, result, dest);
         return;
     }
@@ -134,7 +149,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x1D: // MAXi
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > i) ? vs[c] : i;
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], m_state.i, true);
         applyDest(vd, result, dest);
         return;
     case 0x1E: // MULi
@@ -144,7 +159,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x1F: // MINIi
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < i) ? vs[c] : i;
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], m_state.i, false);
         applyDest(vd, result, dest);
         return;
     case 0x20: // ADDq
@@ -204,7 +219,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x2B: // MAX
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] > vt[c]) ? vs[c] : vt[c];
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], m_state.vf[ft][c], true);
         applyDest(vd, result, dest);
         return;
     case 0x2C: // SUB
@@ -226,7 +241,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
         return;
     case 0x2F: // MINI
         for (int c = 0; c < 4; c++)
-            result[c] = (vs[c] < vt[c]) ? vs[c] : vt[c];
+            result[c] = vuMinMaxRaw(m_state.vf[fs][c], m_state.vf[ft][c], false);
         applyDest(vd, result, dest);
         return;
 

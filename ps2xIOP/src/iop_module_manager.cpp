@@ -13,6 +13,7 @@ namespace ps2x::iop::detail
         constexpr std::string_view modules[] = {
             "sysmem",
             "loadcore",
+            "loadfile",
             "intrman",
             "sifman",
             "sifcmd",

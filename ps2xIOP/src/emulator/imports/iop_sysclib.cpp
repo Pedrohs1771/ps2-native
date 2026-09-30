@@ -316,13 +316,13 @@ namespace ps2x::iop::detail
         case 37: // atob
             setV0(0);
             return true;
-        case 40: // _wmemcopy, count is 32-bit words
-            for (uint32_t i = 0; i < a2; ++i)
+        case 40: // _wmemcopy: byte size, trailing partial word is untouched.
+            for (uint32_t i = 0; i < (a2 >> 2u); ++i)
                 m_memory.write32(a0 + i * 4u, m_memory.read32(a1 + i * 4u));
             setV0(a0);
             return true;
-        case 41:
-            for (uint32_t i = 0; i < a2; ++i)
+        case 41: // _wmemset uses the same byte-size ABI as _wmemcopy.
+            for (uint32_t i = 0; i < (a2 >> 2u); ++i)
                 m_memory.write32(a0 + i * 4u, a1);
             setV0(a0);
             return true;

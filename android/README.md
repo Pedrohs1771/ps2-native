@@ -1,36 +1,41 @@
 # Android runner
 
-## Requirements
+## Building a game package
 
-- Android Studio (recommended) or a local Gradle 8.7+ / JDK 17 install
-- Android SDK 34 + NDK (installed automatically by Android Studio on first sync)
-- CMake 3.22.1 from the SDK (Android Studio installs it on demand)
-
-## Building
-
-Option A — Android Studio: open the `android/` folder and run the `app` configuration.
-Option B — command line (no wrapper is committed; generate it once):
+Run the desktop builder from the repository root:
 
 ```sh
-cd android
-gradle wrapper --gradle-version 8.9
-./gradlew assembleRelease
+python3 -m tools.ps2native build --iso /path/to/game.iso --target android --out /path/to/new-package
 ```
 
-APK output: `android/app/build/outputs/apk/release/app-release.apk`.
+The host needs JDK 17, Gradle 8.7 or newer, Android SDK platform 34, NDK
+`28.2.13676358`, and Android CMake `3.22.1`. Set `ANDROID_SDK_ROOT` or
+`ANDROID_HOME`; pass `--gradle /path/to/gradle` when Gradle is not on `PATH`.
+The builder also checks a cached Gradle wrapper distribution under
+`~/.gradle/wrapper/dists`. This checkout has `gradle-wrapper.properties` but no
+wrapper scripts or wrapper JAR, so the builder does not rely on `./gradlew`.
 
-## Running a game
+The builder creates a separate project under the per-ISO workspace, copies the
+extracted disc to `app/src/main/assets/game/`, and passes generated C++ through
+`PS2X_GENERATED_CODE_DIR`. It does not write title files into the checked-in
+Android project. Each APK gets an application ID derived from the ISO SHA-256
+prefix and a stable output name such as `game-<hash>-arm64.apk`.
 
-Since there is no argv on Android, the guest ELF path comes from
-`PS2X_DEFAULT_BOOT_ELF`, set via the `ps2xBootElf` Gradle property
-(`android/gradle.properties`, or `-Pps2xBootElf=...` on the command line).
+If Gradle, JDK, SDK, NDK, CMake, or `Ps2PackageActivity` is missing, the command
+records the exact blocker and staged project path in `manifest.json`, exits as
+`blocked`, and does not report an APK artifact. The builder does not install
+SDK components or accept Android SDK licenses on the host's behalf.
 
+## Runtime asset path
 
-```sh
-adb install app/build/outputs/apk/release/app-release.apk
-adb shell mkdir -p /storage/emulated/0/Android/data/com.ps2x.runner/files
-adb push "path/to/game/." /storage/emulated/0/Android/data/com.ps2x.runner/files/
-```
+`Ps2PackageActivity` copies `assets/game/` into
+`getFilesDir()/game/` before starting the native library. The runtime resolves
+the boot ELF at `ANativeActivity::internalDataPath/game/boot.elf`; no ISO path
+or external-storage permission is needed. The APK embeds the complete extracted
+disc tree, so large games produce large APKs. Split/OBB delivery is not
+implemented.
 
-Logs: raylib output goes to logcat (`adb logcat -s raylib`); runtime `std::cout`/`cerr`
-output is not redirected to logcat yet.
+The checked-in Gradle project can build a generic runtime with the placeholder
+registration source when `PS2X_GENERATED_CODE_DIR` is empty. The host builder is
+the supported route for a game-specific generated build. Runtime output is
+available through `adb logcat -s ps2x`.

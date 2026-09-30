@@ -2,6 +2,7 @@
 
 #include "ps2_log.h"
 #include "ps2_runtime_macros.h"
+#include "../ps2_scene_capture.h"
 
 #include <algorithm>
 #include <cassert>
@@ -111,6 +112,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_timeSliceExpired = false;
     m_insideInterrupt = false;
     m_pendingEeTimerInterrupts = 0u;
+    m_cop0Count = mainContext.cop0_count;
     m_eeCycle = 0u;
     m_sliceEndCycle = kDefaultTimeSliceCycles;
     m_stopRequested.store(false, std::memory_order_release);
@@ -215,10 +217,14 @@ void EeScheduler::run()
             }
         }
         R5900Context &context = running->activeContext();
+        // Count belongs to the CPU, including while threads wait. Saved
+        // thread/callback contexts must not restore an older hardware clock.
+        context.cop0_count = m_cop0Count;
         if (m_debugPublishCountdown == 0u)
         {
             copyMainContextToRuntime();
             publishSnapshot();
+            ps2xPollSceneCapture(m_runtime, context);
             m_debugPublishCountdown = kDebugPublishDispatchInterval - 1u;
         }
         else
@@ -313,6 +319,9 @@ void EeScheduler::run()
             throw;
         }
 
+        // MTC0 writes are currently emitted directly into the active context.
+        // Retain them even when the instruction immediately exits or blocks.
+        m_cop0Count = context.cop0_count;
         processPendingEvents();
         if (m_rescheduleRequested && m_currentThreadId != 0)
         {
@@ -388,9 +397,85 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
     return false;
 }
 
+bool EeScheduler::fastForwardGuestCountdownLoop(R5900Context *ctx,
+                                                uint32_t counterReg,
+                                                uint32_t sentinelReg,
+                                                uint32_t loopPc,
+                                                uint32_t fallthroughPc) noexcept
+{
+    if (!ctx || counterReg == 0u || counterReg >= 32u || sentinelReg >= 32u || counterReg == sentinelReg)
+    {
+        return false;
+    }
+
+    const uint32_t counter = GPR_U32(ctx, static_cast<int>(counterReg));
+    const uint32_t sentinel = GPR_U32(ctx, static_cast<int>(sentinelReg));
+    const uint64_t counter64 = GPR_U64(ctx, static_cast<int>(counterReg));
+    const uint64_t sentinel64 = GPR_U64(ctx, static_cast<int>(sentinelReg));
+    const uint64_t signExtendedCounter =
+        static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(counter)));
+    const uint64_t signExtendedSentinel =
+        static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(sentinel)));
+
+    // ADDIU sign-extends its 32-bit result. Require the same canonical form
+    // before replacing repeated guest comparisons against the full GPR value.
+    if (counter64 != signExtendedCounter || sentinel64 != signExtendedSentinel)
+    {
+        return false;
+    }
+
+    const uint32_t remainingDecrements = counter - sentinel;
+    if (remainingDecrements == 0u)
+    {
+        return false;
+    }
+
+    const bool checkpointPending = m_checkpointPending.load(std::memory_order_acquire) ||
+                                   m_stopRequested.load(std::memory_order_acquire);
+    uint64_t boundaryCycle = m_sliceEndCycle;
+    const uint64_t nextDeadline = m_nextDeadlineCycle.load(std::memory_order_acquire);
+    if (nextDeadline != 0u)
+    {
+        boundaryCycle = std::min(boundaryCycle, nextDeadline);
+    }
+
+    const uint64_t cyclesUntilBoundary = checkpointPending || boundaryCycle <= m_eeCycle
+                                             ? 0u
+                                             : boundaryCycle - m_eeCycle;
+    uint64_t takenIterationsBudget = cyclesUntilBoundary / kGeneratedCheckpointCycles;
+    if (takenIterationsBudget == 0u)
+    {
+        // The current branch iteration is already in flight. Charge it and
+        // return so pending events or stop requests can be handled normally.
+        takenIterationsBudget = 1u;
+    }
+
+    const uint64_t takenIterations = std::min<uint64_t>(remainingDecrements, takenIterationsBudget);
+    const bool loopCompletes = takenIterations == remainingDecrements;
+    const uint32_t extraDecrements = loopCompletes
+                                         ? remainingDecrements
+                                         : static_cast<uint32_t>(takenIterations - 1u);
+    SET_GPR_S32(ctx,
+                static_cast<int>(counterReg),
+                static_cast<int32_t>(counter - extraDecrements));
+    ctx->pc = loopCompletes ? fallthroughPc : loopPc;
+
+    const uint32_t cyclesToAccount =
+        static_cast<uint32_t>(takenIterations * kGeneratedCheckpointCycles);
+    (void)checkpointDue(cyclesToAccount);
+    return true;
+}
+
 void EeScheduler::accountCycles(uint32_t cycles) noexcept
 {
     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
+    GuestThread *running = currentThread();
+    R5900Context *context = running ? &running->activeContext() : nullptr;
+    if (context)
+        m_cop0Count = context->cop0_count;
+    m_cop0Count += static_cast<uint32_t>(elapsed);
+    if (context)
+        context->cop0_count = m_cop0Count;
     m_eeCycle += elapsed;
     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
     m_runtime.advanceIopEeCycles(elapsed);
@@ -2111,6 +2196,7 @@ void EeScheduler::copyMainContextToRuntime()
     {
         m_runtime.m_cpuContext = main->context;
     }
+    m_runtime.m_cpuContext.cop0_count = m_cop0Count;
 }
 
 void EeScheduler::publishDebugContext(const R5900Context &context)

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <span>
@@ -37,6 +38,7 @@ namespace ps2x::iop::detail
         constexpr uint32_t kCallStackSize = 0x2000u;
         constexpr uint32_t kCallStackCapacity = (kCallStackLimit - kCallStackBase) / kCallStackSize;
         constexpr uint64_t kCdvdCompletionCycles = 128u;
+        constexpr uint64_t kSifDmaCompletionCycles = 128u;
 
         uint32_t physicalAddress(uint32_t address)
         {
@@ -105,7 +107,7 @@ namespace ps2x::iop::detail
               heaplib(memory),
               intrman(memory),
               timrman(),
-              ioman(memory),
+              ioman(host, memory),
               cpuCore(memory),
               imports(memory),
               loadcore(memory, imports)
@@ -130,6 +132,7 @@ namespace ps2x::iop::detail
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
             totalInstructions = 0;
+            tracedTimeslices = 0u;
             eeCycleCarry = 0;
             activeCpu = nullptr;
             lastError.clear();
@@ -250,6 +253,18 @@ namespace ps2x::iop::detail
 
             if (iequals(call.library, "cdvdman") && cdvd.dispatchImport(call.ordinal, cpu))
             {
+                static const bool traceCdvd = std::getenv("PS2X_TRACE_CDVD") != nullptr;
+                if (traceCdvd && call.ordinal != 8u && call.ordinal != 9u)
+                {
+                    std::ostringstream message;
+                    message << "[cdvd:import] ordinal=" << call.ordinal << std::hex
+                            << " pc=0x" << cpu.pc << " a0=0x" << a0
+                            << " a1=0x" << cpu.gpr[5] << " a2=0x" << cpu.gpr[6]
+                            << " result=0x" << cpu.gpr[2];
+                    if (call.ordinal == 10u)
+                        message << " path=\"" << memory.readString(cpu.gpr[5], 1024u) << '"';
+                    host.log(LogLevel::Info, message.str());
+                }
                 if (const auto callback = cdvd.takeCompletionCallback())
                 {
                     pendingGuestCallbacks.emplace(
@@ -318,9 +333,15 @@ namespace ps2x::iop::detail
                 return ImportDisposition::Handled;
             if (iequals(call.library, "sifman"))
             {
-                return rpc.dispatchSifManImport(call.ordinal, cpu)
-                           ? ImportDisposition::Handled
-                           : ImportDisposition::Missing;
+                if (!rpc.dispatchSifManImport(call.ordinal, cpu))
+                    return ImportDisposition::Missing;
+                if (call.ordinal == 32u && cpu.gpr[2] != 0u && cpu.gpr[6] != 0u)
+                {
+                    pendingGuestCallbacks.emplace(
+                        totalCycles + kSifDmaCompletionCycles,
+                        ScheduledGuestCallback{cpu.gpr[6], cpu.gpr[28], cpu.gpr[7]});
+                }
+                return ImportDisposition::Handled;
             }
             if (iequals(call.library, "vblank") && vblank.dispatchImport(call.ordinal, cpu, totalCycles))
                 return ImportDisposition::Handled;
@@ -535,6 +556,14 @@ namespace ps2x::iop::detail
                 {
                     if (callback.function != 0u)
                     {
+                        if (std::getenv("PS2X_TRACE_IOP_SCHEDULER"))
+                        {
+                            std::ostringstream message;
+                            message << "[iop:callback] function=0x" << std::hex << callback.function
+                                    << " argument=0x" << callback.argument << std::dec
+                                    << " cycle=" << totalCycles;
+                            log(LogLevel::Info, message.str());
+                        }
                         (void)callFunction(callback.function,
                                            callback.argument,
                                            0u,
@@ -563,6 +592,7 @@ namespace ps2x::iop::detail
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     timrman.serviceDue(totalCycles, *this);
+                    kernel.serviceAlarms(totalCycles, *this);
                     IopThread *next = kernel.beginNextReady(totalCycles);
                     if (!next)
                     {
@@ -578,6 +608,16 @@ namespace ps2x::iop::detail
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
+                    if (std::getenv("PS2X_TRACE_IOP_SCHEDULER") && (++tracedTimeslices % 128u) == 0u)
+                    {
+                        std::ostringstream message;
+                        message << "[iop:thread] id=" << next->id << " priority=" << next->priority
+                                << " state=" << static_cast<int>(next->state)
+                                << " pc=0x" << std::hex << next->cpu.pc << std::dec
+                                << " wait=" << next->waitId << " cycle=" << totalCycles
+                                << " callbacks=" << pendingGuestCallbacks.size();
+                        log(LogLevel::Info, message.str());
+                    }
                     if (totalCycles == before)
                         ++totalCycles;
                 }
@@ -591,6 +631,25 @@ namespace ps2x::iop::detail
         ModuleLoadResult loadImage(std::string path, std::span<const uint8_t> image, const void *arguments, uint32_t argumentSize)
         {
             ModuleLoadResult result{true, -1, -1};
+            constexpr uint32_t maxArgumentBytes = 64u * 1024u;
+            constexpr size_t maxArguments = 256u;
+            if (argumentSize > maxArgumentBytes || (argumentSize != 0u && !arguments) || path.size() > maxArgumentBytes)
+                return result;
+            std::vector<uint8_t> strings(path.begin(), path.end());
+            strings.push_back(0u);
+            std::vector<uint32_t> argumentOffsets{0u};
+            const auto *payload = static_cast<const uint8_t *>(arguments);
+            for (uint32_t offset = 0u; offset < argumentSize;)
+            {
+                if (argumentOffsets.size() >= maxArguments)
+                    return result;
+                argumentOffsets.push_back(static_cast<uint32_t>(strings.size()));
+                while (offset < argumentSize && payload[offset] != 0u)
+                    strings.push_back(payload[offset++]);
+                strings.push_back(0u);
+                if (offset < argumentSize)
+                    ++offset;
+            }
             const IopImageLoadResult loaded = IopModuleLoader::load(image, memory, moduleCursor);
             moduleCursor = loaded.nextModuleCursor;
             if (!loaded)
@@ -614,19 +673,25 @@ namespace ps2x::iop::detail
             module.entry = loaded.entry;
             module.gp = loaded.gp;
 
-            uint32_t args = 0u;
-            if (arguments && argumentSize)
+            const uint32_t pointerBytes = static_cast<uint32_t>((argumentOffsets.size() + 1u) * sizeof(uint32_t));
+            const uint32_t args = allocate(pointerBytes + static_cast<uint32_t>(strings.size()), 16u);
+            if (args == 0u)
+                return result;
+            writeRam(args + pointerBytes, strings.data(), strings.size());
+            for (size_t i = 0u; i < argumentOffsets.size(); ++i)
+                write32(args + static_cast<uint32_t>(i * sizeof(uint32_t)), args + pointerBytes + argumentOffsets[i]);
+            write32(args + pointerBytes - sizeof(uint32_t), 0u);
+            uint32_t startResult;
+            try
             {
-                args = allocate(argumentSize + 1u, 16u);
-                if (args)
-                {
-                    writeRam(args, arguments, argumentSize);
-                    write8(args + argumentSize, 0u);
-                }
+                startResult = callFunction(module.entry, static_cast<uint32_t>(argumentOffsets.size()), args, 0u, 0u, module.gp);
             }
-            const uint32_t startResult = callFunction(module.entry, argumentSize, args, 0u, 0u, module.gp);
-            if (args)
+            catch (...)
+            {
                 freeAllocation(args);
+                throw;
+            }
+            freeAllocation(args);
             module.resident = startResult == 0u || startResult == 2u;
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);
@@ -662,6 +727,16 @@ namespace ps2x::iop::detail
             return loadImage(tag.str(), image, arguments, argumentSize);
         }
 
+        ModuleLoadResult loadModuleIopBuffer(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+        {
+            std::vector<uint8_t> image;
+            if (!IopModuleLoader::readElfFromIop(memory, iopAddress, image))
+                return {true, -1, -1};
+            std::ostringstream tag;
+            tag << "iop-buffer@0x" << std::hex << iopAddress;
+            return loadImage(tag.str(), image, arguments, argumentSize);
+        }
+
         bool stopModule(int32_t moduleId, int32_t *result)
         {
             auto it = modules.find(moduleId);
@@ -683,6 +758,7 @@ namespace ps2x::iop::detail
         IopSysmem sysmem;
         IopKernel kernel;
         IopCdvd cdvd;
+        uint64_t tracedTimeslices = 0u;
         IopVblank vblank;
         IopRpcBridge rpc;
         IopSysclib sysclib;
@@ -734,6 +810,11 @@ namespace ps2x::iop::detail
         return m_impl->loadModuleBuffer(guestAddress, arguments, argumentSize);
     }
 
+    ModuleLoadResult IopEmulator::loadModuleIopBuffer(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+    {
+        return m_impl->loadModuleIopBuffer(iopAddress, arguments, argumentSize);
+    }
+
     bool IopEmulator::stopModule(int32_t moduleId, int32_t *result)
     {
         return m_impl->stopModule(moduleId, result);
@@ -761,6 +842,11 @@ namespace ps2x::iop::detail
     void IopEmulator::onSifTransfer(const SifTransfer &transfer)
     {
         m_impl->rpc.onSifTransfer(transfer);
+    }
+
+    bool IopEmulator::receiveSifCommand(uint32_t commandId, const void *packet, size_t packetSize)
+    {
+        return m_impl->rpc.receiveSifCommand(commandId, packet, packetSize, *m_impl);
     }
 
     uint32_t IopEmulator::allocateMemory(uint32_t size, uint32_t alignment)

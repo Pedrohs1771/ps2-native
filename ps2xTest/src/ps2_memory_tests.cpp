@@ -410,6 +410,63 @@ void register_ps2_memory_tests()
             t.IsTrue(matches, "MPG num=0 should copy 2048 bytes into VU1 code memory");
         });
 
+        tc.Run("VIF1 command and payload parsing survives arbitrary fragment boundaries", [](TestCase &t)
+        {
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x30u, 0u, 0u));
+            for (unsigned i = 0; i < 4; ++i) appendU32(packet, 0x10203040u + i);
+            appendU32(packet, makeVifCmd(0x31u, 0u, 0u));
+            for (unsigned i = 0; i < 4; ++i) appendU32(packet, 0x50607080u + i);
+            appendU32(packet, makeVifCmd(0x20u, 0u, 0u));
+            appendU32(packet, 0xE4E4E4E4u);
+            appendU32(packet, makeVifCmd(0x4Au, 2u, 3u));
+            appendU32(packet, 0x8000033Cu); appendU32(packet, 0x000002FFu);
+            appendU32(packet, 0x8000033Cu); appendU32(packet, 0x400002FFu);
+            appendU32(packet, makeVifCmd(0x01u, 0u, 0x0302u)); // CL=2, WL=3; row fill.
+            appendU32(packet, makeVifCmd(0x6Cu, 5u, 8u));
+            for (unsigned i = 0; i < 16; ++i) appendU32(packet, 0x4A000000u + i);
+            appendU32(packet, makeVifCmd(0x07u, 0u, 0x4BCu));
+            PS2Memory reference;
+            t.IsTrue(reference.initialize(), "Initializes the complete-stream oracle");
+            reference.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+            for (const uint32_t width : {1u, 3u, 7u, 8u, 15u, 16u, 31u})
+            {
+                PS2Memory fragmented;
+                t.IsTrue(fragmented.initialize(), "Initializes independent fragmented memory");
+                for (uint32_t offset = 0; offset < packet.size(); offset += width)
+                    fragmented.processVIF1Data(packet.data() + offset,
+                        std::min<uint32_t>(width, static_cast<uint32_t>(packet.size()) - offset));
+                t.IsTrue(std::memcmp(reference.getVU1Code(), fragmented.getVU1Code(), PS2_VU1_CODE_SIZE) == 0,
+                         "MPG fragments preserve microcode and cannot become VIF commands");
+                t.IsTrue(std::memcmp(reference.getVU1Data(), fragmented.getVU1Data(), PS2_VU1_DATA_SIZE) == 0,
+                         "UNPACK fragments preserve vectors and fill-write cycles");
+                t.IsTrue(std::memcmp(reference.vif1_regs.row, fragmented.vif1_regs.row, sizeof(reference.vif1_regs.row)) == 0,
+                         "STROW continues across fragments");
+                t.IsTrue(std::memcmp(reference.vif1_regs.col, fragmented.vif1_regs.col, sizeof(reference.vif1_regs.col)) == 0,
+                         "STCOL continues across fragments");
+                t.Equals(fragmented.vif1_regs.mask, reference.vif1_regs.mask, "STMASK continues across fragments");
+                t.Equals(fragmented.vif1_regs.mark, 0x4BCu, "Commands after a fragmented payload remain aligned");
+            }
+        });
+
+        tc.Run("VIF1 reset discards partial UNPACK state and isolates memory instances", [](TestCase &t)
+        {
+            PS2Memory first, second;
+            t.IsTrue(first.initialize() && second.initialize(), "Initializes independent memories");
+            const uint32_t unpack = makeVifCmd(0x6Cu, 2u, 0u);
+            const uint32_t mark = makeVifCmd(0x07u, 0u, 0x389u);
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&unpack), 4u);
+            second.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(second.vif1_regs.mark, 0x389u, "One memory's incomplete payload cannot consume another memory's command");
+            first.writeIORegister(0x10003C10u, 1u);
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(first.vif1_regs.mark, 0x389u, "FBRST discards incomplete non-DIRECT payloads");
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&unpack), 4u);
+            t.IsTrue(first.initialize(), "Reinitializes a pending UNPACK");
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(first.vif1_regs.mark, 0x389u, "Reinitialization releases incomplete payload state");
+        });
+
         tc.Run("VIF UNPACK num zero uploads 256 vectors", [](TestCase &t)
         {
             PS2Memory mem;
@@ -565,6 +622,63 @@ void register_ps2_memory_tests()
             t.Equals(y, 0x22222222u, "TOPS-adjusted y");
             t.Equals(z, 0x33333333u, "TOPS-adjusted z");
             t.Equals(w, 0x44444444u, "TOPS-adjusted w");
+        });
+
+        tc.Run("VIF1 V2 UNPACK duplicates XY into ZW for every component width", [](TestCase &t)
+        {
+            for (unsigned vl = 0; vl < 3; ++vl)
+                for (bool unsignedData : {false, true})
+                {
+                    PS2Memory mem;
+                    t.IsTrue(mem.initialize(), "memory initializes");
+                    std::memset(mem.getVU1Data(), 0xA5, PS2_VU1_DATA_SIZE);
+                    const unsigned width = 4u >> vl;
+                    const uint32_t rawX = width == 4 ? 0x80000002u : width == 2 ? 0x8002u : 0x82u;
+                    const uint32_t rawY = 7u;
+                    std::vector<uint8_t> packet;
+                    appendU32(packet, makeVifCmd(static_cast<uint8_t>(0x64u + vl), 1u,
+                                                 unsignedData ? 0x4000u : 0u));
+                    for (const uint32_t value : {rawX, rawY})
+                        for (unsigned byte = 0; byte < width; ++byte)
+                            packet.push_back(static_cast<uint8_t>(value >> (byte * 8u)));
+                    while (packet.size() % 4u) packet.push_back(0u);
+                    mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+                    uint32_t result[4];
+                    std::memcpy(result, mem.getVU1Data(), sizeof(result));
+                    uint32_t x = rawX;
+                    if (!unsignedData && width < 4)
+                        x = width == 2 ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(rawX)))
+                                       : static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(rawX)));
+                    t.Equals(result[0], x, "V2 X is extended from input");
+                    t.Equals(result[1], rawY, "V2 Y is extended from input");
+                    t.Equals(result[2], x, "V2 Z repeats X rather than old VU memory");
+                    t.Equals(result[3], rawY, "V2 W repeats Y rather than old VU memory");
+                }
+        });
+
+        tc.Run("VIF1 V4-5 expands packed color lanes and ignores STMOD", [](TestCase &t)
+        {
+            for (unsigned mode = 0; mode < 4; ++mode)
+            {
+                PS2Memory mem;
+                t.IsTrue(mem.initialize(), "memory initializes");
+                std::vector<uint8_t> packet;
+                appendU32(packet, makeVifCmd(0x30u, 0u, 0u));
+                for (uint32_t lane : {11u, 22u, 33u, 44u}) appendU32(packet, lane);
+                appendU32(packet, makeVifCmd(0x05u, 0u, static_cast<uint16_t>(mode)));
+                appendU32(packet, makeVifCmd(0x6Fu, 2u, 0u));
+                // RGB=(1,2,3), A=1, then every packed bit set.
+                appendU32(packet, 0xFFFF8C41u);
+                mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+                uint32_t lanes[8];
+                std::memcpy(lanes, mem.getVU1Data(), sizeof(lanes));
+                const uint32_t expected[] = {8u, 16u, 24u, 128u, 248u, 248u, 248u, 128u};
+                for (unsigned lane = 0; lane < 8; ++lane)
+                    t.Equals(lanes[lane], expected[lane], "packed color expands into GS channel units");
+                for (unsigned lane = 0; lane < 4; ++lane)
+                    t.Equals(mem.vif1_regs.row[lane], (lane + 1u) * 11u,
+                             "V4-5 must not apply or mutate STMOD ROW");
+            }
         });
 
         tc.Run("VIF STCYCL skip mode advances destination by CL when CL>=WL", [](TestCase &t)
@@ -2112,7 +2226,7 @@ void register_ps2_memory_tests()
             t.IsTrue(imageOk, "VIF1 DIRECT image should update GS VRAM through GIF path2");
         });
 
-        tc.Run("VIF1 DIRECT image tag can continue with raw image qwords", [](TestCase &t)
+        tc.Run("VIF1 DIRECT image transfer resumes across input buffers", [](TestCase &t)
         {
             PS2Memory mem;
             t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
@@ -2138,7 +2252,7 @@ void register_ps2_memory_tests()
             gs.writeRegister(GS_REG_TRXDIR, 0ull);
 
             std::vector<uint8_t> packet;
-            appendU32(packet, makeVifCmd(0x50u, 0u, 1u)); // DIRECT 1 QW payload: GIF IMAGE tag only.
+            appendU32(packet, makeVifCmd(0x50u, 0u, 2u)); // Header and image are both DIRECT payload.
             appendU64(packet, makeGifTag(1u, GIF_FMT_IMAGE, 0u, true));
             appendU64(packet, 0ull);
             for (uint32_t i = 0; i < 16u; ++i)
@@ -2146,7 +2260,8 @@ void register_ps2_memory_tests()
                 packet.push_back(static_cast<uint8_t>(0xA0u + i));
             }
 
-            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+            mem.processVIF1Data(packet.data(), 20u); // Command and IMAGE header.
+            mem.processVIF1Data(packet.data() + 20u, static_cast<uint32_t>(packet.size() - 20u));
 
             const uint8_t *vramOut = mem.getGSVRAM();
             bool imageOk = true;
@@ -2187,7 +2302,7 @@ void register_ps2_memory_tests()
             gs.writeRegister(GS_REG_TRXDIR, 0ull);
 
             std::vector<uint8_t> packet;
-            appendU32(packet, makeVifCmd(0x50u, 0u, 3u)); // PACKED tag + A+D + IMAGE tag.
+            appendU32(packet, makeVifCmd(0x50u, 0u, 4u)); // PACKED tag + A+D + IMAGE tag + pixels.
             appendU64(packet, makeGifTag(1u, GIF_FMT_PACKED, 1u, false));
             appendU64(packet, 0x0Eull);
             appendU64(packet, 0x8000008000ull); // TEXA, harmless setup preceding the IMAGE tag.
@@ -2197,7 +2312,8 @@ void register_ps2_memory_tests()
             for (uint32_t i = 0; i < 16u; ++i)
                 packet.push_back(static_cast<uint8_t>(0xC0u + i));
 
-            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+            mem.processVIF1Data(packet.data(), 52u); // Split after the IMAGE header.
+            mem.processVIF1Data(packet.data() + 52u, static_cast<uint32_t>(packet.size() - 52u));
 
             const uint8_t *vramOut = mem.getGSVRAM();
             bool imageOk = true;
@@ -2214,6 +2330,59 @@ void register_ps2_memory_tests()
                 }
             }
             t.IsTrue(imageOk, "raw image continuation after packed setup should not be decoded as VIF/GIF registers");
+        });
+
+        tc.Run("VIF1 parses separate DIRECT commands inside an unfinished GIF IMAGE transfer", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "Initializes memory");
+            GS gs;
+            gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
+            GifArbiter arbiter([&](const uint8_t *data, uint32_t size) { gs.processGIFPacket(data, size); });
+            mem.setGifArbiter(&arbiter);
+            gs.writeRegister(GS_REG_BITBLTBUF, (1ull << 16u) | (1ull << 48u));
+            gs.writeRegister(GS_REG_TRXPOS, 0u);
+            gs.writeRegister(GS_REG_TRXREG, 8ull | (1ull << 32u));
+            gs.writeRegister(GS_REG_TRXDIR, 0u);
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x50u, 0u, 1u));
+            appendU64(packet, makeGifTag(2u, GIF_FMT_IMAGE, 0u, true));
+            appendU64(packet, 0u);
+            for (unsigned part = 0u; part < 2u; ++part)
+            {
+                appendU32(packet, 0u); // TTE NOP before each data REF.
+                appendU32(packet, makeVifCmd(part ? 0x51u : 0x50u, 0u, 1u));
+                for (unsigned byte = 0u; byte < 16u; ++byte)
+                    packet.push_back(static_cast<uint8_t>(0xA0u + part * 16u + byte));
+            }
+            appendU32(packet, makeVifCmd(0x07u, 0u, 0x456u));
+            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+            for (uint32_t x = 0u; x < 8u; ++x)
+            {
+                const uint32_t offset = GSPSMCT32::addrPSMCT32(0u, 1u, x, 0u);
+                for (uint32_t byte = 0u; byte < 4u; ++byte)
+                    t.Equals(mem.getGSVRAM()[offset + byte], static_cast<uint8_t>(0xA0u + x * 4u + byte),
+                             "The upload contains pixels without intervening VIF commands");
+            }
+            t.Equals(mem.readIORegister(0x10003C30u), 0x456u, "VIF commands after the image remain in the command stream");
+        });
+
+        tc.Run("VIF1 reset discards a partial DIRECT and isolates memory instances", [](TestCase &t)
+        {
+            PS2Memory first, second;
+            t.IsTrue(first.initialize() && second.initialize(), "Initializes independent memories");
+            const uint32_t direct = makeVifCmd(0x50u, 0u, 2u);
+            const uint32_t mark = makeVifCmd(0x07u, 0u, 0x789u);
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&direct), 4u);
+            second.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(second.readIORegister(0x10003C30u), 0x789u, "A partial transfer belongs to one memory instance");
+            first.writeIORegister(0x10003C10u, 1u);
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(first.readIORegister(0x10003C30u), 0x789u, "FBRST restores VIF command parsing");
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&direct), 4u);
+            t.IsTrue(first.initialize(), "Reinitializes a memory with a pending transfer");
+            first.processVIF1Data(reinterpret_cast<const uint8_t *>(&mark), 4u);
+            t.Equals(first.readIORegister(0x10003C30u), 0x789u, "Reinitialization releases stale stream state");
         });
 
         tc.Run("unaligned accesses throw", [](TestCase &t)

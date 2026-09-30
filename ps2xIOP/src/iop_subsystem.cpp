@@ -20,6 +20,17 @@ namespace ps2x::iop
             : host(hostRef),
               emulator(hostRef)
         {
+            coreServices.emplace_back(detail::createLoadfileService(
+                host,
+                [this](std::string_view path, const void *arguments, uint32_t argumentSize)
+                {
+                    return loadModule(path, arguments, argumentSize);
+                },
+                [this](uint32_t address, const void *arguments, uint32_t argumentSize)
+                {
+                    return emulator.loadModuleIopBuffer(address, arguments, argumentSize);
+                }));
+            coreServices.emplace_back(detail::createCdvdfsvService(host));
             coreServices.emplace_back(detail::createMcservService(host));
             coreServices.emplace_back(detail::createDbcmanService(host));
             coreServices.emplace_back(detail::createLibSdService(host));
@@ -78,6 +89,37 @@ namespace ps2x::iop
             host.log(hle ? LogLevel::Info : LogLevel::Warning, message);
         }
 
+        ModuleLoadResult loadModule(std::string_view path, const void *arguments, uint32_t argumentSize)
+        {
+            const ParsedPs2Path parsed = parsePs2Path(path);
+            if (!parsed)
+                return {true, -1, -1};
+
+            if (parsed.device != Ps2PathDevice::Rom0)
+            {
+                ModuleLoadResult physical = emulator.loadModule(path, arguments, argumentSize);
+                if (physical.moduleId > 0)
+                {
+                    moduleManager.observePhysicalLoad(physical.moduleId, path);
+                    rebuildRoutes();
+                    return physical;
+                }
+            }
+
+            ModuleLoadResult hle = moduleManager.loadHle(path);
+            if (hle.moduleId > 0)
+            {
+                rebuildRoutes();
+                if (parsed.device != Ps2PathDevice::Rom0)
+                    recordLoadOutcome(path, true);
+            }
+            else
+            {
+                recordLoadOutcome(path, false);
+            }
+            return hle;
+        }
+
         IopHost &host;
         detail::ServiceList coreServices;
         std::unordered_map<uint32_t, detail::IopService *> routes;
@@ -110,44 +152,26 @@ namespace ps2x::iop
             }
         }
         m_impl->emulator.reset();
+        (void)m_impl->moduleManager.loadHle("rom0:LOADFILE");
+        (void)m_impl->moduleManager.loadHle("rom0:CDVDMAN");
+        (void)m_impl->moduleManager.loadHle("rom0:CDVDFSV");
         m_impl->refreshServiceModuleKeys();
         m_impl->rebuildRoutes();
     }
 
     ModuleLoadResult IopSubsystem::loadModule(std::string_view path, const void *arguments, uint32_t argumentSize)
     {
-        const ParsedPs2Path parsed = parsePs2Path(path);
-        if (!parsed)
-            return {true, -1, -1};
-
-        if (parsed.device != Ps2PathDevice::Rom0)
-        {
-            ModuleLoadResult physical = m_impl->emulator.loadModule(path, arguments, argumentSize);
-            if (physical.moduleId > 0)
-            {
-                m_impl->moduleManager.observePhysicalLoad(physical.moduleId, path);
-                m_impl->rebuildRoutes();
-                return physical;
-            }
-        }
-
-        ModuleLoadResult hle = m_impl->moduleManager.loadHle(path);
-        if (hle.moduleId > 0)
-        {
-            m_impl->rebuildRoutes();
-            if (parsed.device != Ps2PathDevice::Rom0)
-                m_impl->recordLoadOutcome(path, true);
-        }
-        else
-        {
-            m_impl->recordLoadOutcome(path, false);
-        }
-        return hle;
+        return m_impl->loadModule(path, arguments, argumentSize);
     }
 
     ModuleLoadResult IopSubsystem::loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
     {
         return m_impl->emulator.loadModuleBuffer(guestAddress, arguments, argumentSize);
+    }
+
+    ModuleLoadResult IopSubsystem::loadModuleIopBuffer(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+    {
+        return m_impl->emulator.loadModuleIopBuffer(iopAddress, arguments, argumentSize);
     }
 
     bool IopSubsystem::stopModule(int32_t moduleId, int32_t *result)
@@ -222,6 +246,11 @@ namespace ps2x::iop
     uint32_t IopSubsystem::allocateMemory(uint32_t size, uint32_t alignment)
     {
         return m_impl->emulator.allocateMemory(size, alignment);
+    }
+
+    bool IopSubsystem::receiveSifCommand(uint32_t commandId, const void *packet, size_t packetSize)
+    {
+        return m_impl->emulator.receiveSifCommand(commandId, packet, packetSize);
     }
 
     bool IopSubsystem::freeMemory(uint32_t address)

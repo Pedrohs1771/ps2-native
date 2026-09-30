@@ -64,6 +64,17 @@ namespace iop_test
         void audioCommand(uint32_t, uint32_t, GuestBuffer, GuestBuffer) override { ++audioCalls; }
         std::string hostPath(HostPathKind) const override { return {}; }
         std::string translateGuestPath(std::string_view path) const override { return std::string(path); }
+        bool searchCdFile(std::string_view path, uint32_t layer, CdFileInfo &result) override
+        {
+            searchedPath = std::string(path);
+            searchedLayer = layer;
+            if (!cdSearchAvailable || layer != 0u || path != cdSearchPath)
+                return false;
+            result.lsn = 0x00123450u;
+            result.sizeBytes = 0x00056789u;
+            std::memcpy(result.name.data(), "IOPRP271.IMG", 12u);
+            return true;
+        }
         uint64_t openHostFile(std::string_view) override { return file.empty() ? 0u : 1u; }
         bool hostFileSize(uint64_t handle, uint64_t &size) const override
         {
@@ -110,10 +121,14 @@ namespace iop_test
         std::vector<uint8_t> file;
         std::vector<std::string> logs;
         std::vector<MemoryCardRequest> cardCalls;
+        std::string cdSearchPath = "cdrom0:\\MODULES\\IOPRP271.IMG;1";
+        std::string searchedPath;
+        uint32_t searchedLayer = 0xFFFFFFFFu;
         mutable size_t guestReads = 0u;
         size_t guestWrites = 0u;
         size_t audioCalls = 0u;
         int32_t initResult = 0;
+        bool cdSearchAvailable = false;
         uint32_t nextHandle = 0x1000u;
     };
 

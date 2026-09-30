@@ -3,8 +3,10 @@
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_vu1_detail.h"
+#include "ps2_vu1_diagnostics.h"
 
 #include <algorithm>
+#include <bit>
 #include <cfenv>
 #include <cmath>
 #include <cstdio>
@@ -244,8 +246,8 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
         return operand(m_state.acc[lane]);
     };
 
-    const long double q = operand(m_state.q);
-    const long double i = operand(m_state.i);
+    const auto q = [&] { return operand(m_state.q); };
+    const auto i = [&] { return operand(m_state.i); };
 
     if (op < 0x3Cu)
     {
@@ -264,34 +266,34 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
             switch (op)
             {
             case 0x1Cu:
-                result = vs(component) * q;
+                result = vs(component) * q();
                 break;
             case 0x1Eu:
-                result = vs(component) * i;
+                result = vs(component) * i();
                 break;
             case 0x20u:
-                result = vs(component) + q;
+                result = vs(component) + q();
                 break;
             case 0x21u:
-                result = acc(component) + vs(component) * q;
+                result = acc(component) + vs(component) * q();
                 break;
             case 0x22u:
-                result = vs(component) + i;
+                result = vs(component) + i();
                 break;
             case 0x23u:
-                result = acc(component) + vs(component) * i;
+                result = acc(component) + vs(component) * i();
                 break;
             case 0x24u:
-                result = vs(component) - q;
+                result = vs(component) - q();
                 break;
             case 0x25u:
-                result = acc(component) - vs(component) * q;
+                result = acc(component) - vs(component) * q();
                 break;
             case 0x26u:
-                result = vs(component) - i;
+                result = vs(component) - i();
                 break;
             case 0x27u:
-                result = acc(component) - vs(component) * i;
+                result = acc(component) - vs(component) * i();
                 break;
             case 0x28u:
                 result = vs(component) + vt(component);
@@ -339,34 +341,34 @@ bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
         switch (special)
         {
         case 0x1Cu:
-            result = vs(component) * q;
+            result = vs(component) * q();
             break;
         case 0x1Eu:
-            result = vs(component) * i;
+            result = vs(component) * i();
             break;
         case 0x20u:
-            result = vs(component) + q;
+            result = vs(component) + q();
             break;
         case 0x21u:
-            result = acc(component) + vs(component) * q;
+            result = acc(component) + vs(component) * q();
             break;
         case 0x22u:
-            result = vs(component) + i;
+            result = vs(component) + i();
             break;
         case 0x23u:
-            result = acc(component) + vs(component) * i;
+            result = acc(component) + vs(component) * i();
             break;
         case 0x24u:
-            result = vs(component) - q;
+            result = vs(component) - q();
             break;
         case 0x25u:
-            result = acc(component) - vs(component) * q;
+            result = acc(component) - vs(component) * q();
             break;
         case 0x26u:
-            result = vs(component) - i;
+            result = vs(component) - i();
             break;
         case 0x27u:
-            result = acc(component) - vs(component) * i;
+            result = acc(component) - vs(component) * i();
             break;
         case 0x28u:
             result = vs(component) + vt(component);
@@ -1005,10 +1007,10 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
                     ready = std::max(ready, m_vfReady[access.reg][component]);
             }
         }
-        for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
+        for (uint32_t mask = usage->viRead & 0xFFFEu; mask != 0u; mask &= mask - 1u)
         {
-            if ((usage->viRead & (1u << reg)) != 0u)
-                ready = std::max(ready, m_viReady[reg]);
+            const auto reg = std::countr_zero(mask);
+            ready = std::max(ready, m_viReady[reg]);
         }
         for (uint32_t component = 0; component < 4u; ++component)
         {
@@ -1063,10 +1065,12 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
         }
     }
 
-    for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
+    const uint32_t viLatency = decoded.lowerUsage.viLatency != 0u
+                                   ? decoded.lowerUsage.viLatency : decoded.lowerUsage.latency;
+    for (uint32_t mask = decoded.lowerUsage.viWrite & 0xFFFEu; mask != 0u; mask &= mask - 1u)
     {
-        if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
-            m_viReady[reg] = m_cycle + (decoded.lowerUsage.viLatency != 0u ? decoded.lowerUsage.viLatency : decoded.lowerUsage.latency);
+        const auto reg = std::countr_zero(mask);
+        m_viReady[reg] = m_cycle + viLatency;
     }
     for (uint32_t component = 0; component < 4u; ++component)
     {
@@ -1605,6 +1609,10 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][1] = 0.0f;
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
+    auto capture = ps2_vu_diagnostics::Capture::request(m_unit == Unit::VU1, m_state,
+        vuCode, codeSize, vuData, dataSize, m_cycle,
+        memory ? memory->getVU1CodeGeneration() : 0u, maxCycles);
+    ps2_vu_diagnostics::Scope captureScope(capture.get());
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -1632,6 +1640,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     const int previousRoundingMode = std::fegetround();
     const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
     const uint64_t budgetEnd = m_cycle + maxCycles;
+    auto *capture = m_unit == Unit::VU1 ? ps2_vu_diagnostics::active : nullptr;
     bool programEnded = false;
     while (m_cycle < budgetEnd && !m_stopRequested)
     {
@@ -1660,17 +1669,19 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         if (m_cycle >= budgetEnd)
             break;
 
-        uint8_t writtenVi = 0u;
-        int32_t oldVi = 0;
-        for (uint32_t reg = 1; reg < 16u; ++reg)
-        {
-            if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
-            {
-                writtenVi = static_cast<uint8_t>(reg);
-                oldVi = m_state.vi[reg];
-                break;
-            }
-        }
+        if (capture) capture->record(m_state, m_cycle, decoded.lower, decoded.upper);
+
+        const uint32_t viWriteMask = decoded.lowerUsage.viWrite & 0xFFFEu;
+        const uint8_t writtenVi = viWriteMask != 0u
+                                     ? static_cast<uint8_t>(std::countr_zero(viWriteMask)) : 0u;
+        const int32_t oldVi = writtenVi != 0u ? m_state.vi[writtenVi] : 0;
+
+        // Consecutive writes to one VI retain its value from before the
+        // entire chain for the next branch. Keep the actual oldVi separately:
+        // it is still needed when staging the architectural write pipeline.
+        const int32_t branchOldVi = writtenVi != 0u &&
+            decoded.lowerUsage.delaysNextBranchRead && m_viBranchBackupValid &&
+            m_viBranchBackupReg == writtenVi ? m_viBranchBackupValue : oldVi;
 
         const VfAccess upperWrite = decoded.upperUsage.vfWrite;
         const VfAccess lowerWrite = decoded.lowerUsage.vfWrite;
@@ -1695,7 +1706,9 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             execUpper(decoded.upper);
             float immediate = 0.0f;
             std::memcpy(&immediate, &decoded.lower, sizeof(immediate));
-            m_state.i = normalizeOperand(immediate);
+            // LOI stores all bits. Arithmetic normalizes its operand when
+            // consumed, while MIN/MAX use raw values to build GIF fields.
+            m_state.i = immediate;
         }
         else if (decoded.upperVfShadowReg != 0u)
         {
@@ -1765,7 +1778,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
 
         markPairWrites(decoded);
         if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
-            recordViWriteForBranch(writtenVi, oldVi);
+            recordViWriteForBranch(writtenVi, branchOldVi);
 
         m_state.vf[0][0] = 0.0f;
         m_state.vf[0][1] = 0.0f;
@@ -1833,6 +1846,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         m_pendingHaltT = false;
     }
     m_state.cycles = m_cycle;
+    if (capture) capture->finish(m_state, vuData, dataSize, programEnded, m_stopRequested);
     if (useVuRounding && previousRoundingMode != -1)
         std::fesetround(previousRoundingMode);
 }

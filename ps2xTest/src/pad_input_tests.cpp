@@ -2,6 +2,7 @@
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
 #include "Stubs/Pad.h"
+#include "ps2_pad_keyboard.h"
 
 #include <vector>
 #include <cstdint>
@@ -60,6 +61,7 @@ namespace
     uint16_t readButtons(const std::vector<uint8_t> &rdram)
     {
         const uint8_t *data = rdram.data() + kPadDataAddr;
+        // libpad's padButtonStatus.btns is a little-endian u16 at offset 2.
         return static_cast<uint16_t>(data[2] | (data[3] << 8));
     }
 }
@@ -68,6 +70,51 @@ void register_pad_input_tests()
 {
     MiniTest::Case("PadInput", [](TestCase &tc)
                    {
+        tc.Run("host keyboard WASD drives analog axes without pressing the D-pad", [](TestCase &t)
+               {
+            // All combinations include diagonals and opposing keys on each axis.
+            for (unsigned keys = 0; keys < 16; ++keys)
+            {
+                auto state = ps2_pad_detail::readKeyboardState([keys](int key) {
+                    return (key == KEY_A && (keys & 1u)) ||
+                           (key == KEY_D && (keys & 2u)) ||
+                           (key == KEY_W && (keys & 4u)) ||
+                           (key == KEY_S && (keys & 8u));
+                });
+                const int horizontal = int((keys & 2u) != 0) - int((keys & 1u) != 0);
+                const int vertical = int((keys & 8u) != 0) - int((keys & 4u) != 0);
+                t.Equals(state.lx, static_cast<uint8_t>(horizontal < 0 ? 0 : horizontal > 0 ? 255 : 128),
+                         "A/D must drive the left analog X axis, with opposing keys neutral");
+                t.Equals(state.ly, static_cast<uint8_t>(vertical < 0 ? 0 : vertical > 0 ? 255 : 128),
+                         "W/S must drive the left analog Y axis, with opposing keys neutral");
+                t.Equals(state.buttons, uint16_t(0xFFFFu), "WASD must not press D-pad buttons");
+            }
+        });
+
+        tc.Run("host keyboard preserves arrow and button mappings independently of analog axes", [](TestCase &t)
+               {
+            struct KeyCase { int key; uint16_t mask; };
+            const KeyCase cases[] = {
+                {KEY_UP, kPadBtnUp}, {KEY_DOWN, kPadBtnDown},
+                {KEY_LEFT, kPadBtnLeft}, {KEY_RIGHT, kPadBtnRight},
+                {KEY_X, kPadBtnCross}, {KEY_SPACE, kPadBtnCross},
+                {KEY_C, kPadBtnCircle}, {KEY_ESCAPE, kPadBtnCircle},
+                {KEY_Z, kPadBtnSquare}, {KEY_KP_0, kPadBtnSquare},
+                {KEY_V, kPadBtnTriangle}, {KEY_KP_1, kPadBtnTriangle},
+                {KEY_Q, kPadBtnL1}, {KEY_E, kPadBtnR1},
+                {KEY_LEFT_SHIFT, kPadBtnL2}, {KEY_RIGHT_SHIFT, kPadBtnR2},
+                {KEY_ENTER, kPadBtnStart}, {KEY_TAB, kPadBtnSelect},
+            };
+            for (const auto &entry : cases)
+            {
+                auto state = ps2_pad_detail::readKeyboardState([&entry](int key) { return key == entry.key; });
+                t.Equals(state.buttons, static_cast<uint16_t>(0xFFFFu ^ entry.mask),
+                         "keyboard buttons must preserve their active-low SDK bits");
+                t.Equals(state.lx, uint8_t(128), "buttons alone must not move the analog X axis");
+                t.Equals(state.ly, uint8_t(128), "buttons alone must not move the analog Y axis");
+            }
+        });
+
         tc.Run("scePadRead uses override state", [](TestCase &t)
                {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);
@@ -136,6 +183,63 @@ void register_pad_input_tests()
                 t.IsTrue((mask & entry.mask) == 0, std::string("button should be active-low: ").append(entry.name));
             }
 
+            ps2_stubs::clearPadOverrideState();
+            closePadPort(ctx, rdram);
+        });
+
+        tc.Run("scePadRead publishes the SDK little-endian button field", [](TestCase &t)
+               {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);
+            R5900Context ctx;
+            ps2_stubs::scePadInit(rdram.data(), &ctx, nullptr);
+            openPadPort(ctx, rdram);
+
+            struct PacketCase { uint16_t pressed; uint8_t low; uint8_t high; };
+            const PacketCase cases[] = {
+                {0x0000u, 0xFFu, 0xFFu},
+                {0x0008u, 0xF7u, 0xFFu}, // Start
+                {0x0800u, 0xFFu, 0xF7u}, // R1
+                {0x4000u, 0xFFu, 0xBFu}, // Cross
+                {0x0010u, 0xEFu, 0xFFu}, // Up
+                {0x4008u, 0xF7u, 0xBFu}, // Cross + Start
+            };
+            for (const auto &entry : cases)
+            {
+                ps2_stubs::setPadOverrideState(static_cast<uint16_t>(0xFFFFu ^ entry.pressed),
+                                               0x80, 0x80, 0x80, 0x80);
+                runPadRead(ctx, rdram);
+                const uint8_t *data = rdram.data() + kPadDataAddr;
+                t.Equals(data[2], entry.low, "scePadRead button byte 2 is the low byte");
+                t.Equals(data[3], entry.high, "scePadRead button byte 3 is the high byte");
+                const uint16_t pressed = static_cast<uint16_t>(0xFFFFu ^
+                    (data[2] | static_cast<uint16_t>(data[3]) << 8));
+                t.Equals(pressed, entry.pressed, "Guest sees the requested buttons without a byte swap");
+            }
+            ps2_stubs::clearPadOverrideState();
+            closePadPort(ctx, rdram);
+        });
+
+        tc.Run("scePadRead separates Start from R1 and Cross from Down in raw consumers", [](TestCase &t)
+               {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);
+            R5900Context ctx;
+            ps2_stubs::scePadInit(rdram.data(), &ctx, nullptr);
+            openPadPort(ctx, rdram);
+            // A byte consumer tests Start in byte 2 and Cross in byte 3.
+            // Reassembling the two bytes in the opposite order in a menu
+            // cannot change the ABI returned to gameplay consumers.
+            for (unsigned bit = 0; bit < 16; ++bit)
+            {
+                const uint16_t pressed = static_cast<uint16_t>(1u << bit);
+                ps2_stubs::setPadOverrideState(static_cast<uint16_t>(0xFFFFu ^ pressed),
+                                               0x80, 0x80, 0x80, 0x80);
+                runPadRead(ctx, rdram);
+                const auto *data = rdram.data() + kPadDataAddr;
+                t.Equals((data[2] & 0x08u) == 0u, pressed == kPadBtnStart,
+                         "raw Start test must not be triggered by R1");
+                t.Equals((data[3] & 0x40u) == 0u, pressed == kPadBtnCross,
+                         "raw Cross test must not be triggered by Down");
+            }
             ps2_stubs::clearPadOverrideState();
             closePadPort(ctx, rdram);
         });

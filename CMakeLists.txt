@@ -13,11 +13,16 @@ project(PS2RetroX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Keep subproject CTest registrations visible from the repository build root,
+# even when the larger ps2xTest target is disabled.
+include(CTest)
+
 option(PS2X_BUILD_RECOMP "Build ps2xRecomp" ON)
 option(PS2X_BUILD_RUNTIME "Build ps2xRuntime" ON)
 option(PS2X_BUILD_ANALYZER "Build ps2xAnalyzer" ON)
 option(PS2X_BUILD_TEST "Build ps2xTest" ON)
 option(PS2X_BUILD_STUDIO "Build ps2xStudio" ON)
+option(PS2X_BUILD_ISO_INSPECTOR "Build the standalone PS2 ISO intake tool" ON)
 
 if(ANDROID)
     message(STATUS "Android target detected, building runtime only")
@@ -25,6 +30,7 @@ if(ANDROID)
     set(PS2X_BUILD_ANALYZER OFF)
     set(PS2X_BUILD_TEST OFF)
     set(PS2X_BUILD_STUDIO OFF)
+    set(PS2X_BUILD_ISO_INSPECTOR OFF)
 endif()
 
 set(PS2X_IS_ARM_TARGET OFF)
@@ -98,4 +104,8 @@ endif()
 
 if(PS2X_BUILD_STUDIO)
     add_subdirectory("ps2xStudio")
+endif()
+
+if(PS2X_BUILD_ISO_INSPECTOR)
+    add_subdirectory("tools/iso_inspect")
 endif()

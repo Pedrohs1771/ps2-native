@@ -8,6 +8,131 @@ namespace
     constexpr uint32_t dbcSid = 0x80001300u;
     constexpr uint32_t dbcVersion = 0x80001363u;
     constexpr uint32_t mcSid = 0x80000400u;
+    constexpr uint32_t loadfileSid = 0x80000006u;
+    constexpr uint32_t cdSearchSid = 0x80000597u;
+
+    void loadfileBootService()
+    {
+        Host host;
+        IopSubsystem iop(host);
+        require(!iop.canBindRpc(loadfileSid), "LOADFILE appeared before an IOP boot/reset");
+
+        iop.reset();
+        require(iop.canBindRpc(loadfileSid), "IOP reset did not register its boot LOADFILE service");
+        require(iop.handleRpc(request(loadfileSid, 0xFFu, 4u)).handled, "LOADFILE version RPC not handled");
+        require(host.word(0x800u) == 0x30303133u, "LOADFILE version reply differs from PS2SDK protocol");
+
+        iop.reset();
+        require(iop.canBindRpc(loadfileSid), "IOP reset failed to restore the boot LOADFILE service");
+    }
+
+    void cdvdfsvBootService()
+    {
+        Host host;
+        IopSubsystem iop(host);
+        require(!iop.canBindRpc(cdSearchSid), "CDVDFSV appeared before an IOP boot/reset");
+
+        iop.reset();
+        require(iop.canBindRpc(cdSearchSid), "IOP reset did not register its CDVDFSV search service");
+    }
+
+    void cdvdfsvSearchFileRpc()
+    {
+        Host host;
+        host.cdSearchAvailable = true;
+        IopSubsystem iop(host);
+        iop.reset();
+
+        std::array<uint8_t, 292> packet{};
+        const uint32_t previousLsn = 0x00ABCDEFu;
+        std::memcpy(packet.data(), &previousLsn, sizeof(previousLsn));
+        const char path[] = "cdrom0:\\MODULES\\IOPRP271.IMG;1";
+        std::memcpy(packet.data() + 32u, path, sizeof(path));
+        const uint32_t destination = 0x3000u;
+        std::memcpy(packet.data() + 288u, &destination, sizeof(destination));
+        require(host.writeGuest(0x1000u, packet.data(), packet.size()), "CDVDFSV request setup failed");
+
+        auto search = request(cdSearchSid, 0u, 4u);
+        search.send = {0x1000u, static_cast<uint32_t>(packet.size())};
+        search.receive.address = 0x2000u;
+        require(iop.handleRpc(search).handled, "CDVDFSV search RPC was not handled");
+        require(host.word(0x2000u) == 1u, "CDVDFSV search did not report a hit");
+        require(host.searchedPath == path && host.searchedLayer == 0u, "CDVDFSV did not forward path/layer");
+        require(host.word(destination) == 0x00123450u, "CDVDFSV file LSN differs");
+        require(host.word(destination + 4u) == 0x00056789u, "CDVDFSV file size differs");
+        require(std::memcmp(host.guest.data() + destination + 8u, "IOPRP271.IMG", 12u) == 0,
+                "CDVDFSV file name differs");
+    }
+
+    void cdvdfsvExtendedSearchFileRpc()
+    {
+        for (const uint32_t size : {296u, 300u})
+        {
+            Host host;
+            host.cdSearchAvailable = true;
+            host.cdSearchPath = "\\LUSIZES.TBL;1";
+            IopSubsystem iop(host);
+            iop.reset();
+
+            std::array<uint8_t, 300> packet{};
+            const uint32_t previousLsn = 0x00ABCDEFu;
+            std::memcpy(packet.data(), &previousLsn, sizeof(previousLsn));
+            std::memcpy(packet.data() + 36u, host.cdSearchPath.c_str(), host.cdSearchPath.size() + 1u);
+            const uint32_t destination = 0x1000u;
+            std::memcpy(packet.data() + 292u, &destination, sizeof(destination));
+            require(host.writeGuest(destination, packet.data(), size), "extended search setup failed");
+
+            auto search = request(cdSearchSid, 0u, 4u);
+            search.send = {destination, size};
+            search.receive.address = 0x2000u;
+            require(iop.handleRpc(search).handled, "extended CDVDFSV search not handled");
+            require(host.word(0x2000u) == 1u, "extended CDVDFSV search did not report a hit");
+            require(host.searchedPath == host.cdSearchPath && host.searchedLayer == 0u,
+                    "extended search path/layer decoded incorrectly");
+            require(host.word(destination) == 0x00123450u, "extended search did not replace in-place LSN");
+            require(host.word(destination + 4u) == 0x00056789u, "extended file size differs");
+            require(host.word(destination + 32u) == 0u, "extended metadata flag must be initialized");
+            require(std::memcmp(host.guest.data() + destination + 36u, host.cdSearchPath.c_str(),
+                                host.cdSearchPath.size() + 1u) == 0, "metadata write clobbered search path");
+        }
+    }
+
+    void cdvdfsvRejectsUnknownSearchLayouts()
+    {
+        Host host;
+        host.cdSearchAvailable = true;
+        IopSubsystem iop(host);
+        iop.reset();
+        for (const uint32_t size : {291u, 293u, 295u, 297u, 299u, 301u})
+        {
+            auto search = request(cdSearchSid, 0u, 4u);
+            search.send = {0x1000u, size};
+            search.receive.address = 0x2000u;
+            require(iop.handleRpc(search).handled, "malformed search must get a bounded failure reply");
+            require(host.word(0x2000u) == 0u, "unknown search layout reported a hit");
+        }
+        require(host.searchedPath.empty(), "unknown layout must not issue a host file search");
+    }
+
+    void loadfileLoadsKnownRomModule()
+    {
+        Host host;
+        IopSubsystem iop(host);
+        iop.reset();
+
+        std::array<uint8_t, 512> packet{};
+        const char path[] = "rom0:LIBSD";
+        std::memcpy(packet.data() + 8u, path, sizeof(path));
+        require(host.writeGuest(0x1000u, packet.data(), packet.size()), "LOADFILE request setup failed");
+
+        auto load = request(loadfileSid, 0u, 8u);
+        load.send = {0x1000u, static_cast<uint32_t>(packet.size())};
+        load.receive.address = 0x2000u;
+        require(iop.handleRpc(load).handled, "LOADFILE module-load RPC not handled");
+        require(static_cast<int32_t>(host.word(0x2000u)) > 0, "LOADFILE did not return the HLE module ID");
+        require(host.word(0x2004u) == 0u, "LOADFILE HLE module start result changed");
+        require(iop.canBindRpc(0x80000701u), "LOADFILE module operation did not activate LIBSD");
+    }
 
     void dbcDefault()
     {
@@ -292,6 +417,12 @@ namespace
 int main()
 {
     const Test tests[] = {
+        {"LOADFILE boot service registration and version", loadfileBootService},
+        {"CDVDFSV search service is registered after IOP reset", cdvdfsvBootService},
+        {"CDVDFSV search RPC writes sceCdlFILE metadata", cdvdfsvSearchFileRpc},
+        {"CDVDFSV supports extended 296/300-byte search packets", cdvdfsvExtendedSearchFileRpc},
+        {"CDVDFSV rejects unknown search packet layouts", cdvdfsvRejectsUnknownSearchLayouts},
+        {"LOADFILE module-load RPC uses IOP module loader", loadfileLoadsKnownRomModule},
         {"DBCMAN default and dormant route", dbcDefault},
         {"DBCMAN reboot and reconfiguration", dbcResetAndReconfigure},
         {"DBCMAN bounded whole-word response", dbcReplyBounds},

@@ -1,4 +1,6 @@
 #include "ps2_iop_host.h"
+#include "ps2_iop_transport.h"
+#include "Kernel/Stubs/CD.h"
 
 #include "ps2_runtime.h"
 #include "ps2_stubs.h"
@@ -17,6 +19,23 @@
 #if !defined(_WIN32)
 #include <sys/types.h>
 #endif
+
+bool PS2IopTransport::sendCommand(PS2Runtime *runtime, uint8_t *rdram, R5900Context *context,
+                                  uint32_t commandId, const void *packet, size_t packetSize)
+{
+    if (!runtime) return false;
+    auto scope = runtime->m_iopHost->enterCall(context, rdram);
+    return runtime->m_iopSubsystem->receiveSifCommand(commandId, packet, packetSize);
+}
+
+ps2x::iop::ModuleLoadResult PS2IopTransport::loadIopBuffer(
+    PS2Runtime *runtime, uint8_t *rdram, R5900Context *context,
+    uint32_t address, const void *arguments, uint32_t argumentSize)
+{
+    if (!runtime) return {true, -1, -1};
+    auto scope = runtime->m_iopHost->enterCall(context, rdram);
+    return runtime->m_iopSubsystem->loadModuleIopBuffer(address, arguments, argumentSize);
+}
 
 PS2IopHostAdapter::CallScope::CallScope(PS2IopHostAdapter &owner, R5900Context *context, uint8_t *rdram)
     : m_lock(owner.m_callMutex),
@@ -294,6 +313,22 @@ std::string PS2IopHostAdapter::translateGuestPath(std::string_view path) const
     if (!m_runtime.vfs().resolveHostPath(path, mounts, hostPath))
         return {};
     return hostPath.string();
+}
+
+bool PS2IopHostAdapter::searchCdFile(std::string_view path,
+                                     uint32_t layer,
+                                     ps2x::iop::CdFileInfo &result)
+{
+    ps2_stubs::CdSearchResult found{};
+    if (!ps2_stubs::findCdFileForIop(path, layer, found))
+        return false;
+
+    result = {};
+    result.lsn = found.lsn;
+    result.sizeBytes = found.sizeBytes;
+    result.name = found.name;
+    result.date = found.date;
+    return true;
 }
 
 uint64_t PS2IopHostAdapter::openHostFile(std::string_view path)

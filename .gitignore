@@ -23,3 +23,22 @@ android/app/.cxx/
 android/local.properties
 android/.gradle/ 
 .idea/
+
+# Python host-side ISO/package builder
+__pycache__/
+*.py[cod]
+
+# Local runtime outputs and disc images
+ps2_log.txt
+*.iso
+*.ISO
+*.chd
+*.cso
+*.zso
+
+# Local credentials and Android signing keys
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore

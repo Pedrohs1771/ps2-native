@@ -2,8 +2,11 @@
 
 #include "iop_memory.h"
 #include "../iop_emulator_const.h"
+#include "../services/iop_rpc.h"
 
 #include <algorithm>
+#include <limits>
+#include <vector>
 
 namespace ps2x::iop::detail
 {
@@ -28,6 +31,9 @@ namespace ps2x::iop::detail
         m_threads.clear();
         m_semaphores.clear();
         m_eventFlags.clear();
+        m_alarms.clear();
+        m_nextAlarmGeneration = 1u;
+        m_servicingAlarms = false;
         m_nextThreadId = 1;
         m_nextSemaphoreId = 1;
         m_nextEventFlagId = 1;
@@ -267,12 +273,36 @@ namespace ps2x::iop::detail
             m_memory.write32(cpu.gpr[4] + 4u, static_cast<uint32_t>(currentCycle >> 32u));
             setV0(0);
             return true;
-        case 35:
-        case 36:
-        case 37:
-        case 38:
+        case 35: // SetAlarm
+        case 36: // iSetAlarm
+        {
+            uint32_t clock[2]{};
+            const uint32_t function = cpu.gpr[5];
+            if (!m_memory.readRam(cpu.gpr[4], clock, sizeof(clock)) || function == 0u ||
+                (function & 3u) != 0u || IopMemory::physicalAddress(function) >= IopMemory::RamSize)
+            {
+                setV0(-1);
+                return true;
+            }
+            const uint64_t key = (static_cast<uint64_t>(function) << 32u) | cpu.gpr[6];
+            if (m_alarms.contains(key))
+            {
+                setV0(-104); // KE_FOUND_HANDLER
+                return true;
+            }
+            const uint64_t ticks = std::max<uint64_t>(1u, (static_cast<uint64_t>(clock[1]) << 32u) | clock[0]);
+            const uint64_t deadline = currentCycle > UINT64_MAX - ticks ? UINT64_MAX : currentCycle + ticks;
+            m_alarms.emplace(key, Alarm{m_nextAlarmGeneration++, deadline, function, cpu.gpr[6], cpu.gpr[28]});
             setV0(0);
             return true;
+        }
+        case 37: // CancelAlarm
+        case 38: // iCancelAlarm
+        {
+            const uint64_t key = (static_cast<uint64_t>(cpu.gpr[4]) << 32u) | cpu.gpr[5];
+            setV0(m_alarms.erase(key) != 0u ? 0 : -105); // KE_NOTFOUND_HANDLER
+            return true;
+        }
         case 39: // USec2SysClock
         {
             const uint64_t cycles = (static_cast<uint64_t>(cpu.gpr[4]) * kIopClockHz) / 1'000'000ull;
@@ -699,12 +729,41 @@ namespace ps2x::iop::detail
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
     {
         uint64_t nextWake = fallback;
+        for (const auto &[key, alarm] : m_alarms)
+            nextWake = std::min(nextWake, alarm.deadline);
         for (const auto &[id, thread] : m_threads)
         {
             if (thread.state == IopThreadState::Delay)
                 nextWake = std::min(nextWake, thread.wakeCycle);
         }
         return nextWake;
+    }
+
+    void IopKernel::serviceAlarms(uint64_t currentCycle, IopGuestExecutor &executor)
+    {
+        if (m_servicingAlarms)
+            return;
+        struct Guard { bool &busy; ~Guard() { busy = false; } } guard{m_servicingAlarms};
+        m_servicingAlarms = true;
+        std::vector<std::pair<uint64_t, Alarm>> due;
+        for (const auto &[key, alarm] : m_alarms)
+            if (alarm.deadline <= currentCycle)
+                due.emplace_back(key, alarm);
+        for (const auto &[key, alarm] : due)
+        {
+            const auto before = m_alarms.find(key);
+            if (before == m_alarms.end() || before->second.generation != alarm.generation)
+                continue;
+            const uint32_t repeat = executor.executeGuestFunctionWithBudget(
+                alarm.function, alarm.argument, 0u, 0u, 0u, alarm.gp, 100000u);
+            const auto after = m_alarms.find(key);
+            if (after == m_alarms.end() || after->second.generation != alarm.generation)
+                continue; // The callback may cancel or replace its own alarm.
+            if (repeat == 0u)
+                m_alarms.erase(after);
+            else
+                after->second.deadline = currentCycle > UINT64_MAX - repeat ? UINT64_MAX : currentCycle + repeat;
+        }
     }
 
     void IopKernel::endTimeslice(IopThread &thread, uint32_t returnSentinel)
@@ -734,6 +793,14 @@ namespace ps2x::iop::detail
 
     void IopKernel::terminateThreadsInRange(uint32_t base, uint32_t size)
     {
+        for (auto alarm = m_alarms.begin(); alarm != m_alarms.end();)
+        {
+            const uint32_t function = IopMemory::physicalAddress(alarm->second.function);
+            if (function >= base && function - base < size)
+                alarm = m_alarms.erase(alarm);
+            else
+                ++alarm;
+        }
         for (auto &[id, thread] : m_threads)
         {
             const uint32_t pc = IopMemory::physicalAddress(thread.cpu.pc);

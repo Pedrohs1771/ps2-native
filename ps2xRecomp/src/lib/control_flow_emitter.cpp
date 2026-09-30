@@ -16,12 +16,14 @@ namespace ps2recomp
                                            const Instruction &branchInst,
                                            const Instruction &delaySlot,
                                            const Function &function,
+                                           const std::vector<Instruction> &functionInstructions,
                                            const CodeGenerator::AnalysisResult &analysisResult,
                                            std::string delaySlotOverride)
         : m_gen(generator),
           m_branchInst(branchInst),
           m_delaySlot(delaySlot),
           m_function(function),
+          m_functionInstructions(functionInstructions),
           m_analysisResult(analysisResult),
           m_delaySlotOverride(std::move(delaySlotOverride))
     {
@@ -56,6 +58,58 @@ namespace ps2recomp
     bool ControlFlowEmitter::isInternalTarget(uint32_t target) const
     {
         return m_analysisResult.entryPoints.contains(target);
+    }
+
+    bool ControlFlowEmitter::isPureCountdownLoop(uint32_t target,
+                                                uint32_t &counterReg,
+                                                uint32_t &sentinelReg) const
+    {
+        if (m_branchInst.opcode != OPCODE_BNE ||
+            target >= branchPc() ||
+            !isInternalTarget(target) ||
+            !isInternalTarget(fallthroughPc()) ||
+            !m_delaySlotOverride.empty() ||
+            !isGuestNop(m_delaySlot) ||
+            m_branchInst.rs == 0u ||
+            m_branchInst.rs == m_branchInst.rt)
+        {
+            return false;
+        }
+
+        const auto instructionAt = [this](uint32_t address) -> const Instruction *
+        {
+            const auto it = std::lower_bound(m_functionInstructions.begin(),
+                                             m_functionInstructions.end(),
+                                             address,
+                                             [](const Instruction &instruction, uint32_t candidate)
+                                             {
+                                                 return instruction.address < candidate;
+                                             });
+            return it != m_functionInstructions.end() && it->address == address ? &*it : nullptr;
+        };
+
+        const Instruction *const decrement = instructionAt(target);
+        if (!decrement ||
+            decrement->opcode != OPCODE_ADDIU ||
+            decrement->rt != m_branchInst.rs ||
+            decrement->rs != m_branchInst.rs ||
+            static_cast<int32_t>(decrement->simmediate) != -1)
+        {
+            return false;
+        }
+
+        for (uint32_t address = target + 4u; address < branchPc(); address += 4u)
+        {
+            const Instruction *const instruction = instructionAt(address);
+            if (!instruction || !isGuestNop(*instruction))
+            {
+                return false;
+            }
+        }
+
+        counterReg = m_branchInst.rs;
+        sentinelReg = m_branchInst.rt;
+        return true;
     }
 
     bool ControlFlowEmitter::isLikelyBranch() const
@@ -177,6 +231,26 @@ namespace ps2recomp
         m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, target);
         if (target <= sourcePc && !isCallLikeEdge())
         {
+            uint32_t counterReg = 0u;
+            uint32_t sentinelReg = 0u;
+            if (isPureCountdownLoop(target, counterReg, sentinelReg))
+            {
+                m_ss << fmt::format(
+                    "{}extern bool ps2xFastForwardGuestCountdownLoop(PS2Runtime*, R5900Context*, uint32_t, uint32_t, uint32_t, uint32_t) noexcept;\n",
+                    indent);
+                m_ss << fmt::format(
+                    "{}if (ps2xFastForwardGuestCountdownLoop(runtime, ctx, {}u, {}u, 0x{:X}u, 0x{:X}u)) {{\n",
+                    indent,
+                    counterReg,
+                    sentinelReg,
+                    target,
+                    fallthroughPc());
+                m_ss << fmt::format("{}    if (ctx->pc == 0x{:X}u) {{\n", indent, fallthroughPc());
+                m_ss << fmt::format("{}        goto label_{:x};\n", indent, fallthroughPc());
+                m_ss << fmt::format("{}    }}\n", indent);
+                m_ss << fmt::format("{}    return;\n", indent);
+                m_ss << fmt::format("{}}}\n", indent);
+            }
             m_ss << fmt::format("{}if (runtime->eeCheckpointDue()) {{\n", indent);
             m_ss << fmt::format("{}    return;\n", indent);
             m_ss << fmt::format("{}}}\n", indent);

@@ -320,21 +320,24 @@ namespace ps2x::iop::detail
         return ok;
     }
 
-    bool IopModuleLoader::readElfFromGuest(IopHost &host, uint32_t guestAddress, std::vector<uint8_t> &bytes)
+    template <typename Reader>
+    static bool readElf(Reader read, uint32_t guestAddress, size_t maxSize, std::vector<uint8_t> &bytes)
     {
         Elf32Ehdr header{};
-        if (!host.readGuest(guestAddress, &header, sizeof(header)) || !validElfHeader(header))
+        if (!read(guestAddress, &header, sizeof(header)) || !validElfHeader(header) ||
+            (header.phnum && header.phentsize < sizeof(Elf32Phdr)) ||
+            (header.shnum && header.shentsize < sizeof(Elf32Shdr)))
             return false;
 
         uint64_t required = sizeof(header);
         required = std::max<uint64_t>(required, static_cast<uint64_t>(header.phoff) + static_cast<uint64_t>(header.phentsize) * header.phnum);
         required = std::max<uint64_t>(required, static_cast<uint64_t>(header.shoff) + static_cast<uint64_t>(header.shentsize) * header.shnum);
 
-        if (required > kMaxImageSize)
+        if (required > maxSize)
             return false; // Should we log an error here? TODO check later
 
         bytes.resize(static_cast<size_t>(required));
-        if (!host.readGuest(guestAddress, bytes.data(), bytes.size()))
+        if (!read(guestAddress, bytes.data(), bytes.size()))
             return false;
 
         if (header.shnum != 0u && header.shentsize >= sizeof(Elf32Shdr))
@@ -360,11 +363,26 @@ namespace ps2x::iop::detail
                 required = std::max<uint64_t>(required, static_cast<uint64_t>(program.offset) + program.filesz);
             }
         }
-        if (required > kMaxImageSize)
+        if (required > maxSize)
             return false;
 
         bytes.resize(static_cast<size_t>(required));
-        return host.readGuest(guestAddress, bytes.data(), bytes.size());
+        return read(guestAddress, bytes.data(), bytes.size());
+    }
+
+    bool IopModuleLoader::readElfFromGuest(IopHost &host, uint32_t address, std::vector<uint8_t> &bytes)
+    {
+        return readElf([&host](uint32_t at, void *destination, size_t size)
+                       { return host.readGuest(at, destination, size); }, address, kMaxImageSize, bytes);
+    }
+
+    bool IopModuleLoader::readElfFromIop(const IopMemory &memory, uint32_t address, std::vector<uint8_t> &bytes)
+    {
+        if (address >= IopMemory::RamSize)
+            return false;
+        return readElf([&memory](uint32_t at, void *destination, size_t size)
+                       { return memory.readRam(at, destination, size); },
+                       address, IopMemory::RamSize - address, bytes);
     }
 
     IopImageLoadResult IopModuleLoader::load(std::span<const uint8_t> image, IopMemory &memory, uint32_t moduleCursor)

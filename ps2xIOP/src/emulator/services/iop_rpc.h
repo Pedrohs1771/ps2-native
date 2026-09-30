@@ -50,6 +50,8 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request, IopGuestExecutor &executor);
         void onSifTransfer(const SifTransfer &transfer);
+        [[nodiscard]] bool receiveSifCommand(uint32_t commandId, const void *packet, size_t packetSize,
+                                              IopGuestExecutor &executor);
         void removeServersInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] bool hasServer(uint32_t sid) const noexcept;
@@ -72,6 +74,11 @@ namespace ps2x::iop::detail
         IopMemory &m_memory;
         IopKernel &m_kernel;
         std::unordered_map<uint32_t, RpcServer> m_servers;
+        struct CommandHandler { uint32_t function; uint32_t argument; uint32_t gp; };
+        struct CommandBuffer { uint32_t address = 0u; uint32_t count = 0u; uint32_t gp = 0u; };
+        CommandBuffer m_commandBuffers[2]{};
+        std::unordered_map<uint32_t, CommandHandler> m_commandHandlers;
+        std::unordered_map<uint32_t, uint32_t> m_commandRegisters;
         uint32_t m_nextDmaId = 1u;
         bool m_sifInitialized = false;
     };

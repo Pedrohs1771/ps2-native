@@ -26,6 +26,38 @@ namespace
         return toLowerAscii(normalizePs2PathSuffix(path));
     }
 
+    std::string normalizeCompiledEeModuleKey(const std::string &path)
+    {
+        std::string key = path;
+        std::replace(key.begin(), key.end(), '\\', '/');
+        key = toLowerAscii(std::move(key));
+        const std::size_t colon = key.find(':');
+        if (colon != std::string::npos)
+        {
+            key.erase(0, colon + 1u);
+        }
+        while (!key.empty() && key.front() == '/')
+        {
+            key.erase(key.begin());
+        }
+
+        std::size_t componentStart = 0u;
+        while (componentStart <= key.size())
+        {
+            const std::size_t componentEnd = key.find('/', componentStart);
+            const std::size_t end = componentEnd == std::string::npos ? key.size() : componentEnd;
+            std::string component = key.substr(componentStart, end - componentStart);
+            component = stripIsoVersionSuffix(std::move(component));
+            key.replace(componentStart, end - componentStart, component);
+            if (componentEnd == std::string::npos)
+            {
+                break;
+            }
+            componentStart += component.size() + 1u;
+        }
+        return key;
+    }
+
     uint64_t hashGuestBytesFnv1a64(const uint8_t *rdram, uint32_t guestAddr, size_t byteCount)
     {
         constexpr uint64_t kOffset = 1469598103934665603ull;
@@ -268,6 +300,7 @@ namespace
     }
 
     bool loadElfIntoGuestMemory(const std::string &hostPath,
+                                const std::string &moduleKey,
                                 uint8_t *rdram,
                                 PS2Runtime *runtime,
                                 const std::string &sectionName,
@@ -300,15 +333,25 @@ namespace
             return false;
         }
 
-        bool loadedAny = false;
-        const bool loadAll = sectionName.empty() || toLowerAscii(sectionName) == "all";
-        static uint32_t secFilterLogCount = 0;
-        if (!loadAll && secFilterLogCount < 8u)
+        if (!sectionName.empty() && toLowerAscii(sectionName) != "all")
         {
-            RUNTIME_LOG("[SifLoadElfPart] section filter \"" << sectionName
-                      << "\" requested; loading PT_LOAD segments only." << std::endl);
-            ++secFilterLogCount;
+            errorOut = "partial SifLoadElfPart section loading is unsupported; refusing to load the full ELF";
+            return false;
         }
+
+        struct PendingLoadSegment
+        {
+            Elf32ProgramHeader header{};
+            uint32_t destinationOffset = 0u;
+            bool scratchpad = false;
+            std::vector<uint8_t> bytes;
+        };
+
+        std::vector<PendingLoadSegment> pendingSegments;
+        std::vector<PS2Runtime::ExecutableCodeRange> executableRanges;
+        uint64_t stagedPayloadBytes = 0u;
+        constexpr uint64_t kMaxStagedElfPayloadBytes =
+            static_cast<uint64_t>(PS2_RAM_SIZE) * 2u + PS2_SCRATCHPAD_SIZE;
 
         for (uint32_t i = 0; i < header.phnum; ++i)
         {
@@ -331,6 +374,15 @@ namespace
             }
 
             const uint64_t memSize64 = static_cast<uint64_t>(ph.memsz);
+            const uint64_t executableEnd64 = static_cast<uint64_t>(ph.vaddr) + memSize64;
+            if (runtime && (ph.flags & 0x1u) != 0u &&
+                executableEnd64 > std::numeric_limits<uint32_t>::max())
+            {
+                errorOut = "ELF executable address range overflows 32-bit EE address space";
+                return false;
+            }
+            PendingLoadSegment segment;
+            segment.header = ph;
             if (runtime && ph.vaddr >= PS2_SCRATCHPAD_BASE && ph.vaddr < (PS2_SCRATCHPAD_BASE + PS2_SCRATCHPAD_SIZE))
             {
                 const uint32_t scratchOffset = runtime->memory().translateAddress(ph.vaddr);
@@ -339,20 +391,8 @@ namespace
                     errorOut = "ELF scratchpad segment out of range";
                     return false;
                 }
-
-                uint8_t *dest = runtime->memory().getScratchpad() + scratchOffset;
-                if (ph.filesz > 0u)
-                {
-                    if (!readFileBlockAt(file, ph.offset, dest, ph.filesz))
-                    {
-                        errorOut = "failed to read ELF segment payload";
-                        return false;
-                    }
-                }
-                if (ph.memsz > ph.filesz)
-                {
-                    std::memset(dest + ph.filesz, 0, ph.memsz - ph.filesz);
-                }
+                segment.destinationOffset = scratchOffset;
+                segment.scratchpad = true;
             }
             else
             {
@@ -362,28 +402,61 @@ namespace
                     errorOut = "ELF RDRAM segment out of range";
                     return false;
                 }
-
-                uint8_t *dest = rdram + physAddr;
-                if (ph.filesz > 0u)
-                {
-                    if (!readFileBlockAt(file, ph.offset, dest, ph.filesz))
-                    {
-                        errorOut = "failed to read ELF segment payload";
-                        return false;
-                    }
-                }
-                if (ph.memsz > ph.filesz)
-                {
-                    std::memset(dest + ph.filesz, 0, ph.memsz - ph.filesz);
-                }
+                segment.destinationOffset = physAddr;
             }
 
-            loadedAny = true;
+            stagedPayloadBytes += ph.filesz;
+            if (stagedPayloadBytes > kMaxStagedElfPayloadBytes)
+            {
+                errorOut = "ELF loadable payload exceeds the bounded staging limit";
+                return false;
+            }
+            segment.bytes.resize(ph.filesz);
+            if (ph.filesz > 0u &&
+                !readFileBlockAt(file, ph.offset, segment.bytes.data(), ph.filesz))
+            {
+                errorOut = "failed to read ELF segment payload";
+                return false;
+            }
+            pendingSegments.push_back(std::move(segment));
         }
 
-        if (!loadedAny)
+        if (pendingSegments.empty())
         {
             errorOut = "ELF has no loadable segments";
+            return false;
+        }
+
+        // Validate and stage the complete image before changing guest memory.
+        // That keeps a truncated later segment from leaving half-loaded code
+        // behind while dispatch still sees an older module's function map.
+        for (const PendingLoadSegment &segment : pendingSegments)
+        {
+            const Elf32ProgramHeader &ph = segment.header;
+            uint8_t *destination = segment.scratchpad
+                ? runtime->memory().getScratchpad() + segment.destinationOffset
+                : rdram + segment.destinationOffset;
+            if (!segment.bytes.empty())
+            {
+                std::memcpy(destination, segment.bytes.data(), segment.bytes.size());
+            }
+            if (ph.memsz > ph.filesz)
+            {
+                std::memset(destination + ph.filesz, 0, ph.memsz - ph.filesz);
+            }
+
+            if (runtime && (ph.flags & 0x1u) != 0u)
+            {
+                const uint32_t codeEnd = static_cast<uint32_t>(static_cast<uint64_t>(ph.vaddr) + ph.memsz);
+                runtime->memory().registerCodeRegion(ph.vaddr, codeEnd);
+                executableRanges.push_back({ph.vaddr, codeEnd});
+            }
+        }
+
+        if (runtime && !executableRanges.empty() &&
+            !runtime->activateLoadedEeModule(moduleKey, executableRanges))
+        {
+            errorOut = "failed to register the loaded EE executable module";
             return false;
         }
 
@@ -425,9 +498,21 @@ namespace
             return -1;
         }
 
+        GuestExecData *guestExec = nullptr;
+        if (execDataAddr != 0u)
+        {
+            guestExec = getEeGuestStruct<GuestExecData>(rdram, execDataAddr);
+            if (!guestExec)
+            {
+                return -1;
+            }
+        }
+
         GuestExecData execData{};
         std::string loadError;
-        if (!loadElfIntoGuestMemory(hostPath, rdram, runtime, sectionName, execData, loadError))
+        const std::string moduleKey = normalizeCompiledEeModuleKey(ps2Path);
+        if (moduleKey.empty() ||
+            !loadElfIntoGuestMemory(hostPath, moduleKey, rdram, runtime, sectionName, execData, loadError))
         {
             static uint32_t logCount = 0;
             if (logCount < 16u)
@@ -445,13 +530,8 @@ namespace
         }
         execData.sp = getRegU32(ctx, 29);
 
-        if (execDataAddr != 0u)
+        if (guestExec)
         {
-            GuestExecData *guestExec = reinterpret_cast<GuestExecData *>(getMemPtr(rdram, execDataAddr));
-            if (!guestExec)
-            {
-                return -1;
-            }
             std::memcpy(guestExec, &execData, sizeof(execData));
         }
 

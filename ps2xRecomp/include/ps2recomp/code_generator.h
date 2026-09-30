@@ -43,12 +43,19 @@ namespace ps2recomp
         std::string generateFunction(const Function &function, const std::vector<Instruction> &instructions, const bool &useHeaders);
         std::string generateFunctionRegistration(const std::vector<Function> &functions, const std::map<uint32_t, std::string> &stubs);
         std::string handleBranchDelaySlots(const Instruction &branchInst, const Instruction &delaySlot,
-                                           const Function &function, const AnalysisResult &analysisResult);
+                                           const Function &function,
+                                           const std::vector<Instruction> &functionInstructions,
+                                           const AnalysisResult &analysisResult);
         std::string handleBranchDelaySlots(const Instruction &branchInst, const Instruction &delaySlot,
-                                           const Function &function, const AnalysisResult &analysisResult,
+                                           const Function &function,
+                                           const std::vector<Instruction> &functionInstructions,
+                                           const AnalysisResult &analysisResult,
                                            std::string delaySlotOverride);
 
         void setRenamedFunctions(const std::unordered_map<uint32_t, std::string> &renames);
+        void setModuleIdentity(std::vector<std::string> moduleKeys,
+                               std::string symbolPrefix,
+                               bool emitDenseFunctionTable);
         void setBootstrapInfo(const BootstrapInfo &info);
         void setRelocationCallNames(const std::unordered_map<uint32_t, std::string> &callNames);
         void setConfiguredJumpTables(const std::vector<JumpTable> &jumpTables);
@@ -66,6 +73,9 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::string> m_relocationCallNames;
         std::unordered_map<uint32_t, std::vector<uint32_t>> m_configJumpTableTargetsByAddress;
         std::unordered_map<uint32_t, std::vector<uint32_t>> m_resumeEntryTargetsByOwner;
+        std::vector<std::string> m_moduleKeys;
+        std::string m_moduleSymbolPrefix;
+        bool m_moduleEmitDenseFunctionTable = true;
         const std::vector<Section>& m_sections;
         BootstrapInfo m_bootstrapInfo;
         bool m_emitInstructionComments = true;

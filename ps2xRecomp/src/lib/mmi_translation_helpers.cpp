@@ -8,6 +8,32 @@
 
 namespace ps2recomp
 {
+    namespace
+    {
+        // The two 64-bit banks form the 128-bit HI and LO registers. Halfword
+        // products are distributed as LO={p0,p1,p4,p5}, HI={p2,p3,p6,p7}.
+        std::string emitPackedHalfMultiply(const Instruction &inst, char accumulation)
+        {
+            const std::string update = accumulation == '+' ?
+                "lo = _mm_add_epi32(lo, _mm_set_epi64x(ctx->lo1, ctx->lo));\n"
+                "hi = _mm_add_epi32(hi, _mm_set_epi64x(ctx->hi1, ctx->hi));\n" :
+                accumulation == '-' ?
+                "lo = _mm_sub_epi32(_mm_set_epi64x(ctx->lo1, ctx->lo), lo);\n"
+                "hi = _mm_sub_epi32(_mm_set_epi64x(ctx->hi1, ctx->hi), hi);\n" : "";
+            return fmt::format(
+                "{{ __m128i rs = GPR_VEC(ctx, {}), rt = GPR_VEC(ctx, {});\n"
+                "   __m128i low = _mm_mullo_epi16(rs, rt), high = _mm_mulhi_epi16(rs, rt);\n"
+                "   __m128i first = _mm_unpacklo_epi16(low, high), last = _mm_unpackhi_epi16(low, high);\n"
+                "   __m128i lo = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(first), _mm_castsi128_ps(last), _MM_SHUFFLE(1,0,1,0)));\n"
+                "   __m128i hi = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(first), _mm_castsi128_ps(last), _MM_SHUFFLE(3,2,3,2)));\n"
+                "   {}"
+                "   ctx->lo = _mm_cvtsi128_si64(lo); ctx->lo1 = _mm_cvtsi128_si64(_mm_srli_si128(lo, 8));\n"
+                "   ctx->hi = _mm_cvtsi128_si64(hi); ctx->hi1 = _mm_cvtsi128_si64(_mm_srli_si128(hi, 8));\n"
+                "   SET_GPR_VEC(ctx, {}, _mm_unpacklo_epi64(_mm_unpacklo_epi32(lo, hi), _mm_unpackhi_epi32(lo, hi))); }}",
+                inst.rs, inst.rt, update, inst.rd);
+        }
+    }
+
     std::string CodeGenerator::translateMMI0Instruction(const Instruction &inst)
     {
         uint8_t subfunc = inst.sa;
@@ -105,9 +131,9 @@ namespace ps2recomp
         case MMI1_PEXTUW:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PADDUH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_add_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_adds_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PSUBUH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_sub_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_subs_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PEXTUH:
             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
         case MMI1_PADDUB:
@@ -141,11 +167,11 @@ namespace ps2recomp
         case MMI2_PMSUBW:
             return translatePMSUBW(inst);
         case MMI2_PMFHI:
-            return fmt::format("SET_GPR_U64(ctx, {}, ctx->hi);", rd);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_set_epi64x(ctx->hi1, ctx->hi));", rd);
         case MMI2_PMFLO:
-            return fmt::format("SET_GPR_U64(ctx, {}, ctx->lo);", rd);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_set_epi64x(ctx->lo1, ctx->lo));", rd);
         case MMI2_PINTH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PINTH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_unpacklo_epi16(GPR_VEC(ctx, {}), _mm_srli_si128(GPR_VEC(ctx, {}), 8)));", rd, rt, rs);
         case MMI2_PMULTW:
             return translatePMULTW(inst);
         case MMI2_PDIVW:
@@ -199,7 +225,10 @@ namespace ps2recomp
         case MMI3_PMTLO:
             return translatePMTLO(inst);
         case MMI3_PINTEH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PINTEH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+            return fmt::format(
+                "{{ __m128i mask = _mm_set1_epi32(0xffff); "
+                "__m128i rs = _mm_and_si128(GPR_VEC(ctx, {}), mask), rt = _mm_and_si128(GPR_VEC(ctx, {}), mask); "
+                "SET_GPR_VEC(ctx, {}, _mm_unpacklo_epi16(_mm_packus_epi32(rt, rt), _mm_packus_epi32(rs, rs))); }}", rs, rt, rd);
         case MMI3_PMULTUW:
             return translatePMULTUW(inst);
         case MMI3_PDIVUW:
@@ -225,18 +254,22 @@ namespace ps2recomp
     std::string CodeGenerator::translatePMFHLInstruction(const Instruction &inst)
     {
         uint8_t subfunc = inst.sa;
+        const std::string banks = "{ __m128i lo = _mm_set_epi64x(ctx->lo1, ctx->lo), hi = _mm_set_epi64x(ctx->hi1, ctx->hi); ";
         switch (subfunc)
         {
         case PMFHL_LW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_LW(ctx->hi, ctx->lo));", inst.rd);
+            return banks + fmt::format("SET_GPR_VEC(ctx, {}, _mm_unpacklo_epi64(_mm_unpacklo_epi32(lo, hi), _mm_unpackhi_epi32(lo, hi))); }}", inst.rd);
         case PMFHL_UW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_UW(ctx->hi, ctx->lo));", inst.rd);
+            return banks + fmt::format("SET_GPR_VEC(ctx, {}, _mm_unpackhi_epi64(_mm_unpacklo_epi32(lo, hi), _mm_unpackhi_epi32(lo, hi))); }}", inst.rd);
         case PMFHL_SLW:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_SLW(ctx->hi, ctx->lo));", inst.rd);
+            return fmt::format(
+                "{{ auto clampWord = [](uint64_t hi, uint64_t lo) {{ uint64_t bits = (uint64_t(uint32_t(hi)) << 32) | uint32_t(lo); "
+                "int64_t value; std::memcpy(&value, &bits, 8); return value < -2147483648LL ? int64_t(-2147483648LL) : value > 2147483647LL ? int64_t(2147483647LL) : value; }}; "
+                "SET_GPR_VEC(ctx, {}, _mm_set_epi64x(clampWord(ctx->hi1, ctx->lo1), clampWord(ctx->hi, ctx->lo))); }}", inst.rd);
         case PMFHL_LH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_LH(ctx->hi, ctx->lo));", inst.rd);
+            return banks + fmt::format("__m128i mask = _mm_set1_epi32(0xffff); SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(_mm_packus_epi32(_mm_and_si128(lo, mask), _mm_and_si128(hi, mask)), _MM_SHUFFLE(3,1,2,0))); }}", inst.rd);
         case PMFHL_SH:
-            return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PMFHL_SH(ctx->hi, ctx->lo));", inst.rd);
+            return banks + fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(_mm_packs_epi32(lo, hi), _MM_SHUFFLE(3,1,2,0))); }}", inst.rd);
         default:
             return emitUnhandledInstruction(inst, fmt::format("Unhandled PMFHL instruction: function 0x{:X}", subfunc));
         }
@@ -249,7 +282,12 @@ namespace ps2recomp
         switch (subfunc)
         {
         case PMFHL_LW:
-            return fmt::format("{{ __m128i val = GPR_VEC(ctx, {}); ctx->lo = _mm_extract_epi32(val, 0); ctx->hi = _mm_extract_epi32(val, 1); }}", inst.rs);
+            return fmt::format(
+                "{{ __m128i val = GPR_VEC(ctx, {}); "
+                "ctx->lo = (ctx->lo & 0xffffffff00000000ULL) | uint32_t(_mm_extract_epi32(val, 0)); "
+                "ctx->hi = (ctx->hi & 0xffffffff00000000ULL) | uint32_t(_mm_extract_epi32(val, 1)); "
+                "ctx->lo1 = (ctx->lo1 & 0xffffffff00000000ULL) | uint32_t(_mm_extract_epi32(val, 2)); "
+                "ctx->hi1 = (ctx->hi1 & 0xffffffff00000000ULL) | uint32_t(_mm_extract_epi32(val, 3)); }}", inst.rs);
         default:
             return emitUnhandledInstruction(inst, fmt::format("Unhandled PMTHL instruction: function 0x{:X}", subfunc));
         }
@@ -384,17 +422,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePMADDH(const Instruction &inst)
     {
-        // Parallel multiply add halfword -> results to HI/LO and rd
-        return fmt::format("{{ __m128i prod = _mm_madd_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})); \n" // Packed multiply and add adjacent pairs
-                           "   int32_t p0 = _mm_cvtsi128_si32(prod); \n"
-                           "   int32_t p1 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 4)); \n"
-                           "   int32_t p2 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 8)); \n"
-                           "   int32_t p3 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 12)); \n"
-                           "   int64_t acc = Ps2HiLoToU64(ctx->hi, ctx->lo); \n"
-                           "   acc += (int64_t)p0 + (int64_t)p1 + (int64_t)p2 + (int64_t)p3; \n"
-                           "   ctx->lo = (uint32_t)acc; ctx->hi = (uint32_t)(acc >> 32); \n"
-                           "   SET_GPR_U64(ctx, {}, acc); }}",
-                           inst.rs, inst.rt, inst.rd);
+        return emitPackedHalfMultiply(inst, '+');
     }
 
 
@@ -420,16 +448,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePMSUBH(const Instruction &inst)
     {
-        return fmt::format("{{ __m128i prod = _mm_madd_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})); \n"
-                           "   int32_t p0 = _mm_cvtsi128_si32(prod); \n"
-                           "   int32_t p1 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 4)); \n"
-                           "   int32_t p2 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 8)); \n"
-                           "   int32_t p3 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 12)); \n"
-                           "   int64_t acc = Ps2HiLoToU64(ctx->hi, ctx->lo); \n"
-                           "   acc -= (int64_t)p0 + (int64_t)p1 + (int64_t)p2 + (int64_t)p3; \n"
-                           "   ctx->lo = (uint32_t)acc; ctx->hi = (uint32_t)(acc >> 32); \n"
-                           "   SET_GPR_U64(ctx, {}, acc); }}",
-                           inst.rs, inst.rt, inst.rd);
+        return emitPackedHalfMultiply(inst, '-');
     }
 
 
@@ -454,16 +473,16 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePEXEH(const Instruction &inst)
     {
-        // Swaps halfwords 1<->3 and 5<->7 within the 128-bit register
-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(2,3,0,1)), _MM_SHUFFLE(2,3,0,1)));",
+        // Exchange halfwords 0/2 within each 64-bit lane.
+        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(3,0,1,2)), _MM_SHUFFLE(3,0,1,2)));",
                            inst.rd, inst.rt);
     }
 
 
     std::string CodeGenerator::translatePREVH(const Instruction &inst)
     {
-        // Reverses the order of the 8 halfwords
-        return fmt::format("{{ __m128i mask = _mm_setr_epi8(14,15, 12,13, 10,11, 8,9, 6,7, 4,5, 2,3, 0,1); "
+        // Reverse halfwords independently within each 64-bit lane.
+        return fmt::format("{{ __m128i mask = _mm_setr_epi8(6,7, 4,5, 2,3, 0,1, 14,15, 12,13, 10,11, 8,9); "
                            "SET_GPR_VEC(ctx, {}, PS2_SHUFFLE_EPI8(GPR_VEC(ctx, {}), mask)); }}",
                            inst.rd, inst.rt);
     }
@@ -471,16 +490,7 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePMULTH(const Instruction &inst)
     {
-        // Parallel multiply halfword, results sum to HI/LO and rd
-        return fmt::format("{{ __m128i prod = _mm_madd_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})); \n"
-                           "   int32_t p0 = _mm_cvtsi128_si32(prod); \n"
-                           "   int32_t p1 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 4)); \n"
-                           "   int32_t p2 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 8)); \n"
-                           "   int32_t p3 = _mm_cvtsi128_si32(_mm_srli_si128(prod, 12)); \n"
-                           "   int64_t result = (int64_t)p0 + (int64_t)p1 + (int64_t)p2 + (int64_t)p3; \n"
-                           "   ctx->lo = (uint32_t)result; ctx->hi = (uint32_t)(result >> 32); \n"
-                           "   SET_GPR_U64(ctx, {}, result); }}",
-                           inst.rs, inst.rt, inst.rd);
+        return emitPackedHalfMultiply(inst, '\0');
     }
 
 
@@ -585,13 +595,13 @@ namespace ps2recomp
 
     std::string CodeGenerator::translatePMTHI(const Instruction &inst)
     {
-        return fmt::format("ctx->hi = GPR_U32(ctx, {});", inst.rs); // PMTHI uses standard HI/LO
+        return fmt::format("{{ __m128i val = GPR_VEC(ctx, {}); ctx->hi = _mm_cvtsi128_si64(val); ctx->hi1 = _mm_cvtsi128_si64(_mm_srli_si128(val, 8)); }}", inst.rs);
     }
 
 
     std::string CodeGenerator::translatePMTLO(const Instruction &inst)
     {
-        return fmt::format("ctx->lo = GPR_U32(ctx, {});", inst.rs); // PMTLO uses standard HI/LO
+        return fmt::format("{{ __m128i val = GPR_VEC(ctx, {}); ctx->lo = _mm_cvtsi128_si64(val); ctx->lo1 = _mm_cvtsi128_si64(_mm_srli_si128(val, 8)); }}", inst.rs);
     }
 
 

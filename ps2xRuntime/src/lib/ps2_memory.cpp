@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+void ps2xResetVif1DirectState(PS2Memory *memory);
+
 namespace
 {
     inline void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
@@ -246,6 +248,7 @@ PS2Memory::PS2Memory()
 
 PS2Memory::~PS2Memory()
 {
+    ps2xResetVif1DirectState(this);
     if (m_rdram)
     {
         delete[] m_rdram;
@@ -295,6 +298,7 @@ PS2Memory::~PS2Memory()
 
 bool PS2Memory::initialize(size_t ramSize)
 {
+    ps2xResetVif1DirectState(this);
     auto cleanup = [this]()
     {
         delete[] m_rdram;
@@ -1231,6 +1235,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 std::memset(&vif1_regs, 0, sizeof(vif1_regs));
                 m_vif1PendingPath2ImageQwc = 0u;
                 m_vif1PendingPath2DirectHl = false;
+                ps2xResetVif1DirectState(this);
                 m_path3Masked = false;
                 if (wasPath3Masked)
                     flushMaskedPath3Packets();
@@ -2280,6 +2285,34 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
+    if ((address >= 0x10003800u && address < 0x10003A00u) ||
+        (address >= 0x10003C00u && address < 0x10003E00u))
+    {
+        const auto &vif = address < 0x10003A00u ? vif0_regs : vif1_regs;
+        switch (address & 0x1FFu)
+        {
+        case 0x00u: return vif.stat;
+        case 0x10u: return vif.fbrst;
+        case 0x20u: return vif.err;
+        case 0x30u: return vif.mark;
+        case 0x40u: return vif.cycle;
+        case 0x50u: return vif.mode;
+        case 0x60u: return vif.num;
+        case 0x70u: return vif.mask;
+        case 0x80u: return vif.code;
+        case 0x90u: return vif.itops;
+        case 0xA0u: return vif.base;
+        case 0xB0u: return vif.ofst;
+        case 0xC0u: return vif.tops;
+        case 0xD0u: return vif.itop;
+        case 0xE0u: return vif.top;
+        case 0x100u: case 0x110u: case 0x120u: case 0x130u:
+            return vif.row[((address & 0x1FFu) - 0x100u) / 16u];
+        case 0x140u: case 0x150u: case 0x160u: case 0x170u:
+            return vif.col[((address & 0x1FFu) - 0x140u) / 16u];
+        default: return 0u;
+        }
+    }
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))

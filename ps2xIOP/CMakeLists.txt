@@ -3,6 +3,12 @@ cmake_minimum_required(VERSION 3.21)
 project(ps2xIOP LANGUAGES CXX)
 
 option(PS2X_IOP_BUILD_TESTS "Build ps2xIOP emulator smoke tests" OFF)
+option(PS2X_IOP_DEBUG_SYMBOLS "Emit debug types for IOP scheduling diagnostics" OFF)
+
+if(PS2X_IOP_DEBUG_SYMBOLS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(src/emulator/iop_emulator.cpp src/emulator/core/iop_kernel.cpp
+        PROPERTIES COMPILE_OPTIONS "-g")
+endif()
 
 add_library(ps2_iop STATIC
     src/ps2_path.cpp
@@ -26,6 +32,8 @@ add_library(ps2_iop STATIC
     src/emulator/imports/iop_timrman.cpp
     src/emulator/imports/iop_vblank.cpp
     src/modules/dbcman.cpp
+    src/modules/cdvdfsv.cpp
+    src/modules/loadfile.cpp
     src/modules/libsd.cpp
     src/modules/mcserv.cpp
 )

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include "iso_inspector.hpp"
 
 namespace
 {
@@ -12,6 +13,7 @@ namespace
         uint32_t sizeBytes = 0;
         uint32_t baseLbn = 0;
         uint32_t sectors = 0;
+        bool imageBacked = false;
     };
 
     std::unordered_map<std::string, CdFileEntry> g_cdFilesByKey;
@@ -28,6 +30,10 @@ namespace
     uint32_t g_cdStreamingLbn = 0;
     uint32_t g_cdStreamingEndLbn = 0xFFFFFFFFu;
     bool g_cdInitialized = false;
+    std::filesystem::path g_cdMappingRoot;
+    std::filesystem::path g_cdMappingImage;
+    bool g_cdIsoIndexAttempted = false;
+    std::unordered_map<std::string, CdFileEntry> g_cdIsoFilesByKey;
 
     std::string toLowerAscii(std::string value)
     {
@@ -216,6 +222,54 @@ namespace
         return toLowerAscii(normalizeCdPathNoPrefix(ps2Path));
     }
 
+    void synchronizeCdMappingSource()
+    {
+        const auto root = getCdRootPath();
+        const auto image = getCdImagePath();
+        if (root == g_cdMappingRoot && image == g_cdMappingImage)
+            return;
+        g_cdMappingRoot = root;
+        g_cdMappingImage = image;
+        g_cdFilesByKey.clear();
+        g_cdIsoFilesByKey.clear();
+        g_cdIsoIndexAttempted = false;
+        g_nextPseudoLbn = kCdPseudoLbnStart;
+        g_cdLeafIndex.clear();
+        g_cdLoosePathIndex.clear();
+        g_cdLeafIndexBuilt = false;
+        g_cdImageSizeValid = false;
+    }
+
+    void ensureCdIsoDirectory()
+    {
+        if (g_cdIsoIndexAttempted || g_cdMappingImage.empty())
+            return;
+        g_cdIsoIndexAttempted = true;
+        try
+        {
+            // Directory-only parsing avoids hashing/scanning a whole game at
+            // runtime and preserves actual sectors for speculative disc reads.
+            const auto directory = ps2iso::readIsoDirectory(g_cdMappingImage);
+            for (const auto &item : directory.entries)
+            {
+                if (item.is_directory)
+                    continue;
+                CdFileEntry entry;
+                entry.hostPath = g_cdMappingImage;
+                entry.sizeBytes = item.size;
+                entry.baseLbn = item.extent_lba;
+                entry.sectors = sectorsForBytes(item.size);
+                entry.imageBacked = true;
+                g_cdIsoFilesByKey.emplace(cdPathKey(item.path), std::move(entry));
+            }
+        }
+        catch (const std::exception &error)
+        {
+            std::cerr << "[CD ISO directory] " << error.what()
+                      << "; using extracted-file lookup." << std::endl;
+        }
+    }
+
     std::filesystem::path cdHostPath(const std::string &ps2Path)
     {
         const std::string normalized = normalizeCdPathNoPrefix(ps2Path);
@@ -324,6 +378,7 @@ namespace
 
     bool registerCdFile(const std::string &ps2Path, CdFileEntry &entryOut)
     {
+        synchronizeCdMappingSource();
         const std::string key = cdPathKey(ps2Path);
         if (key.empty())
         {
@@ -335,6 +390,16 @@ namespace
         if (existing != g_cdFilesByKey.end())
         {
             entryOut = existing->second;
+            g_lastCdError = 0;
+            return true;
+        }
+
+        ensureCdIsoDirectory();
+        const auto discEntry = g_cdIsoFilesByKey.find(key);
+        if (discEntry != g_cdIsoFilesByKey.end())
+        {
+            g_cdFilesByKey.emplace(key, discEntry->second);
+            entryOut = discEntry->second;
             g_lastCdError = 0;
             return true;
         }
@@ -434,6 +499,7 @@ namespace
 
     bool readCdSectors(uint32_t lbn, uint32_t sectors, uint8_t *dst, size_t byteCount)
     {
+        synchronizeCdMappingSource();
         for (const auto &[key, entry] : g_cdFilesByKey)
         {
             const uint32_t endLbn = entry.baseLbn + entry.sectors;
@@ -441,6 +507,9 @@ namespace
             {
                 continue;
             }
+
+            if (entry.imageBacked)
+                break; // Physical sectors are read from the configured ISO below.
 
             const uint64_t relativeLbn = static_cast<uint64_t>(lbn - entry.baseLbn);
             const uint64_t offset = relativeLbn * kCdSectorSize;
@@ -475,6 +544,7 @@ namespace
 
     bool isResolvableCdLbn(uint32_t lbn)
     {
+        synchronizeCdMappingSource();
         for (const auto &[key, entry] : g_cdFilesByKey)
         {
             const uint32_t endLbn = entry.baseLbn + entry.sectors;

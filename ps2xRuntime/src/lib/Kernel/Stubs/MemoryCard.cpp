@@ -718,36 +718,13 @@ namespace ps2_stubs
                     ensureMcRootExists(port);
                     const std::string guestQuery =
                         normalizeGuestMcPathLocked(port, rawPath.empty() ? "." : rawPath);
-                    const bool hasWildcard =
-                        guestQuery.find('*') != std::string::npos || guestQuery.find('?') != std::string::npos;
-
                     const std::filesystem::path queryRel =
                         (guestQuery.size() > 1u) ? std::filesystem::path(guestQuery.substr(1)) : std::filesystem::path{};
-
-                    std::filesystem::path parentRel;
-                    std::string pattern;
-                    if (hasWildcard)
-                    {
-                        parentRel = queryRel.parent_path();
-                        pattern = queryRel.filename().string();
-                    }
-                    else
-                    {
-                        const std::filesystem::path queryHostPath = guestMcPathToHostPath(port, guestQuery);
-                        std::error_code queryEc;
-                        if (std::filesystem::exists(queryHostPath, queryEc) && !queryEc &&
-                            std::filesystem::is_directory(queryHostPath, queryEc))
-                        {
-                            parentRel = queryRel;
-                            pattern = "*";
-                        }
-                        else
-                        {
-                            parentRel = queryRel.parent_path();
-                            pattern = queryRel.filename().string();
-                        }
-                    }
-
+                    // libmc searches the final filename component. An exact
+                    // directory name requests its metadata, not its contents;
+                    // callers use "directory/*" to enumerate the children.
+                    const std::filesystem::path parentRel = queryRel.parent_path();
+                    std::string pattern = queryRel.filename().string();
                     if (pattern.empty())
                     {
                         pattern = "*";

@@ -19,6 +19,7 @@ namespace ps2recomp
                            const Instruction &branchInst,
                            const Instruction &delaySlot,
                            const Function &function,
+                           const std::vector<Instruction> &functionInstructions,
                            const CodeGenerator::AnalysisResult &analysisResult,
                            std::string delaySlotOverride = {});
 
@@ -41,6 +42,7 @@ namespace ps2recomp
         const Instruction &m_branchInst;
         const Instruction &m_delaySlot;
         const Function &m_function;
+        const std::vector<Instruction> &m_functionInstructions;
         const CodeGenerator::AnalysisResult &m_analysisResult;
         std::string m_delaySlotOverride;
         std::stringstream m_ss;
@@ -52,6 +54,7 @@ namespace ps2recomp
         bool isLikelyBranch() const;
         bool isCallLikeEdge() const;
         bool isInternalTarget(uint32_t target) const;
+        bool isPureCountdownLoop(uint32_t target, uint32_t &counterReg, uint32_t &sentinelReg) const;
         std::vector<uint32_t> resolvedLocalIndirectTargets() const;
 
         std::string delaySlotCode() const;

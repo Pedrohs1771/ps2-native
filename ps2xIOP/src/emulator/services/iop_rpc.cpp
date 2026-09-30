@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <vector>
 
 namespace ps2x::iop::detail
@@ -21,6 +24,10 @@ namespace ps2x::iop::detail
     void IopRpcBridge::reset()
     {
         m_servers.clear();
+        m_commandHandlers.clear();
+        m_commandBuffers[0] = {};
+        m_commandBuffers[1] = {};
+        m_commandRegisters.clear();
         m_nextDmaId = 1u;
         m_sifInitialized = false;
     }
@@ -39,6 +46,7 @@ namespace ps2x::iop::detail
             setV0(0u);
             return true;
         case 7: // sceSifSetDma
+        case 32: // sceSifSetDmaIntr (same transfer, asynchronous completion callback)
         {
             constexpr uint32_t kDescriptorSize = 16u;
             constexpr uint32_t kMaxDescriptors = 32u;
@@ -141,17 +149,72 @@ namespace ps2x::iop::detail
         {
         case 4: // InitCmd
         case 5:
-        case 6:
-        case 7:
-        case 8:
-        case 9:
-        case 10:
-        case 11:
         case 14: // InitRpc
         case 15:
         case 16:
             setV0(0);
             return true;
+        case 8: // SetCmdBuffer
+        case 9: // SetSysCmdBuffer
+        {
+            auto &buffer = m_commandBuffers[ordinal == 9u ? 1u : 0u];
+            const uint32_t previous = buffer.address;
+            const uint32_t address = IopMemory::physicalAddress(cpu.gpr[4]);
+            const uint32_t count = cpu.gpr[5];
+            if (count > 4096u || address > IopMemory::RamSize ||
+                static_cast<uint64_t>(count) * 8u > IopMemory::RamSize - address ||
+                (count != 0u && address == 0u))
+            {
+                setV0(previous);
+                return true;
+            }
+            buffer = {address, count, cpu.gpr[28]};
+            const uint32_t system = ordinal == 9u ? 0x80000000u : 0u;
+            std::erase_if(m_commandHandlers, [system](const auto &item)
+                          { return (item.first & 0x80000000u) == system; });
+            for (uint32_t i = 0u; i < count; ++i)
+            {
+                const uint32_t function = m_memory.read32(address + i * 8u);
+                if (function != 0u)
+                    m_commandHandlers[system | i] = {function, m_memory.read32(address + i * 8u + 4u), cpu.gpr[28]};
+            }
+            setV0(previous);
+            return true;
+        }
+        case 6: // sceSifGetSreg
+            setV0(m_commandRegisters[cpu.gpr[4]]);
+            return true;
+        case 7: // sceSifSetSreg
+        {
+            const uint32_t previous = m_commandRegisters[cpu.gpr[4]];
+            m_commandRegisters[cpu.gpr[4]] = cpu.gpr[5];
+            setV0(previous);
+            return true;
+        }
+        case 10: // sceSifAddCmdHandler
+        {
+            const auto &buffer = m_commandBuffers[(cpu.gpr[4] >> 31u) & 1u];
+            const uint32_t index = cpu.gpr[4] & 0x7FFFFFFFu;
+            if (buffer.count != 0u)
+            {
+                if (index >= buffer.count) { setV0(0xFFFFFFFFu); return true; }
+                m_memory.write32(buffer.address + index * 8u, cpu.gpr[5]);
+                m_memory.write32(buffer.address + index * 8u + 4u, cpu.gpr[6]);
+            }
+            m_commandHandlers[cpu.gpr[4]] = {cpu.gpr[5], cpu.gpr[6], cpu.gpr[28]};
+            setV0(0);
+            return true;
+        }
+        case 11: // sceSifRemoveCmdHandler
+        {
+            const auto &buffer = m_commandBuffers[(cpu.gpr[4] >> 31u) & 1u];
+            const uint32_t index = cpu.gpr[4] & 0x7FFFFFFFu;
+            if (index < buffer.count)
+                m_memory.write32(buffer.address + index * 8u, 0u);
+            m_commandHandlers.erase(cpu.gpr[4]);
+            setV0(0);
+            return true;
+        }
         case 12: // sceSifSendCmd
         case 13: // isceSifSendCmd
         {
@@ -165,8 +228,9 @@ namespace ps2x::iop::detail
             const uint32_t extraDestination = m_memory.read32(stackPointer + 16u);
             const int32_t signedExtraSize = static_cast<int32_t>(m_memory.read32(stackPointer + 20u));
 
-            if (packetAddress == 0u || packetSize < kHeaderSize || packetSize > kMaxPacketSize ||
-                !m_memory.ownsRamRange(packetAddress, packetSize))
+            // SDK callers supply a stack buffer whose header is constructed
+            // here. Unwritten header/padding bytes are still valid physical RAM.
+            if (packetAddress == 0u || packetSize < kHeaderSize || packetSize > kMaxPacketSize)
             {
                 setV0(0u);
                 return true;
@@ -196,6 +260,7 @@ namespace ps2x::iop::detail
             std::memcpy(packet.data() + 0u, &sizeWord, sizeof(sizeWord));
             std::memcpy(packet.data() + 4u, &extraDestination, sizeof(extraDestination));
             std::memcpy(packet.data() + 8u, &commandId, sizeof(commandId));
+            (void)m_memory.writeRam(packetAddress, packet.data(), kHeaderSize);
 
             if (!m_host.sendSifCommand(commandId, packet.data(), packetSize))
             {
@@ -281,6 +346,7 @@ namespace ps2x::iop::detail
             return result;
 
         RpcServer &server = serverIt->second;
+        static const bool traceRpc = std::getenv("PS2X_TRACE_IOP_RPC") != nullptr;
         if (request.send.size != 0u && server.buffer != 0u)
         {
             const uint32_t copySize = std::min<uint32_t>(request.send.size, IopMemory::RamSize - std::min(server.buffer, IopMemory::RamSize));
@@ -300,6 +366,22 @@ namespace ps2x::iop::detail
                                                                server.gp);
         if (returnPointer == 0u)
             returnPointer = server.buffer;
+        if (traceRpc)
+        {
+            std::ostringstream message;
+            message << "[iop:rpc] sid=0x" << std::hex << request.sid
+                    << " command=0x" << request.function << " handler=0x" << server.function
+                    << " input=0x" << server.buffer << " send=0x" << request.send.size
+                    << " output=0x" << returnPointer << " receive=0x" << request.receive.size;
+            for (uint32_t offset = 0u; offset < std::min(request.receive.size, 64u); offset += 4u)
+                message << " " << m_memory.read32(returnPointer + offset);
+            m_host.log(LogLevel::Info, message.str());
+            if (const char *dumpPath = std::getenv("PS2X_IOP_DUMP_ON_RPC"))
+            {
+                std::ofstream dump(dumpPath, std::ios::binary | std::ios::trunc);
+                dump.write(reinterpret_cast<const char *>(m_memory.ram().data()), m_memory.ram().size());
+            }
+        }
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
         {
             const uint32_t physical = IopMemory::physicalAddress(returnPointer);
@@ -331,10 +413,28 @@ namespace ps2x::iop::detail
 
     void IopRpcBridge::removeServersInRange(uint32_t base, uint32_t size)
     {
+        for (auto &buffer : m_commandBuffers)
+        {
+            for (uint32_t index = 0u; index < buffer.count; ++index)
+            {
+                const uint32_t entry = buffer.address + index * 8u;
+                const uint32_t function = IopMemory::physicalAddress(m_memory.read32(entry));
+                if (function >= base && function - base < size)
+                    m_memory.write32(entry, 0u);
+            }
+            if (buffer.address >= base && buffer.address - base < size)
+                buffer = {};
+        }
+        for (auto handler = m_commandHandlers.begin(); handler != m_commandHandlers.end();)
+        {
+            const uint32_t function = IopMemory::physicalAddress(handler->second.function);
+            if (function >= base && function - base < size) handler = m_commandHandlers.erase(handler);
+            else ++handler;
+        }
         for (auto server = m_servers.begin(); server != m_servers.end();)
         {
             const uint32_t function = IopMemory::physicalAddress(server->second.function);
-            if (function >= base && function < base + size)
+            if (function >= base && function - base < size)
                 server = m_servers.erase(server);
             else
                 ++server;
@@ -345,5 +445,49 @@ namespace ps2x::iop::detail
     {
         const auto server = m_servers.find(sid);
         return server != m_servers.end() && server->second.function != 0u;
+    }
+
+    bool IopRpcBridge::receiveSifCommand(uint32_t commandId, const void *packet, size_t packetSize,
+                                          IopGuestExecutor &executor)
+    {
+        if (!packet || packetSize < 16 || packetSize > 112) return false;
+        const auto handler = m_commandHandlers.find(commandId);
+        CommandHandler registered = handler != m_commandHandlers.end() ? handler->second : CommandHandler{};
+        const auto &buffer = m_commandBuffers[(commandId >> 31u) & 1u];
+        if (buffer.count != 0u)
+        {
+            const uint32_t index = commandId & 0x7FFFFFFFu;
+            if (index >= buffer.count) return false;
+            const uint32_t function = m_memory.read32(buffer.address + index * 8u);
+            if (function != registered.function) registered.gp = buffer.gp;
+            registered.function = function;
+            registered.argument = m_memory.read32(buffer.address + index * 8u + 4u);
+        }
+        if (!registered.function) return false;
+        const uint32_t packetAddress = m_memory.allocate(static_cast<uint32_t>(packetSize), 16);
+        if (!packetAddress) return false;
+        if (!m_memory.writeRam(packetAddress, packet, packetSize))
+        {
+            (void)m_memory.freeAllocation(packetAddress);
+            return false;
+        }
+        if (std::getenv("PS2X_TRACE_IOP_RPC"))
+        {
+            std::ostringstream message;
+            message << "[sif:command] id=0x" << std::hex << commandId << " handler=0x" << registered.function
+                    << " packet=0x" << packetAddress << " bytes=" << std::dec << packetSize;
+            m_host.log(LogLevel::Debug, message.str());
+        }
+        try
+        {
+            (void)executor.executeGuestFunction(registered.function, packetAddress, registered.argument, 0, 0, registered.gp);
+        }
+        catch (...)
+        {
+            (void)m_memory.freeAllocation(packetAddress);
+            throw;
+        }
+        (void)m_memory.freeAllocation(packetAddress);
+        return true;
     }
 }

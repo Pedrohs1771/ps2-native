@@ -21,6 +21,7 @@ target_include_directories(ps2_test_function_table PRIVATE
 )
 
 add_library(ps2_test_lib STATIC
+    src/native_overlay_tests.cpp
     src/code_generator_tests.cpp
     src/r5900_decoder_tests.cpp
     src/elf_analyzer_tests.cpp
@@ -41,6 +42,7 @@ add_library(ps2_test_lib STATIC
 
 target_include_directories(ps2_test_lib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tools/iso_inspect/include
     ${CMAKE_SOURCE_DIR}/ps2xRecomp/include
     ${CMAKE_SOURCE_DIR}/ps2xAnalyzer/include
     ${CMAKE_SOURCE_DIR}/ps2xRuntime/include
@@ -62,6 +64,9 @@ add_executable(ps2x_tests
     src/main.cpp
     $<TARGET_OBJECTS:ps2_test_function_table>
 )
+if(UNIX AND NOT APPLE)
+    set_target_properties(ps2x_tests PROPERTIES ENABLE_EXPORTS TRUE)
+endif()
 
 option(PRINT_GENERATED_CODE "Print generated code in tests" OFF)
 if(PRINT_GENERATED_CODE)

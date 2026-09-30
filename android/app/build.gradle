@@ -2,8 +2,21 @@ plugins {
     id 'com.android.application'
 }
 
-// Override with: gradlew assembleRelease -Pps2xBootElf=/absolute/path/on/device.elf
-def ps2xBootElf = project.findProperty('ps2xBootElf') ?: '/storage/emulated/0/Android/data/com.ps2x.runner/files/game.elf'
+def ps2xApplicationId = project.findProperty('ps2xApplicationId') ?: 'com.ps2x.runner'
+def ps2xSourceRoot = project.findProperty('ps2xSourceRoot') ?: file('../..').canonicalPath
+def ps2xGeneratedDir = project.findProperty('ps2xGeneratedDir') ?: ''
+def ps2xAndroidAbis = (project.findProperty('ps2xAndroidAbis') ?: 'arm64-v8a')
+        .split(',').collect { it.trim() }.findAll { !it.isEmpty() }
+def ps2xNativeArguments = [
+        "-DPS2X_SOURCE_ROOT=${ps2xSourceRoot.replace('\\', '/')}",
+        "-DPS2X_GENERATED_CODE_DIR=${ps2xGeneratedDir.replace('\\', '/')}",
+        '-DPS2X_BUILD_ISO_INSPECTOR=OFF',
+        '-DPS2X_ENABLE_SCCACHE=OFF',
+        '-DPS2X_ENABLE_DEBUG_UI=OFF',
+        '-DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF',
+        '-DPS2X_ENABLE_RUNNER_PCH=OFF',
+        '-DANDROID_CPP_FEATURES=rtti exceptions'
+]
 
 android {
     namespace 'com.ps2x.runner'
@@ -11,34 +24,27 @@ android {
     ndkVersion '28.2.13676358'
 
     defaultConfig {
-        applicationId 'com.ps2x.runner'
         minSdk 28
         targetSdk 34
         versionCode 1
         versionName '0.1.0'
+        applicationId ps2xApplicationId
 
         externalNativeBuild {
             cmake {
-                arguments '-DPS2X_BUILD_RECOMP=OFF',
-                        '-DPS2X_BUILD_ANALYZER=OFF',
-                        '-DPS2X_BUILD_TEST=OFF',
-                        '-DPS2X_BUILD_STUDIO=OFF',
-                        '-DPS2X_ENABLE_SCCACHE=OFF',
-                        '-DPS2X_RUNNER_UNITY_BUILD_BATCH_SIZE=32',
-                        '-DANDROID_CPP_FEATURES=rtti exceptions',
-                        "-DPS2X_DEFAULT_BOOT_ELF=${ps2xBootElf}"
+                arguments(*ps2xNativeArguments)
                 targets 'ps2EntryRunner'
             }
         }
 
         ndk {
-            abiFilters 'arm64-v8a', 'x86_64'
+            abiFilters(*ps2xAndroidAbis)
         }
     }
 
     externalNativeBuild {
         cmake {
-            path '../../CMakeLists.txt'
+            path '../CMakeLists.txt'
             version '3.22.1'
         }
     }
@@ -57,3 +63,5 @@ android {
         }
     }
 }
+
+android.sourceSets.main.assets.srcDirs = ['src/main/assets']

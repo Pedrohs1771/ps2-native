@@ -85,6 +85,25 @@ namespace ps2recomp
             const Function *containingFn = findContainingExternalFunction(target);
             if (!containingFn)
             {
+                // A named runtime stub can occupy a larger inferred range than
+                // its actual entry point. Calls into executable code inside
+                // that range still need a guest entry; otherwise the stub hides
+                // valid functions from additional-entry discovery.
+                if (allFunctions && isExecutableAddress(target))
+                {
+                    for (const auto &candidateFn : *allFunctions)
+                    {
+                        if (!candidateFn.isStub || candidateFn.isSkipped ||
+                            candidateFn.start == function.start ||
+                            target <= candidateFn.start || target >= candidateFn.end)
+                        {
+                            continue;
+                        }
+
+                        result.externalEntryPoints.insert(target);
+                        return;
+                    }
+                }
                 return;
             }
 

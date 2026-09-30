@@ -33,7 +33,6 @@ std::string translatePs2Path(const char *ps2Path);
 
 #include "Helpers/Path.h"
 #include "Helpers/State.h"
-#include "Helpers/Loader.h"
 #include "Helpers/Runtime.h"
 
 inline bool resolveEeGuestRange(uint32_t address, size_t size, uint32_t &offset, bool &scratch)
@@ -84,3 +83,5 @@ inline T *getEeGuestStruct(uint8_t *rdram, uint32_t address)
 {
     return const_cast<T *>(getEeGuestStruct<T>(static_cast<const uint8_t *>(rdram), address));
 }
+
+#include "Helpers/Loader.h"

@@ -1,4 +1,18 @@
-## PS2Recomp: PlayStation 2 Static Recompiler (Experimental)
+# PS2Native: PlayStation 2 Native Recompiler (Experimental)
+
+PS2Native builds on [PS2Recomp](https://github.com/ran-j/PS2Recomp) to automate
+PS2 ISO analysis, native recompilation, packaging, and validation for PC and
+Android. Universal compatibility and autonomous repair remain development
+goals; the current packages are experimental.
+
+### Project status and roadmap
+
+* [Current implementation report (Portuguese)](RELATORIO_PS2NATIVE_ESTADO_ATUAL.md)
+* [Universal automation plan (Portuguese)](README_AUTOMACAO_UNIVERSAL.md)
+* [Project specification](PROJECT_SPEC.md)
+* [Native iteration, fixes, and recorded validation](docs/FAST_NATIVE_ITERATION.md)
+
+The upstream documentation and community links are retained below.
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/JQ8mawxUEf)
 
@@ -21,6 +35,48 @@ This project statically recompiles PS2 ELF binaries into C++ and provides a runt
 * Single-file or multi-file output.
 * Configurable stubs, skips, and instruction patches.
 * Instruction-driven syscall handling.
+
+### Experimental ISO package builder
+
+This checkout adds `tools/iso_inspect/` and `tools/ps2native/` for a local,
+host-side ISO-to-native build prototype. It reads supported ISO9660/Joliet
+images, extracts the `SYSTEM.CNF` boot ELF and disc tree, inventories ELF files
+and candidate modules, recompiles the boot ELF to C++, and links it with the
+PS2 compatibility runtime for the current desktop ABI or an ARM64 Android APK.
+
+```sh
+python3 -m tools.ps2native inspect --iso /path/to/game.iso
+python3 -m tools.ps2native build --iso /path/to/game.iso --target desktop --out /path/to/new-package
+python3 -m tools.ps2native build --iso /path/to/game.iso --target android --out /path/to/new-package
+python3 -m tools.ps2native verify --package /path/to/new-package
+```
+
+Completed package builds record hashes for packaged files (except the
+self-referential `manifest.json` and declared mutable runtime logs) and a
+compact source/tool input fingerprint. `verify` detects changed, missing, or
+added package files. This is an integrity check against the stored manifest;
+it is not a signed provenance attestation.
+
+The ISO itself and extracted game data stay local. Android builds require JDK
+17, Gradle 8.7+, SDK platform 34, NDK `28.2.13676358`, and CMake `3.22.1`.
+See [`tools/ps2native/README.md`](tools/ps2native/README.md),
+[`android/README.md`](android/README.md), and
+[`docs/RECOMPILER_GAPS.md`](docs/RECOMPILER_GAPS.md) for setup and coverage.
+
+The builder now also compiles secondary ELF32 little-endian MIPS `ET_EXEC`
+files whose `e_flags` declare MIPS III, giving each one unique symbols and a
+module-scoped function table. The SIF ELF loader activates the matching table
+by normalized disc path and prevents an overlapping module from falling back
+to stale boot functions. The boot ELF keeps its dense table and also registers
+sparse aliases for the boot path and `boot.elf`. A candidate module that fails
+analysis or recompilation is recorded in the manifest while other candidates
+continue. Partial `SifLoadElfPart` section loads currently fail before writing
+guest memory; CD path lookup resolves ASCII case differences and removes ISO
+version suffixes component by component. This is a subsystem heuristic, not a
+proof that every candidate is EE code; other executables, IRX files, overlays,
+and many PS2 hardware paths still require more work. Package generation is not
+evidence that a game is playable: builds remain `experimental` and gameplay
+`unverified` until validated on the exact game revision and target device.
 
 ### How It Works
 PS2Recomp works by:
@@ -53,8 +109,8 @@ The translated code is very literal, with each MIPS instruction mapping to a C++
 ### Build
 
 ```bash
-git clone --recurse-submodules https://github.com/ran-j/PS2Recomp.git
-cd PS2Recomp
+git clone --recurse-submodules https://github.com/Pedrohs1771/ps2-native.git
+cd ps2-native
 
 cmake -S . -B out/build
 cmake --build out/build --config Debug

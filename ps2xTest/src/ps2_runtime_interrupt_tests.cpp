@@ -1,5 +1,6 @@
 #include "MiniTest.h"
 #include "ps2_runtime.h"
+#include "ps2_guest_loop_optimization.h"
 #include "ps2_syscalls.h"
 #include "runtime/ee_scheduler.h"
 
@@ -704,6 +705,62 @@ void register_ps2_runtime_interrupt_tests()
                      "Timer2 flow should run wait, interrupt handler, then the resumed thread");
             t.Equals(g_resumedResult, g_testSemaphoreId,
                      "the Timer2 handler should hand the semaphore directly to the waiter");
+        });
+
+        tc.Run("countdown fast-forward exits at the sentinel when no checkpoint is due", [](TestCase &t)
+        {
+            TestEnv env;
+            R5900Context ctx{};
+            setRegU32(ctx, 2, 9u);
+            ctx.r[3] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(0xFFFFFFFFu)));
+            env.runtime.eeScheduler().bindMainContextForSyscall(ctx, env.rdram.data());
+
+            const bool handled = ps2xFastForwardGuestCountdownLoop(&env.runtime, &ctx, 2u, 3u, 0x00161000u, 0x0016101Cu);
+
+            t.IsTrue(handled, "canonical countdown state should be handled by the fast path");
+            t.Equals(getRegU32(&ctx, 2), 0xFFFFFFFFu,
+                     "the countdown register should reach the comparison sentinel");
+            t.Equals(ctx.pc, 0x0016101Cu,
+                     "a completed countdown should resume after the branch delay slot");
+            cleanupRuntime(env);
+        });
+
+        tc.Run("countdown fast-forward yields at the time-slice boundary", [](TestCase &t)
+        {
+            TestEnv env;
+            R5900Context ctx{};
+            setRegU32(ctx, 2, 5000u);
+            ctx.r[3] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(0xFFFFFFFFu)));
+            env.runtime.eeScheduler().bindMainContextForSyscall(ctx, env.rdram.data());
+
+            const bool handled = ps2xFastForwardGuestCountdownLoop(&env.runtime, &ctx, 2u, 3u, 0x00162000u, 0x0016201Cu);
+
+            t.IsTrue(handled, "a long canonical countdown should use the fast path");
+            t.Equals(getRegU32(&ctx, 2), 2953u,
+                     "the batch should stop at the 65,536-cycle slice boundary");
+            t.Equals(ctx.pc, 0x00162000u,
+                     "an unfinished countdown should resume at its loop head");
+            cleanupRuntime(env);
+        });
+
+        tc.Run("countdown fast-forward stops for an already pending event", [](TestCase &t)
+        {
+            TestEnv env;
+            R5900Context ctx{};
+            setRegU32(ctx, 2, 9u);
+            ctx.r[3] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(0xFFFFFFFFu)));
+            EeScheduler &scheduler = env.runtime.eeScheduler();
+            scheduler.bindMainContextForSyscall(ctx, env.rdram.data());
+            scheduler.postEvent(EeEvent{EeEventType::ExternalWake, 99u, 0u});
+
+            const bool handled = ps2xFastForwardGuestCountdownLoop(&env.runtime, &ctx, 2u, 3u, 0x00163000u, 0x0016301Cu);
+
+            t.IsTrue(handled, "pending scheduler work should still use one safe countdown step");
+            t.Equals(getRegU32(&ctx, 2), 9u,
+                     "the helper should not skip further decrements past pending work");
+            t.Equals(ctx.pc, 0x00163000u,
+                     "the pending event should resume through the loop head");
+            cleanupRuntime(env);
         });
 
         tc.Run("scheduler stop wakes an idle VSync wait without a timeout", [](TestCase &t)

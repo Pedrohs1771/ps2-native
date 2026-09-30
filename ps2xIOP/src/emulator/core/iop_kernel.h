@@ -9,6 +9,7 @@
 namespace ps2x::iop::detail
 {
     class IopMemory;
+    class IopGuestExecutor;
 
     enum class IopThreadState : uint8_t
     {
@@ -53,6 +54,7 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
+        void serviceAlarms(uint64_t currentCycle, IopGuestExecutor &executor);
 
         [[nodiscard]] int createInternalEventFlag(uint32_t attr, uint32_t option, uint32_t bits);
         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
@@ -86,6 +88,15 @@ namespace ps2x::iop::detail
             uint32_t option = 0;
         };
 
+        struct Alarm
+        {
+            uint64_t generation = 0u;
+            uint64_t deadline = 0u;
+            uint32_t function = 0u;
+            uint32_t argument = 0u;
+            uint32_t gp = 0u;
+        };
+
         [[nodiscard]] bool referThreadStatus(int id, uint32_t outputAddress);
         void wakeOneSemaphore(int id);
         [[nodiscard]] static bool eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode);
@@ -95,6 +106,9 @@ namespace ps2x::iop::detail
         std::map<int, IopThread> m_threads;
         std::map<int, Semaphore> m_semaphores;
         std::map<int, EventFlag> m_eventFlags;
+        std::map<uint64_t, Alarm> m_alarms;
+        uint64_t m_nextAlarmGeneration = 1u;
+        bool m_servicingAlarms = false;
         uint32_t m_nextThreadId = 1;
         uint32_t m_nextSemaphoreId = 1;
         uint32_t m_nextEventFlagId = 1;

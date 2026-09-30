@@ -279,6 +279,11 @@ public:
     void requestStop();
     void postEvent(EeEvent event);
     [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
+    [[nodiscard]] bool fastForwardGuestCountdownLoop(R5900Context *ctx,
+                                                     uint32_t counterReg,
+                                                     uint32_t sentinelReg,
+                                                     uint32_t loopPc,
+                                                     uint32_t fallthroughPc) noexcept;
     void accountCycles(uint32_t cycles) noexcept;
     [[nodiscard]] bool isExecutingGuest() const noexcept;
 
@@ -425,6 +430,7 @@ private:
     bool m_timeSliceExpired = false;
     bool m_insideInterrupt = false;
     uint32_t m_pendingEeTimerInterrupts = 0;
+    uint32_t m_cop0Count = 0;
     uint64_t m_eeCycle = 0;
     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
     std::thread::id m_executorThread{};

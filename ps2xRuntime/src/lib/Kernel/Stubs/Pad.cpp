@@ -246,6 +246,9 @@ namespace ps2_stubs
         {
             std::memset(data, 0, 32);
             data[1] = portState.analogMode ? kPadModeDualShock : kPadModeDigital;
+            // libpad's padButtonStatus.btns is a little-endian u16. Byte
+            // consumers also require Start in byte 2 and Cross in byte 3.
+            // A caller's opposite-order reconstruction does not change this ABI.
             data[2] = static_cast<uint8_t>(state.buttons & 0xFFu);
             data[3] = static_cast<uint8_t>((state.buttons >> 8) & 0xFFu);
             data[4] = state.rx;
@@ -654,8 +657,8 @@ namespace ps2_stubs
                 if (startPressed)
                 {
                     const uint32_t guestButtons =
-                        (static_cast<uint32_t>(static_cast<uint8_t>(data[2] ^ 0xFFu)) << 8) |
-                        static_cast<uint32_t>(static_cast<uint8_t>(data[3] ^ 0xFFu));
+                        static_cast<uint32_t>(static_cast<uint8_t>(data[2] ^ 0xFFu)) |
+                        (static_cast<uint32_t>(static_cast<uint8_t>(data[3] ^ 0xFFu)) << 8);
                     std::printf("[padread] port=%d slot=%d data2=0x%02x data3=0x%02x guestButtons=0x%04x enter=%d gamepadStart=%d\n",
                                 port, slot, data[2], data[3], guestButtons,
                                 IsKeyDown(KEY_ENTER) ? 1 : 0, gamepadStartPressed ? 1 : 0);

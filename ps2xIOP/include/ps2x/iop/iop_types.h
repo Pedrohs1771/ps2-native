@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,14 @@ namespace ps2x::iop
     {
         uint32_t address = 0;
         uint32_t size = 0;
+    };
+
+    struct CdFileInfo
+    {
+        uint32_t lsn = 0u;
+        uint32_t sizeBytes = 0u;
+        std::array<char, 16> name{};
+        std::array<uint8_t, 8> date{};
     };
 
     struct GameIdentity

@@ -10,6 +10,8 @@
 #include <vector>
 #include <cstring>
 #include <chrono>
+#include <array>
+#include <cmath>
 
 using namespace ps2_syscalls;
 
@@ -168,6 +170,110 @@ void register_ps2_runtime_io_tests()
 {
     MiniTest::Case("PS2RuntimeIO", [](TestCase &tc)
     {
+        tc.Run("Double libm unary stubs use full A0 and V0 without touching float registers", [](TestCase &t)
+        {
+            using Stub = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
+            using Math = double (*)(double);
+            const std::array<std::pair<Stub, Math>, 11> functions{{
+                {ps2_stubs::sqrt, static_cast<Math>(std::sqrt)},
+                {ps2_stubs::sin, static_cast<Math>(std::sin)},
+                {ps2_stubs::cos, static_cast<Math>(std::cos)},
+                {ps2_stubs::tan, static_cast<Math>(std::tan)},
+                {ps2_stubs::atan, static_cast<Math>(std::atan)},
+                {ps2_stubs::exp, static_cast<Math>(std::exp)},
+                {ps2_stubs::log, static_cast<Math>(std::log)},
+                {ps2_stubs::log10, static_cast<Math>(std::log10)},
+                {ps2_stubs::ceil, static_cast<Math>(std::ceil)},
+                {ps2_stubs::floor, static_cast<Math>(std::floor)},
+                {ps2_stubs::fabs, static_cast<Math>(std::fabs)},
+            }};
+            for (auto [stub, math] : functions)
+            {
+                for (double input : {-1.3032252788543701, -0.0, 0.0, 0.123456789012345, 1.3032252788543701, 48.25})
+                {
+                    R5900Context ctx{};
+                    std::fill(std::begin(ctx.f), std::end(ctx.f), 19.75f);
+                    uint64_t inputBits = 0;
+                    std::memcpy(&inputBits, &input, sizeof(inputBits));
+                    ctx.r[4] = _mm_set_epi64x(0x1234, static_cast<int64_t>(inputBits));
+                    stub(nullptr, &ctx, nullptr);
+                    const uint64_t outputBits = static_cast<uint64_t>(_mm_cvtsi128_si64(ctx.r[2]));
+                    double output = 0;
+                    std::memcpy(&output, &outputBits, sizeof(output));
+                    const double expected = math(input);
+                    uint64_t expectedBits = 0;
+                    std::memcpy(&expectedBits, &expected, sizeof(expectedBits));
+                    t.IsTrue(std::isnan(expected) ? std::isnan(output) : outputBits == expectedBits,
+                             "double unary result must retain all 64 bits, including signed zero");
+                    for (float f : ctx.f) t.Equals(f, 19.75f, "double calls must not use or overwrite float FPRs");
+                    t.Equals(static_cast<uint64_t>(_mm_cvtsi128_si64(ctx.r[4])), inputBits,
+                             "the double argument must remain in A0");
+                }
+            }
+        });
+
+        tc.Run("Double atan2 and pow stubs read A0 and A1", [](TestCase &t)
+        {
+            using Stub = void (*)(uint8_t *, R5900Context *, PS2Runtime *);
+            using Math = double (*)(double, double);
+            const std::array<std::pair<Stub, Math>, 2> functions{{
+                {ps2_stubs::atan2, static_cast<Math>(std::atan2)},
+                {ps2_stubs::pow, static_cast<Math>(std::pow)},
+            }};
+            for (auto [stub, math] : functions)
+            {
+                for (auto [a, b] : std::array<std::pair<double, double>, 5>{{
+                         {0.123456789012345, 1.23456789012345}, {-2.0, 3.0},
+                         {4.0, 0.5}, {0.0, -1.0}, {-0.0, -2.0}}})
+                {
+                    R5900Context ctx{};
+                    std::fill(std::begin(ctx.f), std::end(ctx.f), -27.0f);
+                    uint64_t aBits = 0, bBits = 0;
+                    std::memcpy(&aBits, &a, sizeof(aBits));
+                    std::memcpy(&bBits, &b, sizeof(bBits));
+                    ctx.r[4] = _mm_set_epi64x(0x5678, static_cast<int64_t>(aBits));
+                    ctx.r[5] = _mm_set_epi64x(0x9abc, static_cast<int64_t>(bBits));
+                    stub(nullptr, &ctx, nullptr);
+                    const uint64_t outputBits = static_cast<uint64_t>(_mm_cvtsi128_si64(ctx.r[2]));
+                    double output = 0;
+                    std::memcpy(&output, &outputBits, sizeof(output));
+                    const double expected = math(a, b);
+                    uint64_t expectedBits = 0;
+                    std::memcpy(&expectedBits, &expected, sizeof(expectedBits));
+                    t.IsTrue(std::isnan(expected) ? std::isnan(output) : outputBits == expectedBits,
+                             "both double arguments and the result must use the integer register ABI");
+                    for (float f : ctx.f) t.Equals(f, -27.0f, "binary double calls must leave float registers intact");
+                }
+            }
+        });
+
+        tc.Run("Double atan survives the float-double camera angle round trip", [](TestCase &t)
+        {
+            for (float focalLength : {6.0f, 18.0f, 50.0f, 100.0f})
+            {
+                const float ratio = 12.44711971282959f / focalLength;
+                const double wide = ratio;
+                uint64_t bits = 0;
+                std::memcpy(&bits, &wide, sizeof(bits));
+                R5900Context ctx{};
+                ctx.r[4] = _mm_set_epi64x(0, static_cast<int64_t>(bits));
+                ctx.f[12] = ratio;
+                ps2_stubs::atan(nullptr, &ctx, nullptr);
+                bits = static_cast<uint64_t>(_mm_cvtsi128_si64(ctx.r[2]));
+                double angle = 0;
+                std::memcpy(&angle, &bits, sizeof(angle));
+                const float fieldOfView = static_cast<float>(2.0 * angle);
+                const float horizontal = std::tan(fieldOfView * 0.5f);
+                const float vertical = horizontal / (4.0f / 3.0f);
+                t.IsTrue(std::isfinite(horizontal) && horizontal > 0.0f,
+                         "camera conversion must not truncate double atan to a zero float");
+                t.IsTrue(std::isfinite(vertical) && vertical > 0.0f,
+                         "camera vertical field of view must stay positive");
+                t.IsTrue(std::abs(horizontal - ratio) < 1e-6f,
+                         "the angle round trip should recover the original focal ratio");
+            }
+        });
+
         tc.Run("ROM0 ROMVER is exposed as the 14-byte firmware pseudo-file", [](TestCase &t)
         {
             TestContext test;
@@ -583,6 +689,30 @@ void register_ps2_runtime_io_tests()
                      "sceMcGetDir file entries should carry the closed-file attribute");
         });
 
+        tc.Run("sceMcGetDir exact directory queries return the directory entry", [](TestCase &t)
+        {
+            TestContext test;
+            std::filesystem::create_directories(test.paths.mcRoot / "SAVEDATA");
+            std::ofstream(test.paths.mcRoot / "SAVEDATA" / "payload.bin") << "save";
+            constexpr uint32_t patternAddr = GUEST_STRING_AREA_START + 0x700;
+            for (const std::string query : {"SAVEDATA", "/SAVEDATA", "SAVEDAT?"})
+            {
+                writeGuestString(test.rdram.data(), patternAddr, query);
+                clearContext(test.ctx);
+                setRegU32(test.ctx, 4, 0u);
+                setRegU32(test.ctx, 5, 0u);
+                setRegU32(test.ctx, 6, patternAddr);
+                setRegU32(test.ctx, 7, 0u);
+                setRegU32(test.ctx, 8, 8u);
+                setRegU32(test.ctx, 9, GUEST_MC_TABLE_ADDR);
+                ps2_stubs::sceMcGetDir(test.rdram.data(), &test.ctx, nullptr);
+                t.Equals(syncMc(test.rdram), 1, "Query must identify one directory, not its children: " + query);
+                const auto *entry = reinterpret_cast<const SceMcTblGetDir *>(test.rdram.data() + GUEST_MC_TABLE_ADDR);
+                t.Equals(std::string(entry->entryName), std::string("SAVEDATA"), "Returns the matched directory name");
+                t.IsTrue((entry->attrFile & 0x0020u) != 0u, "Matched directory carries the subdirectory attribute");
+            }
+        });
+
         tc.Run("sceMcGetInfo reports formatted and unformatted states", [](TestCase &t)
         {
             TestContext test;
@@ -705,6 +835,82 @@ void register_ps2_runtime_io_tests()
                      "sceCdSearchFile should report the host file size");
             t.IsTrue(readGuestU32(test.rdram.data(), fileAddr + 0) >= 0x00100000u,
                      "sceCdSearchFile should assign a pseudo LSN for the resolved host file");
+        });
+
+        tc.Run("ISO searches return physical sectors and allow prefetch past file extents", [](TestCase &t)
+        {
+            TestContext test;
+            constexpr uint32_t sectorBytes = 2048u;
+            std::vector<uint8_t> image(80u * sectorBytes, 0u);
+            const auto both = [&](size_t offset, uint32_t value, unsigned width)
+            {
+                for (unsigned i = 0; i < width; ++i)
+                {
+                    image[offset + i] = static_cast<uint8_t>(value >> (8u * i));
+                    image[offset + width + i] = static_cast<uint8_t>(value >> (8u * (width - i - 1u)));
+                }
+            };
+            const auto record = [&](size_t offset, uint32_t extent, uint32_t size, uint8_t flags,
+                                    const std::string &name)
+            {
+                const size_t length = 33u + name.size() + (name.size() % 2u == 0u ? 1u : 0u);
+                image[offset] = static_cast<uint8_t>(length);
+                both(offset + 2u, extent, 4u);
+                both(offset + 10u, size, 4u);
+                image[offset + 25u] = flags;
+                both(offset + 28u, 1u, 2u);
+                image[offset + 32u] = static_cast<uint8_t>(name.size());
+                std::memcpy(image.data() + offset + 33u, name.data(), name.size());
+                return length;
+            };
+            for (const uint32_t sector : {16u, 17u})
+            {
+                image[sector * sectorBytes] = sector == 16u ? 1u : 255u;
+                std::memcpy(image.data() + sector * sectorBytes + 1u, "CD001", 5u);
+                image[sector * sectorBytes + 6u] = 1u;
+            }
+            both(16u * sectorBytes + 80u, 80u, 4u);
+            both(16u * sectorBytes + 128u, sectorBytes, 2u);
+            record(16u * sectorBytes + 156u, 20u, sectorBytes, 2u, std::string(1u, '\0'));
+            record(20u * sectorBytes, 24u, sectorBytes, 0u, "PREFETCH.TBL;1");
+            std::memcpy(image.data() + 24u * sectorBytes, "disc-file", 9u);
+            std::memcpy(image.data() + 26u * sectorBytes, "post-file", 9u);
+            const auto imagePath = test.paths.base / "prefetch.iso";
+            {
+                std::ofstream out(imagePath, std::ios::binary);
+                out.write(reinterpret_cast<const char *>(image.data()), image.size());
+                std::ofstream hostFile(test.paths.cdRoot / "PREFETCH.TBL", std::ios::binary);
+                hostFile << "host-copy";
+            }
+            auto paths = PS2Runtime::getIoPaths();
+            paths.cdImage = imagePath;
+            PS2Runtime::setIoPaths(paths);
+            constexpr uint32_t infoAddr = 0x3000u;
+            constexpr uint32_t pathAddr = 0x1800u;
+            constexpr uint32_t bufferAddr = 0x10000u;
+            writeGuestString(test.rdram.data(), pathAddr, "\\PREFETCH.TBL;1");
+            setRegU32(test.ctx, 4, infoAddr);
+            setRegU32(test.ctx, 5, pathAddr);
+            ps2_stubs::sceCdSearchFile(test.rdram.data(), &test.ctx, nullptr);
+            const uint32_t lsn = readGuestU32(test.rdram.data(), infoAddr);
+            t.Equals(lsn, 24u, "mounted ISO search must return the real directory extent");
+            t.Equals(readGuestU32(test.rdram.data(), infoAddr + 4u), sectorBytes,
+                     "mounted ISO metadata must use disc file size");
+            setRegU32(test.ctx, 4, lsn + 2u);
+            setRegU32(test.ctx, 5, 32u);
+            setRegU32(test.ctx, 6, bufferAddr);
+            ps2_stubs::sceCdRead(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(getRegS32(&test.ctx, 2), 1, "physical sector prefetch can extend past a file");
+            t.Equals(std::memcmp(test.rdram.data() + bufferAddr, "post-file", 9u), 0,
+                     "prefetch must read actual adjacent disc sectors");
+
+            paths.cdImage.clear();
+            PS2Runtime::setIoPaths(paths);
+            setRegU32(test.ctx, 4, infoAddr);
+            setRegU32(test.ctx, 5, pathAddr);
+            ps2_stubs::sceCdSearchFile(test.rdram.data(), &test.ctx, nullptr);
+            t.IsTrue(readGuestU32(test.rdram.data(), infoAddr) >= 0x00100000u,
+                     "changing disc source must invalidate physical extent cache");
         });
 
         tc.Run("sceCdRead reads from explicit cdImage path", [](TestCase &t)

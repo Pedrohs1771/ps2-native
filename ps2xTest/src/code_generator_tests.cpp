@@ -168,6 +168,42 @@ void register_code_generator_tests()
 {
     MiniTest::Case("CodeGenerator", [](TestCase &tc)
                    {
+    tc.Run("R5900 square roots use the encoded FT radicand", [](TestCase &t) {
+        Instruction instruction{};
+        instruction.address = 0x100000;
+        instruction.opcode = OPCODE_COP1;
+        instruction.rs = COP1_S;
+        instruction.rt = 3;
+        instruction.rd = 2;
+        instruction.sa = 4;
+        instruction.function = COP1_S_SQRT;
+        instruction.raw = 0x46031000u | (4u << 6) | COP1_S_SQRT;
+        CodeGenerator gen({}, {});
+        t.Equals(gen.translateInstruction(instruction),
+                 std::string("ctx->f[4] = FPU_SQRT_S(ctx->f[3]);"),
+                 "SQRT must read FT even when FS differs");
+        instruction.function = COP1_S_RSQRT;
+        instruction.raw = (instruction.raw & ~0x3Fu) | COP1_S_RSQRT;
+        t.Equals(gen.translateInstruction(instruction),
+                 std::string("ctx->f[4] = ctx->f[2] / sqrtf(ctx->f[3]);"),
+                 "RSQRT must divide FS by the square root of FT");
+    });
+    tc.Run("unhandled SPECIAL instruction signals a guest reserved-instruction exception", [](TestCase &t) {
+        Instruction instruction{};
+        instruction.address = 0x31E6E0;
+        instruction.opcode = OPCODE_SPECIAL;
+        instruction.function = 0x01; // Reserved R5900 SPECIAL function observed in Monster House.
+        instruction.raw = (OPCODE_SPECIAL << 26) | instruction.function;
+
+        CodeGenerator gen({}, {});
+        const std::string generated = gen.translateInstruction(instruction);
+
+        t.IsTrue(generated.find("runtime->SignalException(ctx, EXCEPTION_RESERVED_INSTRUCTION)") != std::string::npos,
+                 "unhandled instruction must raise the guest reserved-instruction exception");
+        t.IsTrue(generated.find("throw std::runtime_error") == std::string::npos,
+                 "unhandled guest code must not throw an exception through the host process");
+    });
+
     tc.Run("Generated sources cannot be shadowed by stale local declaration headers", [](TestCase &t) {
         Function func;
         func.name = "header_lookup";
@@ -189,6 +225,20 @@ void register_code_generator_tests()
                  "the registration source must use the same unambiguous declaration header");
         t.IsTrue(registration.find("#include <ps2_recompiled_stubs.h>") != std::string::npos,
                  "the registration source must use the same unambiguous stub header");
+
+        CodeGenerator moduleGen({}, {});
+        moduleGen.setModuleIdentity({"modules/test.irx"}, "ps2m_test_", false);
+        const std::string moduleGenerated = moduleGen.generateFunction(func, {makeNop(func.start)}, true);
+        t.IsTrue(moduleGenerated.find("#include \"ps2_recompiled_functions.h\"") != std::string::npos,
+                 "module-generated sources must resolve the module-local declaration header");
+        t.IsTrue(moduleGenerated.find("#include <ps2_recompiled_functions.h>") == std::string::npos,
+                 "module-generated sources must not select the boot ELF declaration header");
+
+        CodeGenerator bootGen({}, {});
+        bootGen.setModuleIdentity({"boot.elf"}, "ps2boot_test_", true);
+        const std::string bootGenerated = bootGen.generateFunction(func, {makeNop(func.start)}, true);
+        t.IsTrue(bootGenerated.find("#include <ps2_recompiled_functions.h>") != std::string::npos,
+                 "boot ELF sources must use the configured root generated-header path");
     });
 
     tc.Run("unsigned integer loads use explicit zero extension", [](TestCase &t) {
@@ -498,6 +548,56 @@ void register_code_generator_tests()
 
         t.IsTrue(generated.find("label_2004:") != std::string::npos, "delay slot that is a target should emit a label");
         t.IsTrue(generated.find("goto label_2004;") != std::string::npos, "branch to delay slot should use goto");
+    });
+
+    tc.Run("direct delay-slot entry executes independently of its preceding branch", [](TestCase &t) {
+        Function func;
+        func.name = "independent_delay_entry";
+        func.start = 0x3000;
+        func.end = 0x3010;
+        func.isRecompiled = true;
+        std::vector<Instruction> instructions{
+            makeJal(0x3000, 0x9000), makeAddiu(0x3004, 2, 2, 1),
+            makeNop(0x3008), makeNop(0x300C)};
+        CodeGenerator gen({}, {});
+        gen.setResumeEntryTargets({{0x3000u, {0x3004u, 0x3008u}}});
+        const std::string generated = gen.generateFunction(func, instructions, false);
+        const size_t label = generated.find("label_3004:");
+        const size_t end = generated.find("ctx->pc = 0x3010u;");
+        t.IsTrue(label != std::string::npos && end != std::string::npos && label > end,
+                 "the independent entry must be outside the normal branch execution path");
+        const std::string handler = label == std::string::npos ? "" : generated.substr(label);
+        t.IsTrue(handler.find("ctx->pc = 0x3004u;") != std::string::npos,
+                 "standalone execution must identify the actual instruction pc");
+        t.IsTrue(handler.find("if (ctx->pc == 0x3004u) ctx->pc = 0x3008u;") != std::string::npos,
+                 "standalone delay instruction must continue at the next instruction");
+        t.IsTrue(handler.find("0x9000") == std::string::npos,
+                 "standalone delay instruction must not call the preceding branch target");
+    });
+
+    tc.Run("complete dispatch compresses contiguous bindings without filling holes", [](TestCase &t) {
+        Function func;
+        func.name = "range_owner";
+        func.start = 0x4000;
+        func.end = 0x4100;
+        func.isRecompiled = true;
+        std::vector<uint32_t> targets;
+        for (uint32_t address = 0x4004; address < 0x4040; address += 4)
+            targets.push_back(address);
+        targets.push_back(0x4080);
+        CodeGenerator gen({}, {});
+        gen.setRenamedFunctions({{0x4000u, "range_owner"}});
+        gen.setResumeEntryTargets({{0x4000u, targets}});
+        gen.setModuleIdentity({"boot.elf"}, "range_test_", true);
+        const std::string generated = gen.generateFunctionRegistration({func}, {});
+        t.IsTrue(generated.find("bindRange(0x4000u, 16u,") != std::string::npos,
+                 "module registration should use one loop for a contiguous range");
+        t.IsTrue(generated.find("std::fill_n(g_ps2RecompiledFunctionTable + 0u, 16u,") != std::string::npos,
+                 "dense registration should use one fill for a contiguous range");
+        t.IsTrue(generated.find("// 0x4080") != std::string::npos,
+                 "an isolated target after a hole must retain its exact binding");
+        t.IsTrue(generated.find("0x4040u") == std::string::npos,
+                 "undecoded holes must not gain executable entries");
     });
 
     tc.Run("control-flow analysis keeps same-function JAL target internal and promotes only the return pc", [](TestCase &t) {
@@ -1681,6 +1781,52 @@ void register_code_generator_tests()
                      "backward internal branch should no longer emit an unconditional cooperative-yield call");
             t.IsTrue(generated.find("goto label_1104;") != std::string::npos,
                      "backward internal branch should still re-enter the in-function label when it keeps the current slice");
+        });
+
+        tc.Run("pure countdown loops emit a checkpoint-preserving fast-forward", [](TestCase &t) {
+            Function func;
+            func.name = "countdown_delay_loop";
+            func.start = 0x2000;
+            func.end = 0x2028;
+            func.isRecompiled = true;
+            func.isStub = false;
+
+            std::vector<Instruction> instructions;
+            instructions.push_back(makeAddiu(0x2000, 2, 2, 0xFFFF));
+            instructions.push_back(makeNop(0x2004));
+            instructions.push_back(makeNop(0x2008));
+            instructions.push_back(makeNop(0x200C));
+            instructions.push_back(makeNop(0x2010));
+
+            Instruction loopBranch{};
+            loopBranch.address = 0x2014;
+            loopBranch.opcode = OPCODE_BNE;
+            loopBranch.rs = 2;
+            loopBranch.rt = 3;
+            loopBranch.simmediate = signExtend16(static_cast<uint16_t>(-6));
+            loopBranch.isBranch = true;
+            loopBranch.hasDelaySlot = true;
+            loopBranch.raw = (OPCODE_BNE << 26) | (2u << 21) | (3u << 16) | 0xFFFAu;
+            instructions.push_back(loopBranch);
+            instructions.push_back(makeNop(0x2018));
+            instructions.push_back(makeNop(0x201C));
+
+            Instruction exitEntry = makeBranch(0x2020, static_cast<uint32_t>(-2));
+            exitEntry.simmediate = signExtend16(static_cast<uint16_t>(-2));
+            instructions.push_back(exitEntry);
+            instructions.push_back(makeNop(0x2024));
+
+            CodeGenerator gen({}, {});
+            std::string generated = gen.generateFunction(func, instructions, false);
+            printGeneratedCode("pure countdown loops emit a checkpoint-preserving fast-forward", generated);
+
+            t.IsTrue(generated.find("ps2xFastForwardGuestCountdownLoop(runtime, ctx, 2u, 3u, 0x2000u, 0x201Cu)") != std::string::npos,
+                     "a side-effect-free decrement loop should use the bounded runtime fast-forward helper");
+            t.IsTrue(generated.find("if (ctx->pc == 0x201Cu)") != std::string::npos &&
+                         generated.find("goto label_201c;") != std::string::npos,
+                     "a completed countdown should continue at its local fallthrough label instead of dispatcher lookup");
+            t.IsTrue(generated.find("if (runtime->eeCheckpointDue()) {") != std::string::npos,
+                     "unrecognized loops should retain the normal scheduler checkpoint path");
         });
 
         tc.Run("branch-likely places delay slot only in taken path", [](TestCase &t) {

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <filesystem>
+#include <cstdint>
 #include <cctype>
 #include <condition_variable>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include <limits>
 #include <functional>
 #include <thread>
+#include <array>
 
 namespace fs = std::filesystem;
 
@@ -28,6 +30,23 @@ namespace ps2recomp
 {
     namespace
     {
+        std::string csvField(const std::string &value)
+        {
+            std::string escaped;
+            escaped.reserve(value.size() + 2u);
+            escaped.push_back('"');
+            for (char character : value)
+            {
+                if (character == '"')
+                {
+                    escaped.push_back('"');
+                }
+                escaped.push_back(character);
+            }
+            escaped.push_back('"');
+            return escaped;
+        }
+
         uint32_t decodeAbsoluteJumpTarget(uint32_t address, uint32_t target)
         {
             return ((address + 4) & 0xF0000000u) | (target << 2);
@@ -844,6 +863,38 @@ namespace ps2recomp
         {
             m_reporter.progress("parsing config");
             m_config = m_configManager.loadConfig();
+            if (m_config.moduleKeys.empty() != m_config.moduleSymbolPrefix.empty())
+            {
+                throw std::runtime_error("module_keys and module_symbol_prefix must be provided together.");
+            }
+            if (!m_config.moduleSymbolPrefix.empty())
+            {
+                const std::string &prefix = m_config.moduleSymbolPrefix;
+                const unsigned char first = static_cast<unsigned char>(prefix.front());
+                const bool firstIsAsciiAlpha = (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+                const bool reservedIdentifier = prefix.find("__") != std::string::npos ||
+                    (prefix.front() == '_' && prefix.size() > 1u &&
+                     prefix[1] >= 'A' && prefix[1] <= 'Z');
+                if (!(firstIsAsciiAlpha || prefix.front() == '_') || reservedIdentifier)
+                {
+                    throw std::runtime_error("module_symbol_prefix must be a non-reserved C++ identifier prefix.");
+                }
+                for (unsigned char ch : prefix)
+                {
+                    const bool asciiAlpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+                    if (!(asciiAlpha || (ch >= '0' && ch <= '9') || ch == '_'))
+                    {
+                        throw std::runtime_error("module_symbol_prefix must contain only ASCII letters, digits, and underscores.");
+                    }
+                }
+                for (const std::string &key : m_config.moduleKeys)
+                {
+                    if (key.empty())
+                    {
+                        throw std::runtime_error("module_keys cannot contain an empty path key.");
+                    }
+                }
+            }
             m_skipFunctions.clear();
             m_skipFunctionStarts.clear();
             m_stubFunctions.clear();
@@ -1000,6 +1051,10 @@ namespace ps2recomp
             m_decoder = std::make_unique<R5900Decoder>();
             m_codeGenerator = std::make_unique<CodeGenerator>(m_symbols, m_sections);
             m_codeGenerator->setReporter(&m_reporter);
+            m_codeGenerator->setModuleIdentity(
+                m_config.moduleKeys,
+                m_config.moduleSymbolPrefix,
+                m_config.moduleEmitDenseFunctionTable);
             std::unordered_map<uint32_t, std::string> relocationCallNames;
             relocationCallNames.reserve(m_relocations.size());
             for (const auto &reloc : m_relocations)
@@ -1282,6 +1337,19 @@ namespace ps2recomp
 
                         const std::string_view resolvedSyscallName = ps2_runtime_calls::resolveSyscallName(dispatchName);
                         const std::string_view resolvedStubName = ps2_runtime_calls::resolveStubName(dispatchName);
+                        // The private SDK helper adds a mode argument after cid.
+                        // Its name is an ABI contract, not a spelling alias of the
+                        // public six-argument entry. EE n32 uses registers a0-t2.
+                        if (dispatchName == "_sceSifSendCmd" || dispatchName == "_SifSendCmd")
+                        {
+                            stub << "// Adapt internal SIF SendCmd(cid, mode, packet, bytes, src, dst, dataBytes).\n"
+                                 << "    ctx->r[5] = ctx->r[6];\n"
+                                 << "    ctx->r[6] = ctx->r[7];\n"
+                                 << "    ctx->r[7] = ctx->r[8];\n"
+                                 << "    ctx->r[8] = ctx->r[9];\n"
+                                 << "    ctx->r[9] = ctx->r[10];\n"
+                                 << "    ";
+                        }
                         if (!resolvedSyscallName.empty())
                         {
                             stub << "ps2_syscalls::" << resolvedSyscallName << "(rdram, ctx, runtime); ";
@@ -1766,6 +1834,43 @@ namespace ps2recomp
                 }
             }
 
+            fs::path coveragePath = fs::path(m_config.outputPath) / "function_coverage.csv";
+            std::ofstream coverageOutput(coveragePath, std::ios::out | std::ios::trunc);
+            if (!coverageOutput)
+            {
+                throw std::runtime_error("Failed to open function coverage report: " + coveragePath.string());
+            }
+            coverageOutput << "start_address,end_address,range_bytes,status,decoded_instruction_count,function_name\n";
+            std::vector<const Function *> coverageFunctions;
+            coverageFunctions.reserve(m_functions.size());
+            for (const Function &function : m_functions)
+            {
+                coverageFunctions.push_back(&function);
+            }
+            std::sort(coverageFunctions.begin(), coverageFunctions.end(), [](const Function *left, const Function *right)
+                      { return left->start < right->start; });
+            for (const Function *function : coverageFunctions)
+            {
+                const char *status = function->isSkipped ? "skipped" :
+                                     function->isStub ? "runtime_stub" :
+                                     function->isRecompiled ? "recompiled" : "unprocessed";
+                const auto decoded = m_decodedFunctions.find(function->start);
+                const size_t decodedInstructionCount = decoded == m_decodedFunctions.end() ? 0u : decoded->second.size();
+                const uint64_t rangeBytes = function->end >= function->start
+                                                ? static_cast<uint64_t>(function->end) - function->start
+                                                : 0u;
+                coverageOutput << "0x" << std::hex << function->start
+                               << ",0x" << function->end
+                               << std::dec << "," << rangeBytes
+                               << "," << status
+                               << "," << decodedInstructionCount
+                               << "," << csvField(function->name) << "\n";
+            }
+            if (!coverageOutput)
+            {
+                throw std::runtime_error("Failed while writing function coverage report: " + coveragePath.string());
+            }
+
             m_decodedFunctions.clear();
 
             std::string registerFunctions = m_codeGenerator->generateFunctionRegistration(m_functions, m_generatedStubs);
@@ -1913,6 +2018,85 @@ namespace ps2recomp
             }
         }
 
+        auto findContainingFunction = [&](uint32_t address) -> const Function *
+        {
+            const Function *best = nullptr;
+            for (const auto &function : m_functions)
+            {
+                if (!function.isRecompiled || function.isStub || function.isSkipped ||
+                    isEntryFunctionName(function.name))
+                {
+                    continue;
+                }
+
+                if (address < function.start || address >= function.end)
+                {
+                    continue;
+                }
+
+                auto decodedIt = m_decodedFunctions.find(function.start);
+                if (decodedIt == m_decodedFunctions.end())
+                {
+                    continue;
+                }
+
+                const auto &decoded = decodedIt->second;
+                const bool hasAddress = std::any_of(decoded.begin(), decoded.end(),
+                                                    [&](const Instruction &candidate)
+                                                    { return candidate.address == address; });
+                if (!hasAddress)
+                {
+                    continue;
+                }
+
+                if (!best || function.start > best->start)
+                {
+                    best = &function;
+                }
+            }
+            return best;
+        };
+
+        // A direct edge into the interior of a runtime stub is not owned by
+        // that stub's HLE entry. Promote it to a standalone guest entry so the
+        // code hidden by the broad stub range remains callable.
+        for (const auto &function : m_functions)
+        {
+            if (!function.isRecompiled || function.isStub || function.isSkipped ||
+                isEntryFunctionName(function.name))
+            {
+                continue;
+            }
+
+            auto decodedIt = m_decodedFunctions.find(function.start);
+            if (decodedIt == m_decodedFunctions.end())
+            {
+                continue;
+            }
+
+            const auto analysisResult = m_codeGenerator->collectInternalBranchTargets(
+                function, decodedIt->second, &m_functions);
+            for (uint32_t target : analysisResult.externalEntryPoints)
+            {
+                if (findContainingFunction(target))
+                {
+                    continue;
+                }
+
+                const bool insideResolvedStub = std::any_of(
+                    m_functions.begin(), m_functions.end(),
+                    [&](const Function &candidate)
+                    {
+                        return candidate.isStub && !candidate.isSkipped &&
+                               target > candidate.start && target < candidate.end;
+                    });
+                if (insideResolvedStub)
+                {
+                    guestFallbackEntryAddresses.insert(target);
+                }
+            }
+        }
+
         // Prefer the existing wrapper when a configured entry lies inside a
         // decoded function. If Ghidra/analyzer omitted the whole routine,
         // synthesize a standalone guest function bounded by the next known
@@ -1958,49 +2142,6 @@ namespace ps2recomp
                 m_reporter.progress(msg.str());
             }
         }
-
-        auto findContainingFunction = [&](uint32_t address) -> const Function *
-        {
-            const Function *best = nullptr;
-            for (const auto &function : m_functions)
-            {
-                if (!function.isRecompiled || function.isStub || function.isSkipped)
-                {
-                    continue;
-                }
-
-                if (isEntryFunctionName(function.name))
-                {
-                    continue;
-                }
-
-                if (address < function.start || address >= function.end)
-                {
-                    continue;
-                }
-
-                auto decodedIt = m_decodedFunctions.find(function.start);
-                if (decodedIt == m_decodedFunctions.end())
-                {
-                    continue;
-                }
-
-                const auto &decoded = decodedIt->second;
-                const bool hasAddress = std::any_of(decoded.begin(), decoded.end(),
-                                                    [&](const Instruction &candidate)
-                                                    { return candidate.address == address; });
-                if (!hasAddress)
-                {
-                    continue;
-                }
-
-                if (!best || function.start > best->start)
-                {
-                    best = &function;
-                }
-            }
-            return best;
-        };
 
         for (const auto &function : m_functions)
         {
@@ -2048,6 +2189,18 @@ namespace ps2recomp
                 auto &targets = m_resumeEntryTargetsByOwner[owner->start];
                 targets.push_back(target);
             }
+        }
+
+        // Run after all discovered targets are added so overlapping functions
+        // receive one stable owner in the final dispatch table.
+        const size_t completeDispatchTargetCount = CollectCompleteDispatchTargets(
+            m_functions, m_decodedFunctions, m_resumeEntryTargetsByOwner);
+        if (completeDispatchTargetCount > 0u)
+        {
+            std::ostringstream msg;
+            msg << "registered " << completeDispatchTargetCount
+                << " decoded instruction boundaries for complete indirect dispatch";
+            m_reporter.progress(msg.str());
         }
 
         size_t totalTargets = 0u;
@@ -2261,16 +2414,45 @@ namespace ps2recomp
 
     bool PS2Recompiler::writeToFile(const std::string &path, const std::string &content)
     {
-        std::ofstream file(path);
+        // Preserve timestamps for identical generated sources and headers.
+        // Build systems can then reuse all unaffected native object files.
+        std::ifstream existing(path, std::ios::binary | std::ios::ate);
+        if (existing && existing.tellg() == static_cast<std::streamoff>(content.size()))
+        {
+            existing.seekg(0);
+            std::array<char, 16384> buffer;
+            size_t offset = 0u;
+            bool identical = true;
+            while (offset < content.size())
+            {
+                const size_t count = std::min(buffer.size(), content.size() - offset);
+                existing.read(buffer.data(), static_cast<std::streamsize>(count));
+                if (!existing || std::memcmp(buffer.data(), content.data() + offset, count) != 0)
+                {
+                    identical = false;
+                    break;
+                }
+                offset += count;
+            }
+            if (identical)
+                return true;
+        }
+        existing.close();
+
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
         if (!file)
         {
             m_reporter.error("file", "Failed to open file for writing: " + path);
             return false;
         }
 
-        file << content;
+        file.write(content.data(), static_cast<std::streamsize>(content.size()));
         file.close();
-
+        if (!file)
+        {
+            m_reporter.error("file", "Failed while writing: " + path);
+            return false;
+        }
         return true;
     }
 
@@ -2403,6 +2585,72 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::vector<uint32_t>> &targetsByOwner)
     {
         return collectInternalEntryTargetsImpl(functions, decodedFunctions, entryAddresses, targetsByOwner);
+    }
+
+    size_t PS2Recompiler::CollectCompleteDispatchTargets(
+        const std::vector<Function> &functions,
+        const std::unordered_map<uint32_t, std::vector<Instruction>> &decodedFunctions,
+        std::unordered_map<uint32_t, std::vector<uint32_t>> &targetsByOwner)
+    {
+        // An indirect call can target an instruction inside a function that
+        // contains no indirect branches itself. Register every decoded
+        // instruction boundary so the caller's unknown target is resolvable
+        // without discovering and recompiling addresses one at a time.
+        std::unordered_map<uint32_t, uint32_t> ownerByInstruction;
+        for (const Function &function : functions)
+        {
+            if (!function.isRecompiled || function.isStub || function.isSkipped)
+            {
+                continue;
+            }
+
+            const auto decodedIt = decodedFunctions.find(function.start);
+            if (decodedIt == decodedFunctions.end())
+            {
+                continue;
+            }
+
+            for (const Instruction &instruction : decodedIt->second)
+            {
+                if (instruction.address < function.start || instruction.address >= function.end)
+                {
+                    continue;
+                }
+
+                auto [ownerIt, inserted] = ownerByInstruction.emplace(instruction.address, function.start);
+                if (!inserted && function.start > ownerIt->second)
+                {
+                    ownerIt->second = function.start;
+                }
+            }
+        }
+
+        // Entry targets collected before the final overlap map may have been
+        // attached to a less-specific enclosing function. Drop those stale
+        // owner bindings before installing the canonical map.
+        for (auto &[ownerStart, targets] : targetsByOwner)
+        {
+            targets.erase(std::remove_if(targets.begin(), targets.end(), [&](uint32_t target)
+            {
+                const auto ownerIt = ownerByInstruction.find(target);
+                return ownerIt != ownerByInstruction.end() && ownerIt->second != ownerStart;
+            }), targets.end());
+        }
+
+        size_t addedCount = 0u;
+        for (const auto &[instructionAddress, ownerStart] : ownerByInstruction)
+        {
+            // Function starts already have their own table binding.
+            if (instructionAddress == ownerStart)
+            {
+                continue;
+            }
+
+            targetsByOwner[ownerStart].push_back(instructionAddress);
+            ++addedCount;
+        }
+
+        return addedCount;
     }
 
     StubTarget PS2Recompiler::resolveStubTarget(const std::string &name)

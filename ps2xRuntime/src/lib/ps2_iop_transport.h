@@ -8,6 +8,11 @@
 class PS2IopTransport
 {
 public:
+    [[nodiscard]] static ps2x::iop::ModuleLoadResult loadIopBuffer(
+        PS2Runtime *runtime, uint8_t *rdram, R5900Context *context,
+        uint32_t address, const void *arguments, uint32_t argumentSize);
+    [[nodiscard]] static bool sendCommand(PS2Runtime *runtime, uint8_t *rdram, R5900Context *context,
+                                          uint32_t commandId, const void *packet, size_t packetSize);
     [[nodiscard]] static ps2x::iop::RpcAbi selectRpcAbi(
         const PS2Runtime *runtime,
         const ps2x::iop::RpcAbiRequest &request)

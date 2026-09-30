@@ -3,8 +3,10 @@
 #include "ps2_stubs.h"
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ps2_stubs
@@ -39,7 +41,16 @@ namespace ps2_stubs
         std::vector<CdDebugFileEntry> files;
     };
 
+    struct CdSearchResult
+    {
+        uint32_t lsn = 0u;
+        uint32_t sizeBytes = 0u;
+        std::array<char, 16> name{};
+        std::array<uint8_t, 8> date{};
+    };
+
     CdDebugSnapshot getCdDebugSnapshot();
+    bool findCdFileForIop(std::string_view path, uint32_t layer, CdSearchResult &result);
     void sceCdRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdSync(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdGetError(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

@@ -1,6 +1,7 @@
 #include "MiniTest.h"
 #include "ps2recomp/ps2_recompiler.h"
 #include "ps2recomp/config_manager.h"
+#include "ps2recomp/control_flow_analyzer.h"
 #include "ps2recomp/elf_parser.h"
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/types.h"
@@ -879,6 +880,61 @@ void register_ps2_recompiler_tests()
             }
         });
 
+        tc.Run("complete indirect dispatch registers decoded interior instructions in their owner", [](TestCase &t)
+        {
+            std::vector<Function> functions = {
+                makeFunction("container", 0x1000u, 0x1010u),
+                makeFunction("nested_owner", 0x1008u, 0x1010u)
+            };
+            std::unordered_map<uint32_t, std::vector<Instruction>> decodedFunctions = {
+                {0x1000u, {makeNopLike(0x1000u), makeNopLike(0x1004u),
+                           makeNopLike(0x1008u), makeNopLike(0x100Cu)}},
+                {0x1008u, {makeNopLike(0x1008u), makeNopLike(0x100Cu)}}
+            };
+            std::unordered_map<uint32_t, std::vector<uint32_t>> targetsByOwner;
+
+            const size_t registered = PS2Recompiler::CollectCompleteDispatchTargets(
+                functions, decodedFunctions, targetsByOwner);
+
+            t.Equals(registered, static_cast<size_t>(2),
+                     "all interior instructions should be dispatchable once, using the most specific owner");
+            t.IsTrue(std::find(targetsByOwner[0x1000u].begin(), targetsByOwner[0x1000u].end(), 0x1004u) !=
+                         targetsByOwner[0x1000u].end(),
+                     "the containing function should own its non-overlapped interior instruction");
+            t.IsTrue(std::find(targetsByOwner[0x1008u].begin(), targetsByOwner[0x1008u].end(), 0x100Cu) !=
+                         targetsByOwner[0x1008u].end(),
+                     "an overlapping inner function should own its interior instruction");
+            t.IsFalse(std::find(targetsByOwner[0x1000u].begin(), targetsByOwner[0x1000u].end(), 0x100Cu) !=
+                          targetsByOwner[0x1000u].end(),
+                      "overlapping instructions must not receive competing owner bindings");
+        });
+
+        tc.Run("direct branch into a stub range discovers guest code entry", [](TestCase &t) {
+            std::vector<Section> sections = {
+                {".text", 0x1000u, 0x2000u, 0u, true, false, false, true, nullptr}
+            };
+
+            Function stub = makeFunction("known_runtime_stub", 0x1100u, 0x1200u);
+            stub.isStub = true;
+            std::vector<Function> functions = {
+                stub,
+                makeFunction("caller", 0x1800u, 0x1808u)
+            };
+            std::unordered_map<uint32_t, std::vector<uint32_t>> jumpTableTargets;
+            ControlFlowAnalyzer analyzer(sections, jumpTableTargets, nullptr);
+            const std::vector<Instruction> callerInstructions = {
+                makeAbsJump(0x1800u, 0x1110u, OPCODE_J),
+                makeNopLike(0x1804u)
+            };
+
+            const auto result = analyzer.analyze(functions[1], callerInstructions, &functions);
+
+            t.IsTrue(result.externalEntryPoints.contains(0x1110u),
+                     "an interior branch target in a stub span must be exposed for guest recompilation");
+            t.IsFalse(result.externalEntryPoints.contains(0x1100u),
+                      "the exact stub entry must continue to use its runtime handler");
+        });
+
         tc.Run("entry reslice trims earlier entries after late discovery", [](TestCase &t) {
             std::vector<Function> functions = {
                 makeFunction("container", 0x1000u, 0x1018u),
@@ -1412,6 +1468,55 @@ void register_ps2_recompiler_tests()
             std::filesystem::remove_all(tempRoot, removeError);
         });
 
+        tc.Run("regeneration preserves timestamps and repairs changed output", [](TestCase &t) {
+            const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+            const auto root = std::filesystem::temp_directory_path() / ("ps2recomp-incremental-" + suffix);
+            std::filesystem::create_directories(root);
+            const auto elf = root / "input.elf";
+            const auto config = root / "input.toml";
+            const auto output = root / "output";
+            t.IsTrue(writeMinimalMipsElfWithCodeAndDataFunctionSymbols(elf) &&
+                     writeRecompilerTestConfig(config, elf, output, {}), "fixture inputs must exist");
+            PS2Recompiler recompiler(config.string());
+            t.IsTrue(recompiler.initialize() && recompiler.recompile(), "fixture must translate");
+            recompiler.generateOutput();
+            const auto regenerate = [&]() {
+                PS2Recompiler next(config.string());
+                t.IsTrue(next.initialize() && next.recompile(), "regeneration must translate");
+                next.generateOutput();
+            };
+            std::map<std::filesystem::path, std::filesystem::file_time_type> timestamps;
+            for (const auto &file : std::filesystem::directory_iterator(output))
+            {
+                if (file.path().extension() != ".cpp" && file.path().extension() != ".h") continue;
+                const auto oldTime = std::filesystem::last_write_time(file.path()) - std::chrono::hours(24);
+                std::filesystem::last_write_time(file.path(), oldTime);
+                timestamps.emplace(file.path(), std::filesystem::last_write_time(file.path()));
+            }
+            t.IsTrue(!timestamps.empty(), "fixture must generate native source files");
+            regenerate();
+            for (const auto &[path, time] : timestamps)
+                t.IsTrue(std::filesystem::last_write_time(path) == time,
+                         "identical source and header timestamps must remain unchanged");
+            const auto registry = output / "register_functions.cpp";
+            const auto registryTime = std::filesystem::last_write_time(registry);
+            {
+                std::ofstream changed(registry, std::ios::binary | std::ios::trunc);
+                changed << "changed source";
+            }
+            std::filesystem::last_write_time(registry, registryTime);
+            regenerate();
+            std::ifstream repaired(registry);
+            const std::string text{std::istreambuf_iterator<char>(repaired), std::istreambuf_iterator<char>()};
+            t.IsTrue(text.find("g_ps2RecompiledFunctionTable") != std::string::npos,
+                     "changed contents must be replaced with the correct registry");
+            t.IsTrue(std::filesystem::last_write_time(registry) != registryTime,
+                     "changed source must invalidate its native object");
+            repaired.close();
+            std::error_code error;
+            std::filesystem::remove_all(root, error);
+        });
+
         tc.Run("elf parser ignores STT_FUNC symbols in non-executable sections", [](TestCase &t) {
             const auto uniqueSuffix = std::to_string(
                 static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -1798,6 +1903,35 @@ void register_ps2_recompiler_tests()
 
             std::error_code removeError;
             std::filesystem::remove_all(tempRoot, removeError);
+        });
+
+        tc.Run("internal SIF SendCmd adapts its seven-register SDK ABI", [](TestCase &t) {
+            const auto root = std::filesystem::temp_directory_path() /
+                ("ps2recomp-sif-abi-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            std::filesystem::create_directories(root);
+            const auto elf = root / "fixture.elf";
+            t.IsTrue(writeMinimalMipsElfWithInitializer(elf, "ordinary_entry", 0x00100000u), "Creates fixture");
+            for (const bool internal : {true, false})
+            {
+                const auto output = root / (internal ? "internal" : "public");
+                const auto config = root / (internal ? "internal.toml" : "public.toml");
+                t.IsTrue(writeRecompilerTestConfig(config, elf, output, {},
+                    {std::string(internal ? "_sceSifSendCmd" : "sceSifSendCmd") + "@0x00100000"}), "Creates binding");
+                PS2Recompiler recomp(config.string());
+                if (!recomp.initialize() || !recomp.recompile()) { t.IsTrue(false, "Fixture recompiles"); continue; }
+                recomp.generateOutput();
+                std::string sources;
+                for (const auto &file : std::filesystem::directory_iterator(output))
+                {
+                    if (file.path().extension() != ".cpp") continue;
+                    std::ifstream input(file.path());
+                    sources.append(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+                }
+                t.Equals(sources.find("ctx->r[5] = ctx->r[6]") != std::string::npos, internal,
+                         "Only the internal SDK entry removes the mode argument");
+            }
+            std::error_code error;
+            std::filesystem::remove_all(root, error);
         });
 
         tc.Run("respect max length for .cpp filenames", [](TestCase& t) {

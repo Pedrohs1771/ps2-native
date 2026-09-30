@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "ps2_guest_startup_args.h"
 #include "games_database.h"
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
 #include "ps2_debug_panel.h"
@@ -14,13 +15,21 @@
 #include <exception>
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
+#include <vector>
 
 #if defined(__ANDROID__)
 #include <android/log.h>
+#include <android_native_app_glue.h>
 #include <unistd.h>
 #include <thread>
 #include <cstdio>
 #include <cstring>
+
+// raylib's Android backend owns the android_app instance and exposes this
+// accessor from rcore_android.c. The activity's internalDataPath is supplied
+// by Android and is stable across app ids and Android user profiles.
+extern "C" struct android_app *GetAndroidApp(void);
 #endif
 
 namespace
@@ -147,6 +156,19 @@ namespace
             std::cout << "Using argv boot path" << std::endl;
             return std::filesystem::path(argv[1]);
         }
+#if defined(__ANDROID__)
+        if (android_app *app = GetAndroidApp(); app && app->activity && app->activity->internalDataPath)
+        {
+            const std::filesystem::path packageRoot(app->activity->internalDataPath);
+            const std::filesystem::path bootElf = packageRoot / "game" / "boot.elf";
+            if (std::filesystem::is_regular_file(bootElf))
+            {
+                std::cout << "Using packaged Android boot file: " << bootElf.string() << std::endl;
+                return bootElf;
+            }
+            throw std::runtime_error("Packaged Android boot ELF is missing: " + bootElf.string());
+        }
+#endif
 #if defined(PS2X_DEFAULT_BOOT_ELF)
         std::cout << "Using default boot file" << std::endl;
         const std::filesystem::path configuredPath = std::filesystem::path(PS2X_DEFAULT_BOOT_ELF);
@@ -161,6 +183,47 @@ namespace
 #else
         throw std::runtime_error("Unable to determine executable path. Pass the guest ELF as argv[1] or define PS2X_DEFAULT_BOOT_ELF.");
 #endif
+    }
+
+    std::vector<std::string> loadGuestStartupArguments(int argc,
+                                                       char *argv[],
+                                                       const std::filesystem::path &elfPath)
+    {
+        if (argc > 3)
+        {
+            return std::vector<std::string>(argv + 3, argv + argc);
+        }
+
+        const std::filesystem::path configPath = elfPath.parent_path() / "boot-args.txt";
+        std::ifstream config(configPath);
+        if (!config)
+        {
+            return {};
+        }
+
+        std::vector<std::string> arguments;
+        std::string line;
+        while (std::getline(config, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.pop_back();
+            }
+            const size_t first = line.find_first_not_of(" \t");
+            if (first == std::string::npos || line[first] == '#')
+            {
+                continue;
+            }
+            arguments.push_back(std::move(line));
+        }
+
+        if (config.bad())
+        {
+            throw std::runtime_error("Failed while reading guest startup arguments: " + configPath.string());
+        }
+        std::cout << "Loaded " << arguments.size()
+                  << " guest startup arguments from " << configPath.string() << std::endl;
+        return arguments;
     }
 }
 
@@ -194,6 +257,14 @@ int main(int argc, char *argv[])
         }
 
         PS2Runtime runtime;
+        ps2_guest_startup_args::set(loadGuestStartupArguments(argc, argv, pathObj));
+        if (argc >= 3 && argv[2] && argv[2][0] != '\0')
+        {
+            PS2Runtime::IoPaths ioPaths = PS2Runtime::getIoPaths();
+            ioPaths.cdImage = std::filesystem::path(argv[2]);
+            PS2Runtime::setIoPaths(ioPaths);
+            std::cout << "Using CD image: " << PS2Runtime::getIoPaths().cdImage.string() << std::endl;
+        }
 #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
         // This hook is to prevent leak rlimgui deps to recompiler etc
         PS2DebugPanel debugPanel;

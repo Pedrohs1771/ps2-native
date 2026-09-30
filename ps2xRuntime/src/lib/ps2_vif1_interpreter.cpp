@@ -1,6 +1,8 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
+#include <algorithm>
 #include <cstring>
+#include <memory>
 
 enum VIFCmd : uint8_t
 {
@@ -29,6 +31,45 @@ enum VIFCmd : uint8_t
 namespace
 {
     constexpr uint8_t kGifFmtImage = 2u;
+
+    struct Vif1DirectState
+    {
+        uint32_t remainingBytes = 0u;
+        bool directHl = false;
+        std::vector<uint8_t> payload;
+        // Headers and non-DIRECT payloads can span FIFO writes or DMA transfers.
+        // Maximum retained non-DIRECT command is UNPACK's 4096 bytes + header.
+        std::vector<uint8_t> pendingCommand;
+    };
+    // Internal state keeps the public PS2Memory ABI stable for native modules.
+    // Every instance removes its entry on initialization, reset and destruction.
+    std::mutex directStateMutex;
+    std::unordered_map<PS2Memory *, std::shared_ptr<Vif1DirectState>> directStates;
+
+    std::shared_ptr<Vif1DirectState> directStateFor(PS2Memory *memory)
+    {
+        std::lock_guard<std::mutex> lock(directStateMutex);
+        auto &state = directStates[memory];
+        if (!state) state = std::make_shared<Vif1DirectState>();
+        return state;
+    }
+
+    uint32_t vifPayloadBytes(uint8_t opcode, uint8_t num, uint32_t cycle)
+    {
+        if (opcode == VIF_STMASK) return 4u;
+        if (opcode == VIF_STROW || opcode == VIF_STCOL) return 16u;
+        const uint32_t count = num ? num : 256u;
+        if (opcode == VIF_MPG) return count * 8u;
+        if ((opcode & 0x60u) != 0x60u) return 0u;
+        const uint32_t components = ((opcode >> 2u) & 3u) + 1u;
+        const uint32_t format = opcode & 3u;
+        const uint32_t width = format == 0u ? 32u : format == 2u ? 8u : 16u;
+        const uint32_t vectorBytes = (format == 3u && components == 4u) ? 2u : components * width / 8u;
+        const uint32_t cl = std::max(1u, cycle & 0xFFu);
+        const uint32_t wl = std::max(1u, (cycle >> 8u) & 0xFFu);
+        const uint32_t sourceCount = cl < wl ? (count / wl) * cl + std::min(count % wl, cl) : count;
+        return (sourceCount * vectorBytes + 3u) & ~3u;
+    }
 
     uint32_t pendingGifImageQwc(const uint8_t *data, uint32_t sizeBytes)
     {
@@ -79,6 +120,12 @@ namespace
 
         return 0u;
     }
+}
+
+void ps2xResetVif1DirectState(PS2Memory *memory)
+{
+    std::lock_guard<std::mutex> lock(directStateMutex);
+    directStates.erase(memory);
 }
 
 void PS2Memory::processVIF0Data(uint32_t srcPhys, uint32_t sizeBytes)
@@ -297,40 +344,75 @@ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
 
 void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 {
-    if (sizeBytes == 0u)
+    if (!data || sizeBytes == 0u)
         return;
 
     uint32_t pos = 0;
+    const auto direct = directStateFor(this);
+    std::vector<uint8_t> resumed;
+    if (!direct->pendingCommand.empty())
+    {
+        if (direct->pendingCommand.size() > UINT32_MAX - sizeBytes) return;
+        resumed.swap(direct->pendingCommand);
+        resumed.insert(resumed.end(), data, data + sizeBytes);
+        data = resumed.data();
+        sizeBytes = static_cast<uint32_t>(resumed.size());
+    }
 
-    while (pos + 4 <= sizeBytes)
+    const auto forwardDirect = [&](const uint8_t *payload, uint32_t bytes, bool directHl)
     {
         if (m_vif1PendingPath2ImageQwc != 0u)
         {
-            const uint32_t availableQw = (sizeBytes - pos) / 16u;
-            if (availableQw == 0u)
+            const uint32_t chunkQw = std::min({m_vif1PendingPath2ImageQwc, bytes / 16u, 32767u});
+            if (chunkQw != 0u)
             {
-                break;
+                const size_t imageBytes = static_cast<size_t>(chunkQw) * 16u;
+                std::vector<uint8_t> imagePacket(16u + imageBytes, 0u);
+                const uint64_t imageTag = static_cast<uint64_t>(chunkQw) |
+                    ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15u) : 0ull) |
+                    (static_cast<uint64_t>(kGifFmtImage) << 58u);
+                std::memcpy(imagePacket.data(), &imageTag, 8u);
+                std::memcpy(imagePacket.data() + 16u, payload, imageBytes);
+                submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()),
+                                true, m_vif1PendingPath2DirectHl);
+                payload += chunkQw * 16u;
+                bytes -= chunkQw * 16u;
+                m_vif1PendingPath2ImageQwc -= chunkQw;
+                if (m_vif1PendingPath2ImageQwc == 0u)
+                    m_vif1PendingPath2DirectHl = false;
             }
+        }
+        if (bytes != 0u)
+        {
+            submitGifPacket(GifPathId::Path2, payload, bytes, true, directHl);
+            m_vif1PendingPath2ImageQwc = pendingGifImageQwc(payload, bytes);
+            m_vif1PendingPath2DirectHl = directHl;
+        }
+    };
 
-            const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
-            std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
-            const uint64_t imageTag =
-                static_cast<uint64_t>(chunkQw & 0x7FFFu) |
-                ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
-                (static_cast<uint64_t>(kGifFmtImage) << 58);
-            std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
-            std::memcpy(imagePacket.data() + 16u, data + pos, static_cast<size_t>(chunkQw) * 16u);
-            submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
-
-            pos += chunkQw * 16u;
-            m_vif1PendingPath2ImageQwc -= chunkQw;
-            if (m_vif1PendingPath2ImageQwc == 0u)
+    while (pos < sizeBytes)
+    {
+        if (direct->remainingBytes != 0u)
+        {
+            const uint32_t bytes = std::min(direct->remainingBytes, sizeBytes - pos);
+            direct->payload.insert(direct->payload.end(), data + pos, data + pos + bytes);
+            direct->remainingBytes -= bytes;
+            pos += bytes;
+            if (direct->remainingBytes == 0u)
             {
-                m_vif1PendingPath2DirectHl = false;
+                forwardDirect(direct->payload.data(), static_cast<uint32_t>(direct->payload.size()), direct->directHl);
+                direct->payload.clear();
             }
             continue;
         }
 
+        if (sizeBytes - pos < 4u)
+        {
+            direct->pendingCommand.assign(data + pos, data + sizeBytes);
+            break;
+        }
+
+        const uint32_t commandStart = pos;
         uint32_t cmd;
         memcpy(&cmd, data + pos, 4);
         pos += 4;
@@ -345,6 +427,15 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         vif1_regs.num = num;
         if (irq)
             vif1_regs.stat |= (1u << 11); // INT
+
+        const uint32_t requiredPayload = vifPayloadBytes(opcode, num, vif1_regs.cycle);
+        if (requiredPayload > sizeBytes - pos)
+        {
+            // Keep the header with its incomplete payload. Later bytes are data,
+            // even when their bit patterns look like MSCAL, MPG or UNPACK codes.
+            direct->pendingCommand.assign(data + commandStart, data + sizeBytes);
+            break;
+        }
 
         if (opcode == VIF_NOP)
         {
@@ -487,32 +578,19 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
         else if (opcode == VIF_DIRECT || opcode == VIF_DIRECTHL)
         {
-            uint32_t qwCount = imm;
-            if (qwCount == 0)
-                qwCount = 65536;
-            const uint32_t availableQw = (sizeBytes - pos) / 16u;
-            const bool truncated = qwCount > availableQw;
-            if (qwCount > availableQw)
-                qwCount = availableQw;
-
-            if (qwCount > 0)
+            const uint32_t payloadBytes = (imm == 0u ? 65536u : imm) * 16u;
+            const bool directHl = opcode == VIF_DIRECTHL;
+            if (payloadBytes <= sizeBytes - pos)
             {
-                const bool directHl = (opcode == VIF_DIRECTHL);
-                submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
-
-                const uint32_t pendingImageQw = pendingGifImageQwc(data + pos, qwCount * 16u);
-                if (pendingImageQw != 0u)
-                {
-                    m_vif1PendingPath2ImageQwc = pendingImageQw;
-                    m_vif1PendingPath2DirectHl = directHl;
-                }
+                forwardDirect(data + pos, payloadBytes, directHl);
+                pos += payloadBytes;
             }
-
-            pos += qwCount * 16;
-            if (truncated)
+            else
             {
+                direct->payload.assign(data + pos, data + sizeBytes);
+                direct->remainingBytes = payloadBytes - (sizeBytes - pos);
+                direct->directHl = directHl;
                 pos = sizeBytes;
-                break;
             }
             continue;
         }
@@ -700,14 +778,22 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                         // V4-5: packed color-like format in a single 16-bit value.
                         uint16_t packed = 0;
                         std::memcpy(&packed, srcVec, sizeof(packed));
-                        decompressed[0] = packed & 0x1Fu;
-                        decompressed[1] = (packed >> 5) & 0x1Fu;
-                        decompressed[2] = (packed >> 10) & 0x1Fu;
-                        decompressed[3] = (packed >> 15) & 0x01u;
+                        decompressed[0] = (packed & 0x1Fu) << 3u;
+                        decompressed[1] = ((packed >> 5) & 0x1Fu) << 3u;
+                        decompressed[2] = ((packed >> 10) & 0x1Fu) << 3u;
+                        decompressed[3] = ((packed >> 15) & 0x01u) << 7u;
                     }
                     else
                     {
                         handledFormat = false;
+                    }
+
+                    // V2 writes XYXY, including the nominally indeterminate
+                    // Z/W lanes. Masking and STMOD apply to all four lanes.
+                    if (handledFormat && components == 2)
+                    {
+                        decompressed[2] = decompressed[0];
+                        decompressed[3] = decompressed[1];
                     }
 
                     // Unknown compressed format fallback: preserve legacy raw-copy behavior.

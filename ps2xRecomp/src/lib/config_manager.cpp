@@ -40,6 +40,9 @@ namespace ps2recomp
             config.inputPath = toml::find<std::string>(general, "input");
             config.ghidraMapPath = toml::find_or<std::string>(general, "ghidra_output", "");
             config.outputPath = toml::find<std::string>(general, "output");
+            config.moduleKeys = toml::find_or<std::vector<std::string>>(general, "module_keys", {});
+            config.moduleSymbolPrefix = toml::find_or<std::string>(general, "module_symbol_prefix", "");
+            config.moduleEmitDenseFunctionTable = toml::find_or<bool>(general, "module_emit_dense_function_table", true);
             config.singleFileOutput = toml::find_or<bool>(general, "single_file_output", false);
             config.lowMemoryMode = toml::find_or<bool>(general, "low_memory_mode", config.lowMemoryMode);
             const int64_t configuredOutputWorkers = toml::find_or<int64_t>(
@@ -289,6 +292,9 @@ namespace ps2recomp
         general["input"] = config.inputPath;
         general["ghidra_output"] = config.ghidraMapPath;
         general["output"] = config.outputPath;
+        general["module_keys"] = config.moduleKeys;
+        general["module_symbol_prefix"] = config.moduleSymbolPrefix;
+        general["module_emit_dense_function_table"] = config.moduleEmitDenseFunctionTable;
         general["single_file_output"] = config.singleFileOutput;
         general["low_memory_mode"] = config.lowMemoryMode;
         general["output_worker_threads"] = static_cast<int64_t>(config.outputWorkerThreads);

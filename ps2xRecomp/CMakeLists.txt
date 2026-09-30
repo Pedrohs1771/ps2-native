@@ -115,6 +115,9 @@ file(GLOB_RECURSE PS2RECOMP_EXE_SOURCES CONFIGURE_DEPENDS
 
 add_executable(ps2_recomp ${PS2RECOMP_EXE_SOURCES})
 
+add_executable(ps2_native_overlay src/tools/native_overlay_main.cpp)
+target_link_libraries(ps2_native_overlay PRIVATE ps2_recomp_lib)
+
 target_link_libraries(ps2_recomp
 PRIVATE
     ps2_recomp_lib

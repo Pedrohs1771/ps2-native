@@ -8,7 +8,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(PS2X_ENABLE_RUNNER_UNITY_BUILD "Build ps2EntryRunner with CMake unity build" ON)
 set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 32 CACHE STRING "Unity build batch size for ps2EntryRunner")
 option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2EntryRunner" ON)
+option(PS2X_ENABLE_RELEASE_IPO "Enable whole-program optimization/LTO for final release packaging" OFF)
+option(PS2X_FAST_ITERATION "Use -O1 and no LTO for fast development relinks" ON)
+option(PS2X_FAST_ITERATION_OPTIMIZE_VU "Use -O2 for private VU sources during fast iteration" ON)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
+option(PS2X_ENABLE_LARGE_GENERATED_FAST_COMPILE
+    "Compile very large generated game functions with lower optimization and without LTO" ON)
+set(PS2X_LARGE_GENERATED_FAST_COMPILE_THRESHOLD_BYTES 4194304 CACHE STRING
+    "Generated C++ source size above which fast-compile options are used")
 
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" ON)
 option(PS2X_ENABLE_AGRESSIVE_LOGS "Enable very verbose/agressive PS2 runtime logs" ON)
@@ -52,6 +59,7 @@ set(PS2X_VITA_APP_NAME "PS2 Retro X" CACHE STRING "Display name for the Vita bub
 set(PS2X_VITA_TITLEID "RANJ00001" CACHE STRING "9-character Vita title id")
 set(PS2X_VITA_VERSION "01.00" CACHE STRING "Vita app version")
 set(PS2X_DEFAULT_BOOT_ELF "" CACHE STRING "Guest ELF path passed directly to main() when argv is unavailable")
+set(PS2X_GENERATED_CODE_DIR "" CACHE PATH "Per-game C++ output directory produced by ps2_recomp")
 
 if(PS2X_IS_VITA)
     if(NOT DEFINED ENV{VITASDK})
@@ -376,6 +384,7 @@ function(ps2x_stage_ffmpeg_runtime_dlls target_name)
 endfunction()
 
 add_library(ps2_runtime STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/iso_inspect/src/iso_inspector.cpp"
     src/lib/game_overrides.cpp
     src/lib/gs/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp
@@ -389,12 +398,28 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
+    src/lib/ps2_native_overlay.cpp
     src/lib/ps2_vif1_interpreter.cpp
     src/lib/vu/ps2_vu1_core.cpp
     src/lib/vu/ps2_vu1_upper.cpp
     src/lib/vu/ps2_vu1_lower.cpp
     src/lib/games_database.cpp
 )
+
+target_include_directories(ps2_runtime PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/iso_inspect/include")
+
+# The EE vector helpers use SSE4.1 intrinsics on x86 hosts. Keep this
+# requirement on the runtime's public usage requirements so generated game
+# sources and every runner that includes its public headers use a compatible
+# instruction set as well. ARM targets continue through sse2neon.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    if(MSVC)
+        target_compile_options(ps2_runtime PUBLIC /arch:AVX)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(ps2_runtime PUBLIC -msse4.1)
+    endif()
+endif()
 
 if(PS2X_ENABLE_RUNTIME_LOGS)
     target_compile_definitions(ps2_runtime PUBLIC
@@ -444,6 +469,35 @@ file(GLOB RUNNER_SRC_FILES CONFIGURE_DEPENDS
 set(RUNNER_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/main.cpp")
 set(ROOT_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
+set(PS2X_GENERATED_GAME_SOURCES "")
+set(PS2X_GENERATED_GAME_HEADERS "")
+if(PS2X_GENERATED_CODE_DIR)
+    get_filename_component(PS2X_GENERATED_CODE_DIR "${PS2X_GENERATED_CODE_DIR}" REALPATH)
+    if(NOT IS_DIRECTORY "${PS2X_GENERATED_CODE_DIR}")
+        message(FATAL_ERROR "PS2X_GENERATED_CODE_DIR is not a directory: ${PS2X_GENERATED_CODE_DIR}")
+    endif()
+    if(NOT EXISTS "${PS2X_GENERATED_CODE_DIR}/register_functions.cpp")
+        message(FATAL_ERROR "Generated code is missing register_functions.cpp: ${PS2X_GENERATED_CODE_DIR}")
+    endif()
+
+    file(GLOB_RECURSE PS2X_GENERATED_GAME_SOURCES CONFIGURE_DEPENDS
+        "${PS2X_GENERATED_CODE_DIR}/*.cpp"
+    )
+    file(GLOB_RECURSE PS2X_GENERATED_GAME_HEADERS CONFIGURE_DEPENDS
+        "${PS2X_GENERATED_CODE_DIR}/*.h"
+        "${PS2X_GENERATED_CODE_DIR}/*.hpp"
+    )
+    if(NOT PS2X_GENERATED_GAME_SOURCES)
+        message(FATAL_ERROR "No generated C++ sources were found in ${PS2X_GENERATED_CODE_DIR}")
+    endif()
+    list(REMOVE_ITEM RUNNER_SRC_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/register_functions.cpp"
+    )
+    list(APPEND RUNNER_SRC_FILES ${PS2X_GENERATED_GAME_SOURCES} ${PS2X_GENERATED_GAME_HEADERS})
+    list(LENGTH PS2X_GENERATED_GAME_SOURCES PS2X_GENERATED_SOURCE_COUNT)
+    message(STATUS "Building ${PS2X_GENERATED_SOURCE_COUNT} generated sources into the PS2 runner")
+endif()
+
 if(EXISTS "${RUNNER_MAIN_CPP}")
     list(APPEND RUNNER_SRC_FILES "${RUNNER_MAIN_CPP}")
 elseif(EXISTS "${ROOT_MAIN_CPP}")
@@ -462,11 +516,66 @@ else()
     )
 endif()
 
+# The generated registration table is intentionally large (hundreds of
+# thousands of bindings). It runs only during startup, and putting it into
+# whole-program LTO connects every generated game function into one expensive
+# LTRANS partition. Keep it as a standalone native object without LTO; startup
+# table construction does not benefit from optimizing each binding expression.
+if(PS2X_GENERATED_CODE_DIR AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    set(PS2X_GENERATED_FUNCTION_REGISTRY
+        "${PS2X_GENERATED_CODE_DIR}/register_functions.cpp")
+    if(EXISTS "${PS2X_GENERATED_FUNCTION_REGISTRY}")
+        set_source_files_properties("${PS2X_GENERATED_FUNCTION_REGISTRY}"
+            PROPERTIES
+                COMPILE_OPTIONS "-O0;-fno-lto"
+                SKIP_UNITY_BUILD_INCLUSION TRUE
+                SKIP_PRECOMPILE_HEADERS TRUE
+        )
+    endif()
+endif()
+
+# Extremely large generated functions can make the optimizing compiler spend
+# minutes in a single translation unit and then burden whole-program LTO with
+# code that offers little extra benefit from O3. Keep the normal Release flags
+# for ordinary functions, while bounding compile and link cost for outliers.
+set(PS2X_GENERATED_LARGE_SOURCES "")
+if(PS2X_GENERATED_CODE_DIR AND PS2X_ENABLE_LARGE_GENERATED_FAST_COMPILE AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    foreach(PS2X_GENERATED_FUNCTION_SOURCE IN LISTS PS2X_GENERATED_GAME_SOURCES)
+        if(PS2X_GENERATED_FUNCTION_SOURCE STREQUAL PS2X_GENERATED_FUNCTION_REGISTRY)
+            continue()
+        endif()
+        file(SIZE "${PS2X_GENERATED_FUNCTION_SOURCE}" PS2X_GENERATED_FUNCTION_SOURCE_BYTES)
+        if(PS2X_GENERATED_FUNCTION_SOURCE_BYTES GREATER PS2X_LARGE_GENERATED_FAST_COMPILE_THRESHOLD_BYTES)
+            list(APPEND PS2X_GENERATED_LARGE_SOURCES "${PS2X_GENERATED_FUNCTION_SOURCE}")
+            if(PS2X_FAST_ITERATION)
+                set(PS2X_LARGE_FUNCTION_COMPILE_OPTIONS "-O0;-fno-lto")
+                set_source_files_properties("${PS2X_GENERATED_FUNCTION_SOURCE}"
+                    PROPERTIES SKIP_PRECOMPILE_HEADERS TRUE)
+            else()
+                set(PS2X_LARGE_FUNCTION_COMPILE_OPTIONS "-O1;-fno-lto")
+            endif()
+            set_source_files_properties("${PS2X_GENERATED_FUNCTION_SOURCE}"
+                PROPERTIES
+                    COMPILE_OPTIONS "${PS2X_LARGE_FUNCTION_COMPILE_OPTIONS}"
+                    SKIP_UNITY_BUILD_INCLUSION TRUE
+            )
+            message(STATUS
+                "Fast-compiling large generated function (${PS2X_GENERATED_FUNCTION_SOURCE_BYTES} bytes): ${PS2X_GENERATED_FUNCTION_SOURCE}")
+        endif()
+    endforeach()
+endif()
+
 if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
     set_target_properties(ps2EntryRunner PROPERTIES
         UNITY_BUILD ON
         UNITY_BUILD_BATCH_SIZE "${PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE}"
     )
+endif()
+
+if(PS2X_GENERATED_CODE_DIR)
+    target_include_directories(ps2EntryRunner BEFORE PRIVATE "${PS2X_GENERATED_CODE_DIR}")
 endif()
 
 if(PS2X_ENABLE_RUNNER_PCH)
@@ -475,9 +584,14 @@ if(PS2X_ENABLE_RUNNER_PCH)
         "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_runtime.h"
     )
 
+    if(PS2X_GENERATED_CODE_DIR)
+        set(PS2X_RUNNER_DECLARATION_DIR "${PS2X_GENERATED_CODE_DIR}")
+    else()
+        set(PS2X_RUNNER_DECLARATION_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    endif()
     foreach(PS2X_RUNNER_GENERATED_HEADER IN ITEMS
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_functions.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_stubs.h")
+        "${PS2X_RUNNER_DECLARATION_DIR}/ps2_recompiled_functions.h"
+        "${PS2X_RUNNER_DECLARATION_DIR}/ps2_recompiled_stubs.h")
         if(EXISTS "${PS2X_RUNNER_GENERATED_HEADER}")
             list(APPEND PS2X_RUNNER_PCH_HEADERS "${PS2X_RUNNER_GENERATED_HEADER}")
         endif()
@@ -507,6 +621,11 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)
+    target_link_libraries(ps2_runtime PRIVATE ${CMAKE_DL_LIBS})
+    # Native overlay DSOs reuse runtime methods exported by the host runner.
+    target_link_options(ps2EntryRunner PRIVATE "-Wl,--export-dynamic")
+endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime
@@ -555,8 +674,41 @@ if(PS2X_IS_VITA)
 endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-    EnableFastReleaseMode(ps2_runtime)
-    EnableFastReleaseMode(ps2EntryRunner)
+    if(PS2X_FAST_ITERATION)
+        message(STATUS "Fast iteration enabled: generated game code and runner use -O1 without LTO")
+        set_property(TARGET ps2_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+        set_property(TARGET ps2EntryRunner PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(ps2_runtime PRIVATE -O1 -fno-lto)
+            target_compile_options(ps2EntryRunner PRIVATE -O1 -fno-lto)
+            if(PS2X_FAST_ITERATION_OPTIMIZE_VU)
+                set_property(SOURCE
+                    src/lib/vu/ps2_vu1_core.cpp
+                    src/lib/vu/ps2_vu1_upper.cpp
+                    src/lib/vu/ps2_vu1_lower.cpp
+                    APPEND PROPERTY COMPILE_OPTIONS -O2)
+            endif()
+            foreach(PS2X_GENERATED_FUNCTION_SOURCE IN LISTS PS2X_GENERATED_GAME_SOURCES)
+                if(PS2X_GENERATED_FUNCTION_SOURCE STREQUAL PS2X_GENERATED_FUNCTION_REGISTRY OR
+                   PS2X_GENERATED_FUNCTION_SOURCE IN_LIST PS2X_GENERATED_LARGE_SOURCES)
+                    continue()
+                endif()
+                set_source_files_properties("${PS2X_GENERATED_FUNCTION_SOURCE}"
+                    PROPERTIES COMPILE_OPTIONS "-O1;-fno-lto")
+            endforeach()
+        elseif(MSVC)
+            target_compile_options(ps2_runtime PRIVATE /O1)
+            target_compile_options(ps2EntryRunner PRIVATE /O1)
+        endif()
+    elseif(PS2X_ENABLE_RELEASE_IPO)
+        EnableFastReleaseMode(ps2_runtime)
+        EnableFastReleaseMode(ps2EntryRunner)
+    else()
+        message(STATUS "Release IPO/LTO disabled for faster native iteration")
+        set_property(TARGET ps2_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+        set_property(TARGET ps2EntryRunner PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+    endif()
 
     if(WIN32 AND NOT PS2X_SHOW_WINDOWS_CONSOLE)
         if(MSVC)
@@ -588,6 +740,18 @@ if(PS2X_IS_VITA)
 endif()
 
 if(PS2X_IS_ANDROID)
+    set(PS2X_ANDROID_NDK_ROOT "${CMAKE_ANDROID_NDK}")
+    if(NOT PS2X_ANDROID_NDK_ROOT)
+        set(PS2X_ANDROID_NDK_ROOT "${ANDROID_NDK}")
+    endif()
+    if(NOT PS2X_ANDROID_NDK_ROOT AND DEFINED ENV{ANDROID_NDK_HOME})
+        set(PS2X_ANDROID_NDK_ROOT "$ENV{ANDROID_NDK_HOME}")
+    endif()
+    set(PS2X_ANDROID_APP_GLUE_DIR "${PS2X_ANDROID_NDK_ROOT}/sources/android/native_app_glue")
+    if(NOT EXISTS "${PS2X_ANDROID_APP_GLUE_DIR}/android_native_app_glue.h")
+        message(FATAL_ERROR "Could not find android_native_app_glue.h under ${PS2X_ANDROID_APP_GLUE_DIR}")
+    endif()
+    target_include_directories(ps2EntryRunner PRIVATE "${PS2X_ANDROID_APP_GLUE_DIR}")
     target_sources(ps2EntryRunner PRIVATE src/lib/ps2_android_runtime.cpp)
 endif()
 

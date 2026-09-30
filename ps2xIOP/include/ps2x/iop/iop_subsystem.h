@@ -25,6 +25,8 @@ namespace ps2x::iop
 
         [[nodiscard]] ModuleLoadResult loadModule(std::string_view path, const void *arguments = nullptr, uint32_t argumentSize = 0);
         [[nodiscard]] ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
+        // LOADFILE function 6 uses an ELF previously transferred into physical IOP RAM.
+        [[nodiscard]] ModuleLoadResult loadModuleIopBuffer(uint32_t iopAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
         [[nodiscard]] bool stopModule(int32_t moduleId, int32_t *result = nullptr);
         void runEeCycles(uint64_t eeCycles) noexcept;
 
@@ -32,6 +34,7 @@ namespace ps2x::iop
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
         void onSifTransfer(const SifTransfer &transfer);
+        [[nodiscard]] bool receiveSifCommand(uint32_t commandId, const void *packet, size_t packetSize);
 
         // Physical IOP RAM access shared by the emulator, SIF DMA, and HLE services. Addresses are IOP addresses.
         [[nodiscard]] uint32_t allocateMemory(uint32_t size, uint32_t alignment = 16u);

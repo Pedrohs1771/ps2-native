@@ -6,8 +6,12 @@
 #include "runtime/ps2_vu1.h"
 
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <vector>
 
@@ -217,6 +221,75 @@ void register_ps2_vu1_tests()
 {
     MiniTest::Case("PS2VU1", [](TestCase &tc)
     {
+#if defined(__linux__)
+        tc.Run("on-demand VU capture retains input and the bounded instruction trace", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "Initializes VU diagnostic fixture");
+            writeVuInstructionPair(fx.code, 0u, makeVuBranch(-1), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 8u, 0x8000033Cu, kVuUpperNop);
+            fx.data[100] = 0xA5;
+            const auto dir = std::filesystem::temp_directory_path() /
+                ("ps2-vu-capture-fixture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            const char *old = std::getenv("PS2X_CAPTURE_SCENE");
+            struct Cleanup
+            {
+                std::filesystem::path path;
+                std::string previous;
+                bool existed;
+                ~Cleanup()
+                {
+                    if (existed) setenv("PS2X_CAPTURE_SCENE", previous.c_str(), 1);
+                    else unsetenv("PS2X_CAPTURE_SCENE");
+                    std::error_code ec; std::filesystem::remove_all(path, ec);
+                }
+            } cleanup{dir, old ? old : "", old != nullptr};
+            std::filesystem::create_directories(dir);
+            std::ofstream(dir / ".vu-request").close();
+            setenv("PS2X_CAPTURE_SCENE", dir.c_str(), 1);
+            VU1Interpreter vu1;
+            vu1.state().vf[3][0] = 2.5f;
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                        fx.gs, &fx.mem, 0u, 7u, 8u, 1024u);
+            t.IsTrue(!std::filesystem::exists(dir / ".vu-request"), "Consumes one capture request");
+            std::filesystem::path capture;
+            for (const auto &entry : std::filesystem::directory_iterator(dir))
+                if (entry.is_directory()) capture = entry.path();
+            t.IsTrue(!capture.empty(), "Writes the requested VU capture");
+            if (capture.empty()) return;
+            t.Equals(std::filesystem::file_size(capture / "input-state.bin"), uintmax_t(sizeof(VU1State)), "Captures the host state ABI");
+            t.Equals(std::filesystem::file_size(capture / "input-data.bin"), uintmax_t(PS2_VU1_DATA_SIZE), "Captures all input data");
+            t.Equals(std::filesystem::file_size(capture / "code.bin"), uintmax_t(PS2_VU1_CODE_SIZE), "Captures all microcode");
+            VU1State input{};
+            std::ifstream state(capture / "input-state.bin", std::ios::binary);
+            state.read(reinterpret_cast<char *>(&input), sizeof(input));
+            t.Equals(input.vf[3][0], 2.5f, "Preserves pre-execution vector values");
+            t.Equals(input.top, 7u, "Captures current VIF TOP");
+            t.Equals(input.itop, 8u, "Captures current VIF ITOP");
+            std::ifstream info(capture / "trace.txt");
+            const std::string text((std::istreambuf_iterator<char>(info)), {});
+            t.IsTrue(text.find("budgetReached=1") != std::string::npos, "Distinguishes a cycle limit from E-bit termination");
+            t.IsTrue(text.find("traceEntries=512") != std::string::npos, "Instruction ring stays bounded");
+            const auto registers = capture / "trace-state.bin";
+            t.IsTrue(std::filesystem::exists(registers), "Retains vector and scalar registers at each traced issue");
+            if (std::filesystem::exists(registers))
+            {
+                t.Equals(std::filesystem::file_size(registers), uintmax_t(512u * sizeof(VU1State)), "Register history shares the bounded trace length");
+                VU1State issued{};
+                std::ifstream history(registers, std::ios::binary);
+                history.read(reinterpret_cast<char *>(&issued), sizeof(issued));
+                t.Equals(issued.vf[3][0], 2.5f, "Register history preserves raw vector values");
+                t.Equals(issued.top, 7u, "Register history retains the execution TOP");
+                t.IsTrue(issued.pc == 0u || issued.pc == 8u, "Register snapshots describe issued instruction addresses");
+            }
+            t.Equals(vu1.state().vf[3][0], 2.5f, "Diagnostics do not change guest values");
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                        fx.gs, &fx.mem, 0u, 7u, 8u, 8u);
+            size_t directories = 0;
+            for (const auto &entry : std::filesystem::directory_iterator(dir)) directories += entry.is_directory();
+            t.Equals(directories, size_t(1), "No duplicate capture without another marker");
+        });
+#endif
         tc.Run("upper ADD applies the destination mask", [](TestCase &t)
         {
             Vu1Fixture fx;
@@ -281,6 +354,71 @@ void register_ps2_vu1_tests()
             t.Equals(vu1.state().vf[2][2], 5.0f, "ADDi should use old I for z");
             t.Equals(vu1.state().vf[2][3], 6.0f, "ADDi should use old I for w");
             t.Equals(vu1.state().i, 7.0f, "LOI should commit lower immediate into I after upper execution");
+        });
+
+        tc.Run("LOI and MAXi preserve the exact integer bit patterns used to build GIF tags", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "Initializes GIF tag construction fixture");
+            writeVuInstructionPair(fx.code, 0u, 1u, kVuUpperNop | (1u << 31u));
+            writeVuInstructionPair(fx.code, 8u, 0x10000000u,
+                makeVuUpper(0x1Du, 0x8u, 0u, 0u, 31u) | (1u << 31u));
+            writeVuInstructionPair(fx.code, 16u, 14u,
+                makeVuUpper(0x1Du, 0x4u, 0u, 0u, 31u) | (1u << 31u));
+            writeVuInstructionPair(fx.code, 24u, 0x8000033Cu,
+                makeVuUpper(0x1Du, 0x2u, 0u, 0u, 31u));
+            writeVuInstructionPair(fx.code, 32u, 0x8000033Cu, kVuUpperNop | (1u << 30u));
+            writeVuInstructionPair(fx.code, 40u, 0x8000033Cu, kVuUpperNop);
+            VU1Interpreter vu;
+            vu.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                fx.gs, &fx.mem, 0u, 0u, 0u, 32u);
+            uint32_t words[4]; std::memcpy(words, vu.state().vf[31], sizeof(words));
+            t.Equals(words[0], 1u, "GIF NLOOP must retain the denormal integer bit pattern 1");
+            t.Equals(words[1], 0x10000000u, "GIF NREG must retain its complete control field");
+            t.Equals(words[2], 14u, "The A+D descriptor must retain the denormal integer bit pattern 14");
+            uint32_t immediate; std::memcpy(&immediate, &vu.state().i, sizeof(immediate));
+            t.Equals(immediate, 14u, "LOI does not normalize its stored raw value");
+        });
+
+        tc.Run("VU MIN MAX order raw encodings without flushing denormals or clamping special values", [](TestCase &t)
+        {
+            const uint32_t pairs[][4] = {
+                {1u, 0u, 1u, 0u},
+                {0x80000001u, 0x80000000u, 0x80000000u, 0x80000001u},
+                {0x7FC01234u, 0x7F800000u, 0x7FC01234u, 0x7F800000u},
+                {0xFFC01234u, 0xFF800000u, 0xFF800000u, 0xFFC01234u},
+                {0x3F800000u, 0xBF800000u, 0x3F800000u, 0xBF800000u},
+                {0u, 0x80000000u, 0u, 0x80000000u},
+                {0x80000000u, 0u, 0u, 0x80000000u},
+                {0x7F7FFFFFu, 0x7FFFFFFFu, 0x7FFFFFFFu, 0x7F7FFFFFu},
+            };
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "Initializes raw MIN/MAX fixture");
+            for (unsigned mode = 0; mode < 6; ++mode) for (unsigned test = 0; test < 8; ++test)
+            {
+                const bool maximum = (mode & 1u) == 0;
+                const uint8_t op = mode < 2 ? (maximum ? 0x2Bu : 0x2Fu)
+                    : mode < 4 ? (maximum ? 0x11u : 0x15u) : (maximum ? 0x1Du : 0x1Fu);
+                const uint8_t target = (test & 1u) ? 1u : 3u;
+                writeTrackedVuInstructionPair(fx, 0u, 0x8000033Cu,
+                    makeVuUpper(op, 0xFu, 2u, 1u, target) | (1u << 30u));
+                writeTrackedVuInstructionPair(fx, 8u, 0x8000033Cu, kVuUpperNop);
+                VU1Interpreter vu;
+                for (unsigned lane = 0; lane < 4; ++lane)
+                {
+                    std::memcpy(&vu.state().vf[1][lane], &pairs[test][0], sizeof(uint32_t));
+                    std::memcpy(&vu.state().vf[2][lane], &pairs[test][1], sizeof(uint32_t));
+                }
+                std::memcpy(&vu.state().i, &pairs[test][1], sizeof(uint32_t));
+                vu.state().status = 0x345u; vu.state().mac = 0x1234u;
+                vu.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                    fx.gs, &fx.mem, 0u, 0u, 0u, 32u);
+                uint32_t words[4]; std::memcpy(words, vu.state().vf[target], sizeof(words));
+                for (unsigned lane = 0; lane < 4; ++lane)
+                    t.Equals(words[lane], pairs[test][maximum ? 2 : 3], "Selection preserves raw operand bits, including aliased destinations");
+                t.Equals(vu.state().status, 0x345u, "MIN/MAX do not produce arithmetic status flags");
+                t.Equals(vu.state().mac, 0x1234u, "MIN/MAX do not produce MAC flags");
+            }
         });
 
         tc.Run("ITOF converts the raw signed integer bits without float normalization", [](TestCase &t)
@@ -381,6 +519,28 @@ void register_ps2_vu1_tests()
             t.Equals(stored[3], -4.0f, "SQ.xz should preserve w");
             t.Equals(vu1.state().cycles, static_cast<uint64_t>(4u),
                      "disjoint LQ/SQ lanes should issue without delaying LQ writeback");
+        });
+
+        tc.Run("integer dependencies cover every nonzero VI mask bit", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "Initializes VI mask fixture");
+            for (uint8_t reg = 1u; reg < 16u; ++reg)
+            {
+                const uint8_t target = static_cast<uint8_t>(reg % 15u + 1u);
+                const int32_t value = 100 + reg;
+                writeVuInstructionPair(fx.code, 0u, makeVuIaddiu(reg, 0u, value), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 8u, makeVuLowerDirect(0x30u, reg, reg, target), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 16u, makeVuIaddiu(0u, target, 7), kVuUpperNop);
+                fx.mem.markVU1CodeModified();
+                VU1Interpreter vu1;
+                vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                            fx.gs, &fx.mem, 0u, 0u, 0u, 3u);
+                t.Equals(vu1.state().vi[reg], value, "Writes the selected mask bit, including VI15");
+                t.Equals(vu1.state().vi[target], 2 * value, "Reads both operands after integer writeback");
+                t.Equals(vu1.state().vi[0], 0, "Excludes constant VI0 from write masks");
+                t.Equals(vu1.state().cycles, uint64_t{3}, "Preserves integer pipeline timing");
+            }
         });
 
         tc.Run("integer lower ops keep VI0 hardwired to zero", [](TestCase &t)
@@ -937,6 +1097,36 @@ void register_ps2_vu1_tests()
                      "T on a branch should stop before executing the branch target");
             t.Equals(vu1.state().pc, 16u,
                      "the stopped TPC should be the branch destination");
+        });
+
+        tc.Run("consecutive VI writes retain the value from before the whole chain for branches", [](TestCase &t)
+        {
+            for (unsigned family = 0; family < 3; ++family)
+            {
+                Vu1Fixture fx;
+                t.IsTrue(fx.initialize(), "Initializes VI write-chain fixture");
+                const auto write = [family](unsigned vf)
+                {
+                    if (family == 0) return makeVuLowerSpecial(0x35u, static_cast<uint8_t>(vf), 5u, 0u, 0xFu); // SQI
+                    if (family == 1) return makeVuLowerSpecial(0x34u, 5u, static_cast<uint8_t>(vf), 0u, 0xFu); // LQI
+                    return makeVuIaddiu(5u, 5u, 1);
+                };
+                writeVuInstructionPair(fx.code, 0u, write(1), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 8u, write(2), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 16u, makeVuIbne(5u, 3u, 3), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 24u, write(3), kVuUpperNop); // Architectural branch delay slot.
+                writeVuInstructionPair(fx.code, 32u, makeVuIaddiu(2u, 0u, 1), kVuUpperNop | (1u << 30u));
+                writeVuInstructionPair(fx.code, 40u, 0x8000033Cu, kVuUpperNop);
+                writeVuInstructionPair(fx.code, 48u, makeVuIaddiu(2u, 0u, 9), kVuUpperNop | (1u << 30u));
+                writeVuInstructionPair(fx.code, 56u, 0x8000033Cu, kVuUpperNop);
+                VU1Interpreter vu1;
+                vu1.state().vi[5] = 100;
+                vu1.state().vi[3] = 100;
+                vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                            fx.gs, &fx.mem, 0u, 0u, 0u, 32u);
+                t.Equals(vu1.state().vi[2], 1, "IBNE reads 100 from before both writes, so it must fall through");
+                t.Equals(vu1.state().vi[5], 103, "All three counter increments still commit, including the delay slot");
+            }
         });
 
         tc.Run("conditional branch sees the previous VI value for one instruction", [](TestCase &t)

@@ -6,6 +6,23 @@ namespace ps2_stubs
 {
     namespace
     {
+        // R5900 libm's double ABI uses one 64-bit GPR per argument and V0
+        // for the result. The single-precision *f entry points use FPRs.
+        double readDoubleArgument(const R5900Context *ctx, int reg)
+        {
+            const uint64_t bits = static_cast<uint64_t>(_mm_cvtsi128_si64(ctx->r[reg]));
+            double value;
+            std::memcpy(&value, &bits, sizeof(value));
+            return value;
+        }
+
+        void returnDouble(R5900Context *ctx, double value)
+        {
+            uint64_t bits;
+            std::memcpy(&bits, &value, sizeof(bits));
+            setReturnU64(ctx, bits);
+        }
+
         uint32_t sanitizeMemTransferSize(uint32_t size, const char *op)
         {
             constexpr uint32_t kMaxTransfer = PS2_RAM_SIZE;
@@ -918,14 +935,12 @@ namespace ps2_stubs
 
     void sqrt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::sqrtf(arg);
+        returnDouble(ctx, std::sqrt(readDoubleArgument(ctx, 4)));
     }
 
     void sin(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::sinf(arg);
+        returnDouble(ctx, std::sin(readDoubleArgument(ctx, 4)));
     }
 
     void __kernel_sinf(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -938,8 +953,7 @@ namespace ps2_stubs
 
     void cos(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::cosf(arg);
+        returnDouble(ctx, std::cos(readDoubleArgument(ctx, 4)));
     }
 
     void __kernel_cosf(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -974,58 +988,47 @@ namespace ps2_stubs
 
     void tan(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::tanf(arg);
+        returnDouble(ctx, std::tan(readDoubleArgument(ctx, 4)));
     }
 
     void atan2(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float y = ctx->f[12];
-        float x = ctx->f[14];
-        ctx->f[0] = ::atan2f(y, x);
+        returnDouble(ctx, std::atan2(readDoubleArgument(ctx, 4), readDoubleArgument(ctx, 5)));
     }
 
     void pow(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float base = ctx->f[12];
-        float exp = ctx->f[14];
-        ctx->f[0] = ::powf(base, exp);
+        returnDouble(ctx, std::pow(readDoubleArgument(ctx, 4), readDoubleArgument(ctx, 5)));
     }
 
     void exp(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::expf(arg);
+        returnDouble(ctx, std::exp(readDoubleArgument(ctx, 4)));
     }
 
     void log(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::logf(arg);
+        returnDouble(ctx, std::log(readDoubleArgument(ctx, 4)));
     }
 
     void log10(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::log10f(arg);
+        returnDouble(ctx, std::log10(readDoubleArgument(ctx, 4)));
     }
 
     void ceil(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::ceilf(arg);
+        returnDouble(ctx, std::ceil(readDoubleArgument(ctx, 4)));
     }
 
     void floor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::floorf(arg);
+        returnDouble(ctx, std::floor(readDoubleArgument(ctx, 4)));
     }
 
     void fabs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float arg = ctx->f[12];
-        ctx->f[0] = ::fabsf(arg);
+        returnDouble(ctx, std::fabs(readDoubleArgument(ctx, 4)));
     }
     void abs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -1040,21 +1043,7 @@ namespace ps2_stubs
 
     void atan(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        float in = ctx ? ctx->f[12] : 0.0f;
-        if (in == 0.0f)
-        {
-            uint32_t raw = getRegU32(ctx, 4);
-            std::memcpy(&in, &raw, sizeof(in));
-        }
-        const float out = std::atan(in);
-        if (ctx)
-        {
-            ctx->f[0] = out;
-        }
-
-        uint32_t outRaw = 0u;
-        std::memcpy(&outRaw, &out, sizeof(outRaw));
-        setReturnU32(ctx, outRaw);
+        returnDouble(ctx, std::atan(readDoubleArgument(ctx, 4)));
     }
 
     void memchr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

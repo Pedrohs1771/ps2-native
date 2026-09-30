@@ -134,6 +134,100 @@ namespace
 
 void register_ps2_sif_dma_tests()
 {
+    MiniTest::Case("SIF command transport", [](TestCase &suite)
+    {
+        suite.Run("EE command handler tables remain visible in guest memory", [](TestCase &t)
+        {
+            TestEnv env;
+            setRegU32(env.ctx, 4, 0x1000u); setRegU32(env.ctx, 5, 16u);
+            ps2_stubs::sceSifSetCmdBuffer(env.rdram.data(), &env.ctx, &env.runtime);
+            setRegU32(env.ctx, 4, 0u); setRegU32(env.ctx, 5, 0x12340u); setRegU32(env.ctx, 6, 0x55u);
+            ps2_stubs::sceSifAddCmdHandler(env.rdram.data(), &env.ctx, &env.runtime);
+            uint32_t function = 0u, argument = 0u;
+            std::memcpy(&function, env.rdram.data() + 0x1000u, 4u);
+            std::memcpy(&argument, env.rdram.data() + 0x1004u, 4u);
+            t.Equals(function, 0x12340u, "AddCmdHandler marks the guest slot occupied");
+            t.Equals(argument, 0x55u, "Guest table retains handler userdata");
+            ps2_stubs::sceSifRemoveCmdHandler(env.rdram.data(), &env.ctx, &env.runtime);
+            std::memcpy(&function, env.rdram.data() + 0x1000u, 4u);
+            t.Equals(function, 0u, "RemoveCmdHandler releases the guest slot");
+            t.Equals(readGuestU32(env.rdram.data(), 0x1004u), 0x55u, "Removing the function preserves userdata");
+
+            setRegU32(env.ctx, 4, 0x2000u); setRegU32(env.ctx, 5, 4u);
+            ps2_stubs::sceSifSetSysCmdBuffer(env.rdram.data(), &env.ctx, &env.runtime);
+            setRegU32(env.ctx, 4, 0x80000001u); setRegU32(env.ctx, 5, 0x12340u); setRegU32(env.ctx, 6, 0x77u);
+            ps2_stubs::sceSifAddCmdHandler(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(readGuestU32(env.rdram.data(), 0x2008u), 0x12340u, "System IDs select their separate table");
+            t.Equals(readGuestU32(env.rdram.data(), 0x200Cu), 0x77u, "System handler userdata remains visible");
+            t.Equals(readGuestU32(env.rdram.data(), 0x1008u), 0u, "System registration leaves the user table intact");
+
+            writeGuestU32(env.rdram.data(), 0x2020u, 0xABCDEFu);
+            setRegU32(env.ctx, 4, 0x80000004u);
+            ps2_stubs::sceSifAddCmdHandler(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegS32(env.ctx, 2), -1, "Rejects a command outside the configured table");
+            t.Equals(readGuestU32(env.rdram.data(), 0x2020u), 0xABCDEFu, "Out-of-range registration preserves adjacent RAM");
+            setRegU32(env.ctx, 4, PS2_RAM_SIZE - 8u); setRegU32(env.ctx, 5, 4u);
+            ps2_stubs::sceSifSetSysCmdBuffer(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegU32(&env.ctx, 2), 0x2000u, "Invalid replacement retains the prior table");
+        });
+        suite.Run("EE SIF dispatch observes prepopulated tables and direct guest edits", [](TestCase &t)
+        {
+            TestEnv env;
+            constexpr uint32_t handler = kSchedulerSifDmaHandlerPc;
+            t.IsTrue(env.runtime.registerFunction(handler, testDmacHandler), "Registers a native callback");
+            writeGuestU32(env.rdram.data(), 0x1000u, handler);
+            writeGuestU32(env.rdram.data(), 0x1004u, 0x55u);
+            setRegU32(env.ctx, 4, 0x1000u); setRegU32(env.ctx, 5, 16u);
+            ps2_stubs::sceSifSetCmdBuffer(env.rdram.data(), &env.ctx, &env.runtime);
+            const std::array<uint32_t, 4> packet{};
+            t.IsTrue(ps2_stubs::dispatchSifCommand(env.rdram.data(), &env.runtime, 0u, packet.data(), sizeof(packet)),
+                     "Dispatches a callback already present when the table is installed");
+            writeGuestU32(env.rdram.data(), 0x1000u, 0u);
+            t.IsFalse(ps2_stubs::dispatchSifCommand(env.rdram.data(), &env.runtime, 0u, packet.data(), sizeof(packet)),
+                      "Direct guest removal disables dispatch despite the cached registration");
+            writeGuestU32(env.rdram.data(), 0x1008u, handler);
+            t.IsTrue(ps2_stubs::dispatchSifCommand(env.rdram.data(), &env.runtime, 1u, packet.data(), sizeof(packet)),
+                     "Direct guest insertion enables a previously empty slot");
+        });
+        suite.Run("EE SendCmd uses n32 extra arguments and the IOP address space", [](TestCase &t)
+        {
+            TestEnv env;
+            constexpr uint32_t packet = 0x1000, source = 0x2000, size = 16;
+            const uint32_t destination = env.runtime.allocateIopMemory(size, 16);
+            t.IsTrue(destination != 0, "Allocates IOP destination");
+            std::array<uint8_t, size> payload{};
+            payload.fill(0x5a);
+            std::memcpy(env.rdram.data() + source, payload.data(), size);
+            std::memset(env.rdram.data() + destination, 0xa5, size);
+            const auto setup = [&]
+            {
+                setRegU32(env.ctx, 4, 0x2a);
+                setRegU32(env.ctx, 5, packet);
+                setRegU32(env.ctx, 6, 20);
+                setRegU32(env.ctx, 7, source);
+                setRegU32(env.ctx, 8, destination);
+                setRegU32(env.ctx, 9, size);
+                setRegU32(env.ctx, 29, 0x400);
+            };
+            setup();
+            ps2_stubs::sceSifSendCmd(env.rdram.data(), &env.ctx, &env.runtime);
+            std::array<uint8_t, size> copied{};
+            t.IsTrue(env.runtime.readIopMemory(destination, copied.data(), size) && copied == payload,
+                     "Stub copies extra data into physical IOP RAM");
+            t.Equals(env.rdram[destination], uint8_t(0xa5), "Equal-numbered EE address stays intact");
+            env.runtime.zeroIopMemory(destination, size);
+            setup();
+            ps2_syscalls::sceSifSendCmd(env.rdram.data(), &env.ctx, &env.runtime);
+            t.IsTrue(env.runtime.readIopMemory(destination, copied.data(), size) && copied == payload,
+                     "Syscall and stub use the same directional transport");
+            t.Equals(env.rdram[destination], uint8_t(0xa5), "Syscall does not alias IOP and EE memory");
+            env.runtime.zeroIopMemory(destination, size);
+            setup();
+            setRegU32(env.ctx, 6, 8);
+            ps2_stubs::sceSifSendCmd(env.rdram.data(), &env.ctx, &env.runtime);
+            t.Equals(getRegU32(&env.ctx, 2), 0u, "Rejects a truncated command header");
+        });
+    });
     MiniTest::Case("PS2SifDma", [](TestCase &tc)
     {
         tc.Run("sceSifSetDma copies payload and sceSifDmaStat reports complete", [](TestCase &t)

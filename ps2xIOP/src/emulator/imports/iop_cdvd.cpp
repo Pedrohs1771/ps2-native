@@ -202,6 +202,7 @@ namespace ps2x::iop::detail
             nodes.clear();
             metadataSectors.clear();
             imageHandle = 0u;
+            lastDiscSource.clear();
         }
 
         bool dispatchImport(uint16_t ordinal, IopCpuState &cpu)
@@ -278,6 +279,28 @@ namespace ps2x::iop::detail
 
             case 13: // sceCdDiskReady
                 cpu.gpr[2] = kCdvdReadyComplete;
+                return true;
+
+            case 14: // sceCdTrayReq (GetReadPos is ordinal 44)
+                // A newly mounted disc must announce its change once so IRXs
+                // initialize their directory cache. Subsequent polls report 0.
+                if (a0 > 2u || a1 == 0u || !memory.ownsRamRange(a1, sizeof(uint32_t)))
+                    cpu.gpr[2] = 0u;
+                else
+                {
+                    const std::string image = host.hostPath(HostPathKind::CdImage);
+                    const std::string source = image.empty() ? host.hostPath(HostPathKind::CdRoot) : image;
+                    const bool changed = a0 == 2u && source != lastDiscSource;
+                    memory.write32(a1, changed ? 1u : 0u);
+                    if (a0 == 2u)
+                        lastDiscSource = source;
+                    cpu.gpr[2] = 1u;
+                }
+                return true;
+
+            case 44: // sceCdGetReadPos
+                // Reads complete synchronously here; no read remains in flight.
+                cpu.gpr[2] = 0u;
                 return true;
 
             case 28: // sceCdStatus
@@ -720,6 +743,7 @@ namespace ps2x::iop::detail
         uint32_t lastReadTimeout = 0u;
         int interruptEventFlagId = 0;
         uint64_t imageHandle = 0u;
+        std::string lastDiscSource;
         bool virtualIsoBuilt = false;
         bool virtualIsoValid = false;
         uint32_t volumeSectors = 0u;

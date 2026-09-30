@@ -10,6 +10,26 @@ The runtime library provides the execution environment for recompiled code, incl
 
 Take your decompiled code and place the cpp files on ps2xRuntime/src/runner and header files on ps2xRuntime/include and compile/be happy.
 
+Desktop runners accept the boot ELF as the first argument and an optional raw
+disc image as the second argument. The image supplies sector reads such as
+`sceCdRead`; extracted files alone do not provide data for arbitrary LBNs.
+
+```sh
+ps2EntryRunner /path/to/boot.elf /path/to/game.iso
+```
+
+The generated package launcher also accepts the image through
+`PS2NATIVE_CD_IMAGE`:
+
+```sh
+PS2NATIVE_CD_IMAGE="/path/to/game.iso" ./run-ps2native.sh
+```
+
+Release configurations default to `PS2X_FAST_ITERATION=ON`: generated game
+code and the runner use `-O1` without LTO so changed code can be rebuilt and
+linked quickly. For final packaging, configure with
+`-DPS2X_FAST_ITERATION=OFF -DPS2X_ENABLE_RELEASE_IPO=ON` to enable release LTO.
+
 ## Vita Build Notes
 
 The Vita runtime uses `Quenom/raylib-5.5-vita` for vita build. I recommend build runtime only.

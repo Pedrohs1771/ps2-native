@@ -48,6 +48,10 @@ namespace ps2recomp
             const std::unordered_map<uint32_t, std::vector<Instruction>> &decodedFunctions,
             const std::unordered_set<uint32_t> &entryAddresses,
             std::unordered_map<uint32_t, std::vector<uint32_t>> &targetsByOwner);
+        static size_t CollectCompleteDispatchTargets(
+            const std::vector<Function> &functions,
+            const std::unordered_map<uint32_t, std::vector<Instruction>> &decodedFunctions,
+            std::unordered_map<uint32_t, std::vector<uint32_t>> &targetsByOwner);
 
         static std::string ClampFilenameLength(const std::string& baseName, const std::string& extension, std::size_t maxLength);
 

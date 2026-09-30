@@ -45,8 +45,12 @@ namespace ps2recomp
             ss << "#include <stdexcept>\n";
             ss << "#include \"ps2_runtime_macros.h\"\n";
             ss << "#include \"ps2_runtime.h\"\n";
-            ss << "#include <ps2_recompiled_functions.h>\n";
-            ss << "#include <ps2_recompiled_stubs.h>\n\n";
+            const bool useConfiguredGeneratedHeaderPath =
+                cg.m_moduleSymbolPrefix.empty() || cg.m_moduleEmitDenseFunctionTable;
+            const char *const delimiter = useConfiguredGeneratedHeaderPath ? "<" : "\"";
+            const char *const closingDelimiter = useConfiguredGeneratedHeaderPath ? ">" : "\"";
+            ss << "#include " << delimiter << "ps2_recompiled_functions.h" << closingDelimiter << "\n";
+            ss << "#include " << delimiter << "ps2_recompiled_stubs.h" << closingDelimiter << "\n\n";
             ss << "#include \"ps2_syscalls.h\"\n";
             ss << "#include \"ps2_stubs.h\"\n\n";
             ss << "#ifdef PS2_FUNCTION_LOG_TRACKER\n";
@@ -104,6 +108,7 @@ namespace ps2recomp
         ss << "\n";
 
         bool lastInstructionWasControlFlow = false;
+        std::vector<Instruction> independentDelayEntries;
 
         for (size_t i = 0; i < instructions.size(); ++i)
         {
@@ -149,7 +154,7 @@ namespace ps2recomp
 
                     if (hasDecodedDelaySlot && internalTargets.contains(delaySlot->address))
                     {
-                        ss << "label_" << std::hex << delaySlot->address << std::dec << ":\n";
+                        independentDelayEntries.push_back(*delaySlot);
                     }
 
                     if (gifDmaKickPlan.valid &&
@@ -161,13 +166,14 @@ namespace ps2recomp
                             inst,
                             *delaySlot,
                             function,
+                            instructions,
                             analysisResult,
                             gifDmaDelaySlotOverride(*delaySlot, gifDmaKickPlan, cg.m_emitInstructionComments));
                         gifDmaKickPlan = {};
                     }
                     else
                     {
-                        ss << cg.handleBranchDelaySlots(inst, *delaySlot, function, analysisResult);
+                        ss << cg.handleBranchDelaySlots(inst, *delaySlot, function, instructions, analysisResult);
                     }
 
                     if (hasDecodedDelaySlot)
@@ -231,6 +237,33 @@ namespace ps2recomp
         {
             ss << "    ctx->pc = 0x" << std::hex << function.end << "u;\n"
                << std::dec;
+        }
+
+        // A jump directly to a delay-slot address executes that instruction
+        // independently. It must not repeat the preceding branch or update RA.
+        // Keep these entries outside the normal branch+delay execution path.
+        if (!independentDelayEntries.empty())
+        {
+            ss << "    return;\n";
+            for (const Instruction &slot : independentDelayEntries)
+            {
+                ss << "label_" << std::hex << slot.address << ":\n{\n";
+                ss << "    ctx->pc = 0x" << slot.address << "u;\n";
+                if (slot.hasDelaySlot)
+                {
+                    // A branch in an architectural delay slot is unpredictable.
+                    // Reject this unsupported entry instead of silently skipping it.
+                    ss << "    throw std::runtime_error(\"branch in independently entered delay slot\");\n";
+                }
+                else
+                {
+                    ss << "    " << cg.translateInstruction(slot) << "\n";
+                    ss << "    if (ctx->pc == 0x" << std::hex << slot.address
+                       << "u) ctx->pc = 0x" << slot.address + 4u << "u;\n";
+                    ss << "    return;\n";
+                }
+                ss << std::dec << "}\n";
+            }
         }
 
         ss << "}\n";
