@@ -1,8 +1,23 @@
-include(CheckIPOSupported)
-
-check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
+if(NOT PS2X_FAST_ITERATION AND PS2X_ENABLE_RELEASE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
+endif()
 
 function(EnableFastReleaseMode TargetName)
+    if(PS2X_FAST_ITERATION)
+        message(STATUS "Fast development profile without LTO: ${TargetName}")
+        set_target_properties(${TargetName} PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION FALSE
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO FALSE)
+        if(MSVC)
+            target_compile_options(${TargetName} PRIVATE /O1 /GL-)
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(${TargetName} PRIVATE -O1 -fno-lto)
+            target_link_options(${TargetName} PRIVATE -fno-lto)
+        endif()
+        return()
+    endif()
     message("> Enabling optimization for: ${TargetName}")
     if(MSVC)
         target_compile_options(${TargetName} PRIVATE
@@ -10,7 +25,6 @@ function(EnableFastReleaseMode TargetName)
                 /O2 # speed
                 /Ob2 # inline aggressively
                 /Oi # intrinsics
-                /GL # whole program opt
                 /Gy # function-level linking
                 /Gw # global data in COMDAT
                 /GF # string pooling
@@ -26,17 +40,20 @@ function(EnableFastReleaseMode TargetName)
         if(TARGET ${TargetName})
             target_link_options(${TargetName} PRIVATE
                 $<$<CONFIG:Release>:
-                    /LTCG # link-time code generation
                     /OPT:REF # remove unreferenced
                     /OPT:ICF # fold identical COMDATs
                 >
             )
         endif()
+        if(PS2X_ENABLE_RELEASE_IPO AND IPO_SUPPORTED)
+            target_compile_options(${TargetName} PRIVATE $<$<CONFIG:Release>:/GL>)
+            target_link_options(${TargetName} PRIVATE $<$<CONFIG:Release>:/LTCG>)
+        endif()
     endif()
 
-    if(IPO_SUPPORTED)
+    if(PS2X_ENABLE_RELEASE_IPO AND IPO_SUPPORTED)
         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-    else()
-        message(WARNING "Interprocedural optimization not supported: ${ipo_error}")
+    elseif(PS2X_ENABLE_RELEASE_IPO)
+        message(WARNING "Interprocedural optimization not supported: ${IPO_ERROR}")
     endif()
 endfunction()

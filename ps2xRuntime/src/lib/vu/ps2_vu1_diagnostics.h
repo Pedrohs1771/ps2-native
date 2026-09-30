@@ -1,6 +1,9 @@
 #pragma once
 
 #include "runtime/ps2_vu1.h"
+#if PS2X_NEXO_LAB
+#include "nexo/vu_snapshot.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -12,8 +15,8 @@
 #include <stdexcept>
 #include <vector>
 
-// Local, opt-in diagnostics for fresh MSCAL execution, with empty pipelines.
-// This deliberately does not pretend to capture the hidden MSCNT pipelines.
+// Local, opt-in diagnostics. NEXO laboratory builds additionally capture the
+// full current-runtime state, including pending pipelines on MSCNT.
 namespace ps2_vu_diagnostics
 {
 struct TraceEntry
@@ -28,14 +31,21 @@ struct Capture
 {
     VU1State input{};
     std::vector<uint8_t> code, data;
+#if PS2X_NEXO_LAB
+    std::vector<uint8_t> inputCanonical;
+    std::vector<uint8_t> path1Events{'N','E','X','O','G','I','F',0, 1,0,0,0, 0,0,0,0};
+    uint32_t path1Count = 0;
+    bool path1RecordingFailed = false;
+#endif
     std::array<TraceEntry, 512> trace{};
     uint64_t issues = 0, startCycle = 0, codeGeneration = 0;
     uint32_t budget = 0;
+    bool fresh = true;
     std::filesystem::path directory;
 
-    static std::unique_ptr<Capture> request(bool vu1, const VU1State &state,
+    static std::unique_ptr<Capture> request(bool vu1, const VU1Interpreter &vu,
         const uint8_t *code, uint32_t codeSize, const uint8_t *data, uint32_t dataSize,
-        uint64_t cycle, uint64_t generation, uint32_t maxCycles) noexcept
+        uint64_t cycle, uint64_t generation, uint32_t maxCycles, bool fresh = true) noexcept
     {
         if (!vu1 || !code || !data) return {};
         try
@@ -45,12 +55,16 @@ struct Capture
             std::error_code ec;
             if (!std::filesystem::remove(std::filesystem::path(base) / ".vu-request", ec)) return {};
             auto result = std::make_unique<Capture>();
-            result->input = state;
+            result->input = vu.state();
+#if PS2X_NEXO_LAB
+            result->inputCanonical = ps2native::nexo::VuSnapshotCodec::encode(vu);
+#endif
             result->code.assign(code, code + codeSize);
             result->data.assign(data, data + dataSize);
             result->startCycle = cycle;
             result->codeGeneration = generation;
             result->budget = maxCycles;
+            result->fresh = fresh;
             result->directory = std::filesystem::path(base) /
                 ("vu-input-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
             return result;
@@ -69,11 +83,42 @@ struct Capture
         std::copy(std::begin(state.vi), std::end(state.vi), entry.vi.begin());
     }
 
-    void finish(const VU1State &state, const uint8_t *finalData, uint32_t dataSize,
+#if PS2X_NEXO_LAB
+    // Observe submission at the VU -> GIF boundary, before arbitration or GS
+    // consumption. This is not a checkpoint of either receiving device.
+    void recordPacket(uint64_t cycle, const uint8_t *bytes, uint32_t size) noexcept
+    {
+        if (path1RecordingFailed) return;
+        try
+        {
+            constexpr size_t maximumEventsSize = 64u * 1024u * 1024u;
+            if (!bytes || size < 16 || size > 65536 || (size & 15u) != 0 ||
+                cycle < startCycle || path1Events.size() + 12u + size > maximumEventsSize)
+                throw std::runtime_error("invalid or oversized PATH1 capture");
+            const auto append = [this](uint64_t value, unsigned width)
+            {
+                for (unsigned i = 0; i < width; ++i) path1Events.push_back(uint8_t(value >> (8 * i)));
+            };
+            append(cycle - startCycle, 8);
+            append(size, 4);
+            path1Events.insert(path1Events.end(), bytes, bytes + size);
+            ++path1Count;
+            for (unsigned i = 0; i < 4; ++i) path1Events[12 + i] = uint8_t(path1Count >> (8 * i));
+        }
+        catch (const std::exception &error)
+        {
+            path1RecordingFailed = true;
+            std::fprintf(stderr, "[vu-capture:error] %s\n", error.what());
+        }
+    }
+#endif
+
+    void finish(const VU1Interpreter &vu, const uint8_t *finalData, uint32_t dataSize,
                 bool programEnded, bool stopped) const noexcept
     {
         try
         {
+            const auto &state = vu.state();
             std::filesystem::create_directories(directory);
             const auto binary = [this](const char *name, const void *bytes, size_t size)
             {
@@ -87,6 +132,13 @@ struct Capture
             binary("code.bin", code.data(), code.size());
             binary("output-state.bin", &state, sizeof(state));
             binary("output-data.bin", finalData, dataSize);
+#if PS2X_NEXO_LAB
+            if (path1RecordingFailed) throw std::runtime_error("incomplete PATH1 capture");
+            const auto outputCanonical = ps2native::nexo::VuSnapshotCodec::encode(vu);
+            binary("input-state.nexo", inputCanonical.data(), inputCanonical.size());
+            binary("output-state.nexo", outputCanonical.data(), outputCanonical.size());
+            binary("path1-events.nexo", path1Events.data(), path1Events.size());
+#endif
             const uint64_t count = std::min<uint64_t>(issues, trace.size());
             // One local-ABI VU1State per ISSUE, in the same chronological
             // order as trace.txt. Keep raw VF bits, ACC, I/Q/P and flags so
@@ -97,7 +149,9 @@ struct Capture
             registers.close();
             if (!registers) throw std::runtime_error("cannot write VU register history");
             std::ofstream out(directory / "trace.txt", std::ios::trunc);
-            out << "VU1 MSCAL diagnostics; local host ABI; initially empty pipelines\n"
+            out << "VU1 " << (fresh ? "MSCAL" : "MSCNT")
+                << " diagnostics; legacy .bin state uses local host ABI; "
+                << (fresh ? "initially empty pipelines" : "pending pipelines retained") << '\n'
                 << "startPc=0x" << std::hex << input.pc << " endPc=0x" << state.pc << std::dec
                 << " top=" << input.top << " itop=" << input.itop << " codeGeneration=" << codeGeneration
                 << " cycles=" << state.cycles - startCycle << " budget=" << budget

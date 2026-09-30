@@ -6,6 +6,7 @@
 
 class GS;
 class PS2Memory;
+namespace ps2native::nexo { class VuSnapshotCodec; class VuNativeAccess; }
 
 struct VU1State
 {
@@ -63,6 +64,9 @@ public:
     const VU1State &state() const { return m_state; }
 
 private:
+    friend class ps2native::nexo::VuSnapshotCodec;
+    friend class ps2native::nexo::VuNativeAccess;
+
     enum Pipeline : uint8_t
     {
         PipelineNone = 0,

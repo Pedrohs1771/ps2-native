@@ -921,6 +921,10 @@ void VU1Interpreter::finishXgkick()
     if (!m_xgkick.active)
         return;
 
+#if PS2X_NEXO_LAB
+    if (m_unit == Unit::VU1 && ps2_vu_diagnostics::active)
+        ps2_vu_diagnostics::active->recordPacket(m_cycle, m_xgkick.packet.data(), m_xgkick.totalBytes);
+#endif
     if (m_activeMemory)
         m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
     else if (m_activeGs)
@@ -1609,7 +1613,7 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][1] = 0.0f;
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
-    auto capture = ps2_vu_diagnostics::Capture::request(m_unit == Unit::VU1, m_state,
+    auto capture = ps2_vu_diagnostics::Capture::request(m_unit == Unit::VU1, *this,
         vuCode, codeSize, vuData, dataSize, m_cycle,
         memory ? memory->getVU1CodeGeneration() : 0u, maxCycles);
     ps2_vu_diagnostics::Scope captureScope(capture.get());
@@ -1625,6 +1629,12 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     m_state.itop = itop;
     m_state.stoppedByD = false;
     m_state.stoppedByT = false;
+#if PS2X_NEXO_LAB
+    auto capture = ps2_vu_diagnostics::Capture::request(m_unit == Unit::VU1, *this,
+        vuCode, codeSize, vuData, dataSize, m_cycle,
+        memory ? memory->getVU1CodeGeneration() : 0u, maxCycles, false);
+    ps2_vu_diagnostics::Scope captureScope(capture.get());
+#endif
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -1846,7 +1856,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         m_pendingHaltT = false;
     }
     m_state.cycles = m_cycle;
-    if (capture) capture->finish(m_state, vuData, dataSize, programEnded, m_stopRequested);
+    if (capture) capture->finish(*this, vuData, dataSize, programEnded, m_stopRequested);
     if (useVuRounding && previousRoundingMode != -1)
         std::fesetround(previousRoundingMode);
 }
