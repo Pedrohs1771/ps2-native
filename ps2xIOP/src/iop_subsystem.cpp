@@ -7,6 +7,10 @@
 #include "module_factories.h"
 #include "ps2x/iop/ps2_path.h"
 
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+#include "nexo/iop_capture.h"
+#endif
+
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -230,19 +234,29 @@ namespace ps2x::iop
 
     RpcResult IopSubsystem::handleRpc(const RpcRequest &request)
     {
-        if (m_impl->emulator.hasNativeFault())
-            return {};
-        const auto route = m_impl->routes.find(request.sid);
-        detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
-
-        RpcResult emulated = m_impl->emulator.handleRpc(request);
-        if (m_impl->emulator.hasNativeFault())
-            return {};
-        if (emulated.handled || !hle)
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+        const auto capture = ps2native::nexo::iop_lab::captureRpcRequest(
+            m_impl->host, request, m_impl->emulator.cycles());
+#endif
+        const RpcResult result = [&]() -> RpcResult
         {
-            return emulated;
-        }
-        return hle->handleRpc(request);
+            if (m_impl->emulator.hasNativeFault())
+                return {};
+            const auto route = m_impl->routes.find(request.sid);
+            detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
+            RpcResult emulated = m_impl->emulator.handleRpc(request);
+            if (m_impl->emulator.hasNativeFault())
+                return {};
+            if (emulated.handled || !hle)
+                return emulated;
+            return hle->handleRpc(request);
+        }();
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+        ps2native::nexo::iop_lab::captureRpcResult(m_impl->host, capture, request, result,
+            m_impl->emulator.cycles(), m_impl->emulator.nativeInstructions(),
+            m_impl->emulator.interpretedInstructions(), m_impl->emulator.hasNativeFault());
+#endif
+        return result;
     }
 
     void IopSubsystem::onSifTransfer(const SifTransfer &transfer)

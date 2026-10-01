@@ -18,6 +18,10 @@
 #include "imports/iop_vblank.h"
 #include "iop_emulator_const.h"
 
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+#include "nexo/iop_capture.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -403,6 +407,9 @@ namespace ps2x::iop::detail
                 << " observed=0x" << fault.observedInstruction;
             lastError = out.str();
             log(LogLevel::Error, lastError);
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+            ps2native::nexo::iop_lab::captureFault(host, lastError, memory.ram(), totalCycles);
+#endif
         }
 
         bool step(CpuState &cpu)
@@ -724,6 +731,10 @@ namespace ps2x::iop::detail
             constexpr size_t maxArguments = 256u;
             if (argumentSize > maxArgumentBytes || (argumentSize != 0u && !arguments) || path.size() > maxArgumentBytes)
                 return result;
+#if defined(PS2X_NEXO_LAB) && PS2X_NEXO_LAB
+            ps2native::nexo::iop_lab::captureModule(host, path, image,
+                std::span(static_cast<const uint8_t *>(arguments), argumentSize), totalCycles);
+#endif
             std::vector<uint8_t> strings(path.begin(), path.end());
             strings.push_back(0u);
             std::vector<uint32_t> argumentOffsets{0u};

@@ -200,6 +200,56 @@ a SIF-initialization warning in both adapters; model equality does not resolve
 those issues. Embedded modules, buffer identities, full replacement lifecycle,
 canonical hidden state, service fidelity and hardware timing remain open.
 
+### Observed module and RPC capture
+
+The root `PS2X_BUILD_NEXO_LAB=ON` build now includes optional IOP observation
+hooks. Set `PS2X_IOP_CAPTURE_DIR` to a fresh local directory when launching a
+laboratory producer or the actual-runtime probe. The non-laboratory build does
+not compile these hooks. The standalone `PS2X_IOP_BUILD_LAB` option continues
+to select offline inspector/probe tools; it does not enable live observation.
+
+Each chronological event has a numbered directory. Module events contain the
+exact loader input (`image.irx`), raw arguments (`arguments.bin`) and metadata.
+RPC events record request metadata and bounded EE send bytes, then result
+policies, instruction counters and bounded receive bytes. A native fault records
+its diagnostic and physical IOP RAM. Missing payloads are explicitly marked;
+a missing metadata/result file is incomplete evidence. Recording errors are
+reported without writing guest memory, and failure of the diagnostic sink is
+contained. Output event directories are never reused.
+
+Capture has separate process-wide limits: 4,096 RPC events, 256 module events
+and 16 fault events. RPC payloads are limited to 1 MiB. Exhaustion warns once
+per event kind and leaves the other kinds' budgets available. These are bounded
+observations, not complete execution histories or canonical state checkpoints.
+Captures add work and are unsuitable for certifying performance.
+
+Four capture CLI tests cover raw arguments and escaping, request/result
+payloads and policies, invalid and oversized buffers, empty buffers, an HLE
+route and an unhandled route, recording failures, disabled observation,
+independent event budgets, preserved existing events, first native-fault
+observation, and unchanged actual-runtime reports/full RAM.
+
+A headless Monster House diagnostic producer yielded ten external module
+images, four buffer module loads and 4,082 handled RPC observations before
+the original shared event limit was exhausted. The four buffer images were
+byte-identical (7,096 bytes, SHA-256
+`aae4e64bbb49d54caf2e1c9c9071dccf46ed95f06deaf072a4c79eef7b8765c1`),
+so they require one additional offline family. The captured unique images plus
+CUTSTRM produced a twelve-module catalog with 3,947 shared kernels. Generation
+took 0.412 seconds and the cached standalone native build took 21.113 seconds
+with four workers and `-O1 -fno-lto`. Relinking the diagnostic game runner reused
+all existing EE objects and took 9.988 seconds.
+
+The captured buffer family executed one/four isolated startups with 28/103
+native operations, zero interpreted operations and zero native faults. Reports
+and full IOP/EE RAM matched the identified diagnostic model. Its startup return
+was **1**, and the isolated probe registered no threads or RPC servers; this
+does not establish residency or successful operation in the game's dependency
+context. Actual RPC replay, native game progression, complete replacement
+lifecycle, hidden state, service/hardware fidelity and platform/game gates remain
+open. The headless producer still used diagnostic IOP/VU and EE overlay paths.
+Commercial images, payloads, generated catalogs and screenshots remain local.
+
 ## Build and run
 
 ```sh

@@ -8,10 +8,19 @@ target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_compile_definitions(ps2_runtime PRIVATE PS2X_NEXO_LAB=1)
 target_compile_features(ps2_runtime PRIVATE cxx_std_20)
 
+# Observation is compiled only into the opt-in laboratory build.
+target_sources(ps2_iop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/iop_capture.cpp")
+target_include_directories(ps2_iop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_definitions(ps2_iop PRIVATE PS2X_NEXO_LAB=1)
+
 add_executable(nexo_iop_runtime_probe src/iop_runtime_probe_main.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_iop_runtime_probe PRIVATE include ../ps2xRuntime/src/lib)
 target_compile_definitions(nexo_iop_runtime_probe PRIVATE NEXO_IOP_RUNTIME_PROBE_NATIVE=$<BOOL:${PS2X_RUNTIME_NATIVE_IOP}>)
 target_link_libraries(nexo_iop_runtime_probe PRIVATE ps2_runtime)
+
+add_executable(nexo_iop_capture_fixture tests/iop_capture_fixture.cpp)
+target_include_directories(nexo_iop_capture_fixture PRIVATE include ../ps2xIOP/tests ../ps2xIOP/src)
+target_link_libraries(nexo_iop_capture_fixture PRIVATE ps2_iop)
 
 add_library(nexo_vu_snapshot INTERFACE)
 target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -41,6 +50,9 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 if(BUILD_TESTING)
     add_test(NAME nexo_iop_runtime_probe_cli_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_probe_cli.py $<TARGET_FILE:nexo_iop_runtime_probe>)
+    add_test(NAME nexo_iop_capture_cli_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_capture_cli.py $<TARGET_FILE:nexo_iop_runtime_probe>
+        $<TARGET_FILE:nexo_iop_capture_fixture>)
 endif()
 set(NEXO_PCSX2_VU_SOURCE_DIR "" CACHE PATH "Cached pinned PCSX2 sources for an optional laboratory reference")
 if(NEXO_PCSX2_VU_SOURCE_DIR)
