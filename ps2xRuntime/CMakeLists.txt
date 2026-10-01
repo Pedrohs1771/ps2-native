@@ -634,11 +634,13 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+include(cmake/iop_runtime_backend.cmake)
+ps2x_add_iop_runtime_backend(ps2_runtime ps2_runtime_iop_backend
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ps2_iop_backend.cpp" "${PS2X_RUNTIME_NATIVE_IOP}")
 if(PS2X_RUNTIME_NATIVE_IOP)
     if(PS2X_IOP_ENABLE_INTERPRETER OR NOT TARGET ps2_iop_compiled_catalog)
         message(FATAL_ERROR "Native runtime IOP requires a compiled catalog and PS2X_IOP_ENABLE_INTERPRETER=OFF")
     endif()
-    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_RUNTIME_NATIVE_IOP=1)
     target_link_libraries(ps2_runtime PUBLIC ps2_iop_compiled_catalog)
 endif()
 if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)

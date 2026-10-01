@@ -48,6 +48,8 @@ target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 if(BUILD_TESTING)
+    add_test(NAME nexo_iop_runtime_backend_build_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_backend_build.py)
     add_test(NAME nexo_iop_runtime_probe_cli_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_probe_cli.py $<TARGET_FILE:nexo_iop_runtime_probe>)
     add_test(NAME nexo_iop_capture_cli_tests COMMAND "${Python3_EXECUTABLE}"

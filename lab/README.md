@@ -250,6 +250,61 @@ lifecycle, hidden state, service/hardware fidelity and platform/game gates remai
 open. The headless producer still used diagnostic IOP/VU and EE overlay paths.
 Commercial images, payloads, generated catalogs and screenshots remain local.
 
+### Native IOP in the observed game path
+
+The twelve-module catalog was linked into the actual Monster House producer
+with `PS2X_RUNTIME_NATIVE_IOP=ON` and the IOP interpreter excluded. On its
+isolated virtual display it loaded ten external IRXs and all four buffer
+instances. Those buffer startups returned **2** in the game context, unlike
+their isolated/staged startups, which returned **1**. Captured inputs therefore
+do not replace the dependency and RPC state needed to reproduce a load.
+
+The bounded capture contains 4,096 handled RPC calls across four SIDs and
+30,425,512 native operations at its last RPC checkpoint, with zero interpreted
+operations and no native fault event/log. Among the diagnostic producer's
+previous observations, 2,718 transactions had identical request metadata,
+send bytes, result policies and receive bytes; 1,378 native observations had no
+identical recorded request. No identical request had an unmatched result in
+that comparison. This is observed transaction agreement, not aligned histories,
+canonical state replay, hardware fidelity or a proof for unobserved requests.
+The RPC capture budget was exhausted, so the complete run is not represented.
+
+A separate staged fourteen-module sequence at zero/80,000 EE cycles per load
+matched the identified diagnostic adapter's reports (apart from execution
+counters) and full IOP/EE RAM, with zero native faults. It correctly failed
+startup acceptance because all four buffer startups returned 1. That result
+is retained as a context counterexample; RAM agreement does not turn it into
+successful residency.
+
+The game remained on its loading screen while the diagnostic EE driver
+compiled additional overlays. EE closure/AOT packaging, VU integration, the
+GS backend, campaign progression, fidelity, FPS and Android qualification
+remain open. This producer proves observed IOP execution through the original
+modules and handlers without its generic instruction interpreter; it is not a
+final native game package.
+
+### Isolated runtime IOP backend selection
+
+The native/diagnostic constructor choice now lives in a private object target,
+`ps2_runtime_iop_backend`. This keeps its flag out of the common runtime's
+`flags.make`: Make dependencies previously recompiled unrelated runtime objects
+even though the flag was attached to only one source. Public runtime headers
+and generated EE objects do not change.
+
+A Make-based regression switches diagnostic → native → diagnostic and checks
+that the common object's bytes and timestamp stay unchanged, the backend
+object changes, and the executable selects the requested implementation.
+In the actual cached root build, native → diagnostic configuration took 2.850
+seconds and the build took 9.056 seconds with four workers. All 52 common
+runtime objects retained their bytes and timestamps. The IOP library and the
+small backend still rebuild when their profile changes; the larger runtime does
+not. The one-time migration of its shared flags took 34.722 seconds.
+
+Actual-runtime HKSIF probes through both factory variants still agreed on
+reports/full RAM: two native startups executed 170 native operations with zero
+interpreted operations and zero faults. These measurements concern profile
+iteration and bounded module startups, not complete ISO conversion latency.
+
 ## Build and run
 
 ```sh
