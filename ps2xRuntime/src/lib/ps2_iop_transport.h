@@ -56,4 +56,11 @@ public:
             runtime->resetIop();
         }
     }
+
+    // Advance the same IOP scheduler used by EE cycle accounting, without executing EE code.
+    static void advanceEeCycles(PS2Runtime *runtime, uint64_t cycles)
+    {
+        if (runtime)
+            runtime->advanceIopEeCycles(cycles);
+    }
 };

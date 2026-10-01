@@ -93,6 +93,7 @@ namespace ps2x::iop::detail
                     trimLibraryName(name),
                     static_cast<uint16_t>(delay & 0xFFFFu),
                     m_memory.read16(table + 8u),
+                    table,
                 };
             }
         }

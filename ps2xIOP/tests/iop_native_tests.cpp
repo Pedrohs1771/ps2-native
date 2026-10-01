@@ -15,6 +15,9 @@ void nativeFamilyBindings();
 void nativeFamilyAdmission();
 void nativeFamilyStartup();
 void nativeFamilyReplacement();
+void nativeImportAdmission();
+void nativeImportMutation();
+void nativeImportDataIdentity();
 #if PS2X_IOP_ENABLE_INTERPRETER
 void nativeFamilyDifferential();
 void nativeOperandDifferential();
@@ -135,12 +138,8 @@ namespace
             const auto snapshot = iop.debugSnapshot();
             require(snapshot.interpretedInstructions == 0u && snapshot.nativeInstructions == 0u,
                     "import contract executed guest instructions");
-            if (known)
-                require(loaded.moduleId > 0 && loaded.startResult == static_cast<int32_t>(IopMemory::RamSize),
-                        "known sysmem contract failed");
-            else
-                require(loaded.moduleId < 0 && snapshot.nativeFaults == 1u,
-                        "unknown import returned fake success");
+            require(loaded.moduleId < 0 && snapshot.nativeFaults == 1u,
+                    "import dispatched a service without an admitted code identity");
         }
     }
 
@@ -392,6 +391,9 @@ int main()
         {"native IRX startup", startupModule}, {"changed module/reset", unknownModule},
         {"empty strict bank", emptyBank}, {"branch checkpoints", branchResume},
         {"native import contracts", importContracts},
+        {"native import identity admission", nativeImportAdmission},
+        {"native import dependency mutation", nativeImportMutation},
+        {"native import data identity", nativeImportDataIdentity},
         {"unfinished startup", unfinishedStartup},
         {"unsupported relocation", unsupportedRelocation},
         {"load delay checkpoints", loadDelay}, {"identity guard", identityFailure},

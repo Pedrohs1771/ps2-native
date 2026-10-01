@@ -124,3 +124,11 @@ checkpoints, interior entries and aliases, code writes, empty/invalid banks,
 unresolved imports, incomplete relocations, and startup budget exhaustion.
 Diagnostic builds additionally compare the emitted operations to the identified
 CPU model. The strict build excludes its generic instruction-execution symbol.
+
+Native import dispatch also guards the stub, ordinal and table dependency words
+against admitted identities before invoking a service. Empty banks cannot admit
+known imports. Bound data metadata remains non-executable. The actual runtime
+laboratory probe can load a module sequence and advance the IOP scheduler between
+loads; a bounded original boot sequence observed threads and registered RPC
+servers with native operations and complete RAM/model agreement. Service fidelity,
+guest warning causes, canonical state and complete game execution remain open.

@@ -80,6 +80,7 @@ namespace ps2x::iop::detail
         UnsupportedRelocation,
         UnknownModule,
         InvalidModuleBinding,
+        InvalidImportBinding,
     };
 
     struct IopNativeFault
@@ -95,6 +96,9 @@ namespace ps2x::iop::detail
     public:
         IopNativeDispatch(IopMemory &memory, IopCpuCore &core, const IopNativeProgram &program);
         [[nodiscard]] bool execute(IopCpuState &cpu);
+        // Verify all words read by the identified import decoder before a service runs.
+        // Data identities can be guarded without acquiring executable callbacks.
+        [[nodiscard]] bool guardImport(uint32_t pc, uint32_t tableAddress);
         [[nodiscard]] bool bindModule(std::span<const uint8_t> image, const IopImageLoadResult &loaded);
         void unbindRange(uint32_t base, uint32_t size);
         [[nodiscard]] const std::optional<IopNativeFault> &fault() const noexcept { return m_fault; }
@@ -104,6 +108,7 @@ namespace ps2x::iop::detail
         void reject(IopNativeFaultKind kind, uint32_t pc);
 
     private:
+        [[nodiscard]] const IopNativeEntry *guardEntry(uint32_t pc, bool requireExecutable);
         IopMemory &m_memory;
         IopCpuCore &m_core;
         struct OwnedModule

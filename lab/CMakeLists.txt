@@ -9,7 +9,7 @@ target_compile_definitions(ps2_runtime PRIVATE PS2X_NEXO_LAB=1)
 target_compile_features(ps2_runtime PRIVATE cxx_std_20)
 
 add_executable(nexo_iop_runtime_probe src/iop_runtime_probe_main.cpp tests/empty_ee_table.cpp)
-target_include_directories(nexo_iop_runtime_probe PRIVATE include)
+target_include_directories(nexo_iop_runtime_probe PRIVATE include ../ps2xRuntime/src/lib)
 target_compile_definitions(nexo_iop_runtime_probe PRIVATE NEXO_IOP_RUNTIME_PROBE_NATIVE=$<BOOL:${PS2X_RUNTIME_NATIVE_IOP}>)
 target_link_libraries(nexo_iop_runtime_probe PRIVATE ps2_runtime)
 
@@ -38,6 +38,10 @@ add_library(nexo_vu_replay_support STATIC src/vu_replay.cpp)
 target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(BUILD_TESTING)
+    add_test(NAME nexo_iop_runtime_probe_cli_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_probe_cli.py $<TARGET_FILE:nexo_iop_runtime_probe>)
+endif()
 set(NEXO_PCSX2_VU_SOURCE_DIR "" CACHE PATH "Cached pinned PCSX2 sources for an optional laboratory reference")
 if(NEXO_PCSX2_VU_SOURCE_DIR)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")

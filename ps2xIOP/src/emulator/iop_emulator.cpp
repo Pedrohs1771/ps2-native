@@ -444,6 +444,11 @@ namespace ps2x::iop::detail
 
             if (const auto import = imports.decode(cpu.pc))
             {
+                if (native && !native->guardImport(cpu.pc, import->tableAddress))
+                {
+                    reportNativeFault(cpu);
+                    return false;
+                }
                 const ImportDisposition disposition = dispatchImport(*import, cpu);
                 if (native && disposition == ImportDisposition::Missing)
                 {

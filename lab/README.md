@@ -18,7 +18,7 @@ constant instruction parameters. The native dispatcher verifies live code
 identity, supports interior entries and RAM aliases, and refuses missing,
 changed, or misaligned code without interpreting it.
 
-The synthetic acceptance corpus has 20 strict native cases, 23 diagnostic cases
+The synthetic acceptance corpus has 23 strict native cases, 26 diagnostic cases
 (including 292 absolute and 159 parameterized one-step comparisons to the
 identified CPU model), and 12 converter cases. It includes native RPC, self modification, all RAM writers,
 pending loads and branches, unknown imports, incomplete relocations, and
@@ -155,11 +155,50 @@ same catalog took 0.39 s and preserved all 78 source/header/manifest mtimes. A
 one-byte change to the original HKSIF source was rejected by the actual runtime
 before any guest operation, with no interpreted fallback.
 
-Combined dependency ordering, background threads/RPC, embedded `IOPRP271.IMG`,
-buffer-load identity variants, import code guards, full replacement lifecycle,
-independent fidelity, service/timing contracts and complete game execution remain
+Complete dependency ordering/RPC, embedded `IOPRP271.IMG`, buffer-load identity
+variants, full replacement lifecycle, independent fidelity, service/timing
+contracts and complete game execution remain
 open. All commercial inputs, generated sources and RAM captures remain local in
 ignored build directories.
+
+### Import guards and bounded combined boot sequence
+
+Native service dispatch now requires admitted identities for the import stub,
+its ordinal word, table metadata and all preceding words examined by the
+identified decoder. A known library name cannot execute a service from an empty
+bank. Guest stores that change the ordinal, library name or version fail before
+service execution. Relocated metadata can have a guarded data identity without
+acquiring an executable callback. Aliases, reset and malformed dependency ranges
+are covered by the native tests. This checks import dependencies; it does not
+qualify the underlying service implementations or fetch/publication timing.
+
+The actual runtime probe can load multiple modules and schedule IOP work after
+each load without executing EE/VU code or initializing a window:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy build/runtime-native-iop/lab/nexo_iop_runtime_probe --sequence /path/to/new-sequence-result 80000 /path/to/SIO2MAN.IRX /path/to/PADMAN.IRX
+```
+
+The decimal cycle budget is EE cycles per load (0..16,000,000), passed to the
+existing IOP clock model. At most 32 module paths from one host directory are
+accepted. Reports include each load/scheduling checkpoint and detect exhausted
+startup budgets. Four CLI tests cover invalid budgets/counts, mixed directories
+and preservation of existing outputs.
+
+The ten external modules in a preserved Monster House boot log were exercised
+in its observed order, with 0, 800 and 80,000 EE cycles scheduled after each
+load. At 80,000 cycles, the actual native runtime adapter observed eight threads,
+six registered RPC servers, 6,482 native operations, zero interpreted operations
+and no native faults; 4,758 guest/service instructions occurred during scheduling.
+All reported fields except execution counters, full IOP/EE RAM, and runtime logs
+agreed with the identified diagnostic adapter at all three budgets.
+
+This experiment covers that module sequence and bounded thread work. It does
+not cover RPC requests, the game's EE path, load arguments, complete dependency
+ordering, or game progression. The guest logs include an event-wait failure and
+a SIF-initialization warning in both adapters; model equality does not resolve
+those issues. Embedded modules, buffer identities, full replacement lifecycle,
+canonical hidden state, service fidelity and hardware timing remain open.
 
 ## Build and run
 

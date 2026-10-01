@@ -176,3 +176,19 @@ Validar primeiro deduplicação, bases, estabilidade incremental, guardas e link
 com dois IRX sintéticos. Depois compilar o catálogo dos 11 IRX externos da ISO
 e observar todos os startups, incluindo falhas, sem inventar serviços. Registrar
 resultados por módulo; não declarar M4/jogo aprovado a partir de startup.
+
+## Dependências dos imports e sequência de módulos
+
+Antes de substituir um stub por serviço, exigir identidade admitida para o
+stub e seu delay slot, além do intervalo de metadados e stubs precedentes
+consultado pelo decoder identificado. Nome de biblioteca conhecido não pode
+contornar um banco vazio. Mudança de versão, nome ou ordinal deve falhar antes
+de efeitos de serviço. Dados relocados podem manter guardas de identidade,
+mas nunca recebem callbacks executáveis por essa razão.
+
+O probe de runtime aceita uma sequência limitada de módulos e um orçamento
+de ciclos EE após cada carga. Exercitar a ordem observada no jogo e o trabalho
+das threads, preservando snapshots de contadores, retornos e RAM. Igualdade com
+o modelo identificado não aprova seus serviços, avisos de erro do convidado,
+interrupções, clocks ou estado oculto. Publicação/epochs e contratos independentes
+de serviços continuam sendo obrigações separadas.

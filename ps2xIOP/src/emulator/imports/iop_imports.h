@@ -17,6 +17,7 @@ namespace ps2x::iop::detail
         std::string library;
         uint16_t ordinal = 0;
         uint16_t version = 0;
+        uint32_t tableAddress = 0;
     };
 
     class IopImportRegistry

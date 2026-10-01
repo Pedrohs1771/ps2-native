@@ -104,7 +104,8 @@ if(PS2X_IOP_BUILD_TESTS)
         DEPENDS ../lab/generate_iop_bank.py tests/iop_native_words.json src/emulator/core/iop_cpu_interpreter.cpp
         VERBATIM
     )
-    add_executable(ps2_iop_native_tests tests/iop_native_tests.cpp tests/iop_native_family_tests.cpp ${iop_native_generated}/iop_native_bank.cpp)
+    add_executable(ps2_iop_native_tests tests/iop_native_tests.cpp tests/iop_native_family_tests.cpp
+        tests/iop_native_import_tests.cpp ${iop_native_generated}/iop_native_bank.cpp)
     set(iop_rpc_generated ${CMAKE_CURRENT_BINARY_DIR}/rpc-native-generated)
     add_custom_command(
         OUTPUT ${iop_rpc_generated}/iop_native_bank.cpp ${iop_rpc_generated}/iop_native_semantics.h

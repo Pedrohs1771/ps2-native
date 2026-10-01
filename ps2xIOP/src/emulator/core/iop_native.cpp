@@ -131,9 +131,8 @@ namespace ps2x::iop::detail
             if (masks[i] != entry.relocationMask ||
                 (observed & ~entry.relocationMask) != (entry.instruction & ~entry.relocationMask))
                 return invalid();
-            // Full-word relocations and unqualified operand forms remain data.
-            if (entry.execute || entry.executeOperand)
-                bound.push_back(IopNativeEntry{pc, observed, entry.execute, entry.executeOperand});
+            // Retain data identity for service dependencies, without making it executable.
+            bound.push_back(IopNativeEntry{pc, observed, entry.execute, entry.executeOperand});
         }
         const Binding next{loaded.base, loaded.size};
         auto overlaps = [](const Binding &a, const Binding &b)
@@ -167,30 +166,65 @@ namespace ps2x::iop::detail
         return true;
     }
 
-    bool IopNativeDispatch::execute(IopCpuState &cpu)
+    const IopNativeEntry *IopNativeDispatch::guardEntry(uint32_t pc, bool requireExecutable)
     {
-        if (m_fault || cpu.stopped)
-            return false;
-        const uint32_t physical = IopMemory::physicalAddress(cpu.pc);
-        if ((cpu.pc & 3u) != 0u)
+        if (m_fault)
+            return nullptr;
+        const uint32_t physical = IopMemory::physicalAddress(pc);
+        if ((pc & 3u) != 0u)
         {
-            m_fault = IopNativeFault{IopNativeFaultKind::MisalignedPc, cpu.pc, 0u, 0u};
-            return false;
+            m_fault = IopNativeFault{IopNativeFaultKind::MisalignedPc, pc, 0u, 0u};
+            return nullptr;
         }
         const auto entry = std::lower_bound(m_entries.begin(), m_entries.end(), physical,
             [](const IopNativeEntry &candidate, uint32_t pc) { return candidate.physicalPc < pc; });
         // Guard only: the observed word never chooses guest-operation semantics.
-        const uint32_t observed = physical < IopMemory::RamSize ? m_memory.read32(cpu.pc) : 0u;
-        if (entry == m_entries.end() || entry->physicalPc != physical)
+        const uint32_t observed = physical < IopMemory::RamSize ? m_memory.read32(pc) : 0u;
+        if (entry == m_entries.end() || entry->physicalPc != physical ||
+            (requireExecutable && !entry->execute && !entry->executeOperand))
         {
-            m_fault = IopNativeFault{IopNativeFaultKind::MissingEntry, cpu.pc, 0u, observed};
-            return false;
+            m_fault = IopNativeFault{IopNativeFaultKind::MissingEntry, pc, 0u, observed};
+            return nullptr;
         }
         if (observed != entry->instruction)
         {
-            m_fault = IopNativeFault{IopNativeFaultKind::CodeChanged, cpu.pc, entry->instruction, observed};
+            m_fault = IopNativeFault{IopNativeFaultKind::CodeChanged, pc, entry->instruction, observed};
+            return nullptr;
+        }
+        return &*entry;
+    }
+
+    bool IopNativeDispatch::guardImport(uint32_t pc, uint32_t tableAddress)
+    {
+        if (!guardEntry(pc, true))
+            return false;
+        const uint32_t physicalPc = IopMemory::physicalAddress(pc);
+        const uint32_t table = IopMemory::physicalAddress(tableAddress);
+        if ((table & 3u) || table > physicalPc || physicalPc - table < 20u ||
+            ((physicalPc - table - 20u) & 7u) || physicalPc > IopMemory::RamSize - 8u ||
+            physicalPc - table > 0x10000u)
+        {
+            reject(IopNativeFaultKind::InvalidImportBinding, pc);
             return false;
         }
+        if (!guardEntry(pc + 4u, true))
+            return false;
+        // The decoder examines metadata and preceding stubs while searching backwards.
+        // Guard that complete dependency interval, preserving the caller's RAM alias.
+        const uint32_t alias = pc & ~0x1fffffffu;
+        for (uint32_t word = table; word < physicalPc + 8u; word += 4u)
+            if (!guardEntry(alias | word, false))
+                return false;
+        return true;
+    }
+
+    bool IopNativeDispatch::execute(IopCpuState &cpu)
+    {
+        if (cpu.stopped)
+            return false;
+        const auto *entry = guardEntry(cpu.pc, true);
+        if (!entry)
+            return false;
         if (entry->executeOperand)
             return entry->executeOperand(cpu, m_memory, m_core, entry->instruction);
         return entry->execute(cpu, m_memory, m_core);
