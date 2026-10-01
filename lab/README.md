@@ -206,6 +206,40 @@ The native EE profile passed its four C++ cases. Restoration took **15.939
 seconds**, retaining all 54 common runtime objects. The five preexisting test
 memory-card files remained unchanged; the owned test runner exited normally.
 
+### Offline discovery of typed EE data-family candidates
+
+`discover_ee_data_families.py` analyzes the owned captured inputs without editing
+the catalog, compiling another address-specific bank or running guest code. It
+groups exact dependency-byte structures, proposing only varying LUI unsigned
+immediates and SW signed offsets. Opcode/register/control changes split groups;
+unchanged immediates retain exact guards. Input and search budgets, deterministic
+identities, signed boundaries, round trips, duplicates and output conflicts are
+covered by tests. See the
+[`candidate schema`](../schemas/nexo-ee-data-family-candidates-v1.md).
+
+The 34-bank input set yielded **196 candidates** from **71,757 dependency regions /
+872,138 words**, in **1.447 seconds** including owned-ledger validation. Adding
+the next miss as an offline prepared observation yielded **226 candidates** from
+35 cases in **1.739 seconds**, including preparation. No bank was admitted and
+the game executable/catalog remained unchanged. The eight-word suffix at
+`0x184f474` (`0x184f448 + 44`) matched the same guarded structure at **eight
+observed locations**, with LUI/SW parameters `389` and `-1852`. This automates
+the previous manual instruction-shape comparison; it does not synthesize the
+native function yet.
+
+All **1,896 source-origin round trips** across the 226 candidates reconstructed
+their exact captured bytes and hashes. Final-source replay reproduced the same
+candidate structures and counts; reports now pin the analyzer source hash.
+The **16 detector tests** and **71 CTest groups** passed. These extraction and
+regression checks do not validate execution of a native family.
+
+All approval fields remain false. These dependencies may be speculative or
+partial function regions. Producer invariants, reachable parameter domains,
+relative-PC/control semantics, entry/fetch/write/alias obligations, independent
+hardware fidelity and native execution of the candidate remain open. Candidate
+recognition alone cannot resume the stopped game. Evidence is under
+`build/lab/latest-ee-data-family-job.txt`.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

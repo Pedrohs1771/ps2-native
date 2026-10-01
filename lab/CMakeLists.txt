@@ -77,6 +77,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_bank_catalog.py $<TARGET_FILE:ps2_native_overlay>)
     add_test(NAME nexo_ee_miss_batch_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_admit_ee_misses.py $<TARGET_FILE:ps2_native_overlay>)
+    add_test(NAME nexo_ee_data_family_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_data_families.py)
     add_test(NAME nexo_iop_runtime_backend_build_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_backend_build.py)
     add_test(NAME nexo_iop_runtime_probe_cli_tests COMMAND "${Python3_EXECUTABLE}"
