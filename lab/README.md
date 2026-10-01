@@ -158,6 +158,54 @@ common runtime objects. The five preexisting test memory-card files were unchang
 Full entry/fetch semantics, native VU in the game, independent fidelity, campaign,
 saves, Android, universal coverage and sustained 60 FPS remain open.
 
+### Automatic offline EE miss batches and owned inputs
+
+`admit_ee_misses.py` consumes up to 16 captured records, prepares every case before
+changing the catalog, deduplicates bank identities and calls the verified offline
+publisher. After one bootstrap, hashed input copies under `ee_cases/` let the next
+batch reuse all old cases automatically. A per-bank producer ledger preserves
+prepared-case provenance across generator migrations. It cannot authorize an
+unseen foreign case or any rewrite of a previously compiled bank source.
+See [`nexo-ee-miss-batch-v1.md`](../schemas/nexo-ee-miss-batch-v1.md) for the command
+and the distinction between prepared candidates and published banks.
+
+The captured Monster House region at `0x1724d70` contributed **12,811 entries**
+from its 64 KiB image. Batch preparation/extension took **11.546 seconds**, growing
+the catalog to **34 banks / 537,368 entries**. The new-bank/index/runtime build
+took **14.885 seconds**, preserving all **33 prior bank objects' hashes and
+timestamps**; game relink took **12.934 seconds**, with no LTO and no original EE
+game compilations. Saved-RAM guard replay now admits that region.
+
+A repeat submission with no external case paths took **11.308 seconds**, detected
+the duplicate and retained 34 banks. This still regenerates checked source
+descriptors offline; it does not compile another bank or claim semantic cache
+correctness. Synthetic tests cover atomic rejection of invalid preparations,
+producer lineage, input ownership/hash/path/symlink checks, immutable timestamps,
+duplicate handling, bootstrap restrictions, output conflicts and terminal reports.
+
+This implements one laboratory preparation step of autonomy. It does not repair
+arbitrary semantics, prove closure or produce a zero-touch campaign route. Game
+input in the current experiment is agent-controlled and recorded. Strict approval
+remains false; complete game/VU/Android/fidelity/performance gates remain open.
+Evidence is under `build/lab/latest-ee-batch-job.txt`.
+
+The 34-bank actual run stopped at `0x184f448`, again called from `0x1baae4`,
+with no candidate. Both RAM copies still contain the earlier `0x1724d70` routine.
+In the new RAM, three 19-word routines have the same normalized structure; only
+two 16-bit immediate fields of a LUI/store pair differ, encoding distinct data
+addresses. This suggests a shared initializer shape across code copies/modules.
+It does not identify their materializer or prove a relocation family. The earlier
+bank's saved-RAM guard success does not prove that this run executed it. No second
+address-specific bank was added for the new target. Producer tracing and guarded
+native family synthesis are the next investigation, alongside the remaining
+entry/fetch/fidelity obligations; gameplay remains unqualified.
+
+The restored diagnostic profile passed **70 CTest groups and 487 general cases**.
+Catalog tests include **17 Python cases**, and the new batch command has **7**.
+The native EE profile passed its four C++ cases. Restoration took **15.939
+seconds**, retaining all 54 common runtime objects. The five preexisting test
+memory-card files remained unchanged; the owned test runner exited normally.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

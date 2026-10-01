@@ -116,6 +116,21 @@ class EeCatalogTests(unittest.TestCase):
         self.assertEqual(second['dependency_contract'], 'normal-entry-v1')
         self.assertEqual(second['previous_generator_sha256'], first['generator_sha256'])
         self.assertEqual(second['generator_sha256'], hashlib.sha256(GENERATOR.read_bytes()).hexdigest())
+        # The next ordinary extension must retain the captured old producer pin.
+        two = self.case('two', 7)
+        third = CODEGEN.extend_catalog([case, two], GENERATOR, self.root / 'catalog')
+        self.assertEqual(len(third['banks']), 2)
+        self.assertEqual(third['case_producers'][source.name], first['generator_sha256'])
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+        # A second extension must not rely on a one-generation global exception.
+        fourth = CODEGEN.extend_catalog([case, two], GENERATOR, self.root / 'catalog')
+        self.assertEqual(fourth, third)
+        foreign = self.case('foreign', 99)
+        foreign_metadata = json.loads((foreign / 'bank.json').read_text())
+        foreign_metadata['generator_sha256'] = first['generator_sha256']
+        (foreign / 'bank.json').write_text(json.dumps(foreign_metadata))
+        with self.assertRaises(ValueError):
+            CODEGEN.extend_catalog([case, two, foreign], GENERATOR, self.root / 'catalog')
 
     def test_extension_preserves_existing_bank_bytes_and_timestamps(self):
         one, two = self.case('one', 42), self.case('two', 7)
@@ -133,12 +148,60 @@ class EeCatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError): CODEGEN.extend_catalog([one, two], GENERATOR, output)
         self.assertEqual((output / 'catalog.json').read_bytes(), manifest_before)
 
+    def test_owned_case_inputs_allow_future_extensions_without_external_case_paths(self):
+        one = self.case('one', 42)
+        manifest = self.generate([one])
+        output = self.root / 'catalog'
+        shutil.rmtree(one)
+        cases = CODEGEN.owned_cases(output)
+        self.assertEqual(len(cases), 1)
+        bank = output / manifest['sources'][0]
+        before = (bank.read_bytes(), bank.stat().st_mtime_ns)
+        two = self.case('two', 7)
+        extended = CODEGEN.extend_catalog([*cases, two], GENERATOR, output)
+        self.assertEqual(len(extended['case_inputs']), 2)
+        self.assertEqual((bank.read_bytes(), bank.stat().st_mtime_ns), before)
+        case = CODEGEN.owned_cases(output)[0]
+        (case / 'snapshot.bin').write_bytes(b'changed')
+        with self.assertRaises(ValueError): CODEGEN.owned_cases(output)
+
+    def test_owned_case_ledger_rejects_escaping_paths_and_symlinks(self):
+        manifest = self.generate([self.case('one', 42)])
+        output = self.root / 'catalog'
+        name = manifest['sources'][0]
+        catalog = output / 'catalog.json'
+        saved = catalog.read_bytes()
+        for patch in ({'directory': '../outside'}, {'metadata_sha256': '0' * 64}):
+            changed = json.loads(saved)
+            changed['case_inputs'][name].update(patch)
+            catalog.write_text(json.dumps(changed))
+            with self.assertRaises(ValueError): CODEGEN.owned_cases(output)
+        catalog.write_bytes(saved)
+        case = CODEGEN.owned_cases(output)[0]
+        data = (case / 'bank.json').read_bytes()
+        (case / 'bank.json').unlink()
+        outside = self.root / 'external.json'; outside.write_bytes(data)
+        (case / 'bank.json').symlink_to(outside)
+        with self.assertRaises(ValueError): CODEGEN.owned_cases(output)
+
+    def test_legacy_input_parent_conflict_fails_before_any_publication(self):
+        one, two = self.case('one', 42), self.case('two', 7)
+        manifest = self.generate([one])
+        output = self.root / 'catalog'
+        manifest.pop('case_inputs')
+        (output / 'catalog.json').write_text(json.dumps(manifest))
+        shutil.rmtree(output / 'ee_cases')
+        (output / 'ee_cases').write_text('preserve unrecorded artifact')
+        before = {path.name: path.read_bytes() for path in output.iterdir()}
+        with self.assertRaises(ValueError): CODEGEN.extend_catalog([one, two], GENERATOR, output)
+        self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, before)
+
     def test_guard_migration_refuses_any_callback_source_rewrite(self):
         case = self.case('one', 42)
         output = self.root / 'catalog'
         CODEGEN.generate([case], GENERATOR, output, normal_entries=False)
-        before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
-                  for path in output.iterdir()}
+        before = {str(path.relative_to(output)): (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in output.rglob('*') if path.is_file()}
         changed = self.root / 'changed-generator'
         changed.write_text('#!' + sys.executable + '\n'
                            'import subprocess,sys\nfrom pathlib import Path\n'
@@ -148,8 +211,8 @@ class EeCatalogTests(unittest.TestCase):
         changed.chmod(0o700)
         with self.assertRaisesRegex(ValueError, 'rewrite'):
             CODEGEN.extend_catalog([case], changed, output, migrate_entry_guards=True)
-        self.assertEqual({path.name: (path.read_bytes(), path.stat().st_mtime_ns)
-                          for path in output.iterdir()}, before)
+        self.assertEqual({str(path.relative_to(output)): (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in output.rglob('*') if path.is_file()}, before)
 
     def test_extension_rejects_malformed_manifests_and_unrecorded_artifacts(self):
         one, two = self.case('one', 42), self.case('two', 7)
@@ -157,6 +220,8 @@ class EeCatalogTests(unittest.TestCase):
         output = self.root / 'catalog'
         valid = (output / 'catalog.json').read_bytes()
         for patch in ({'schema_version': True}, {'generator_sha256': '0' * 64},
+                      {'case_producers': {first['sources'][0]: True}},
+                      {'case_producers': {'ee_catalog.cpp': '0' * 64}},
                       {'sources': [None, 'ee_catalog.cpp']},
                       {'sources': first['sources'] * 2}):
             (output / 'catalog.json').write_text(json.dumps({**first, **patch}))

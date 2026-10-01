@@ -94,12 +94,48 @@ def catalog_index(bank_functions, plans):
     return index + 'static const Catalog catalog;return catalog.program; }\n'
 
 
-def generate(cases, generator, output, root=None, *, normal_entries=True, _previous_identity=None):
+def owned_cases(output, manifest=None):
+    """Read bounded immutable catalog inputs; never follow ledger paths outside it."""
+    if manifest is None:
+        with (output / 'catalog.json').open('rb') as stream: raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024: raise ValueError('EE manifest exceeds 1 MiB')
+        manifest = json.loads(raw)
+    if not isinstance(manifest, dict): raise ValueError('EE case ledger manifest must be an object')
+    ledger, sources = manifest.get('case_inputs'), manifest.get('sources')
+    if not isinstance(ledger, dict) or not 1 <= len(ledger) <= 512 or \
+            not isinstance(sources, list) or any(type(name) is not str for name in sources) or \
+            set(ledger) != set(sources) - {'ee_catalog.cpp'}:
+        raise ValueError('EE catalog needs a complete owned case input ledger')
+    if (output / 'ee_cases').is_symlink(): raise ValueError('EE case input parent cannot be a symlink')
+    cases = []
+    for name, item in sorted(ledger.items()):
+        if not re.fullmatch(r'ee_bank_[0-9a-f]{64}\.cpp', name) or not isinstance(item, dict) or \
+                set(item) != {'directory', 'image_sha256', 'metadata_sha256'} or \
+                any(type(item[field]) is not str or not re.fullmatch('[0-9a-f]{64}', item[field])
+                    for field in ('image_sha256', 'metadata_sha256')):
+            raise ValueError('invalid owned EE case identity')
+        expected = 'ee_cases/' + name[8:-4] + '-' + item['metadata_sha256']
+        if item['directory'] != expected: raise ValueError('owned EE case path differs from its identity')
+        case = output / expected
+        if case.is_symlink() or not case.is_dir(): raise ValueError('invalid owned EE case directory')
+        for filename, limit, digest in [('snapshot.bin',65536,item['image_sha256']),
+                                        ('bank.json',8*1024*1024,item['metadata_sha256'])]:
+            path = case / filename
+            if path.is_symlink() or not path.is_file(): raise ValueError('invalid owned EE case file')
+            with path.open('rb') as stream: data = stream.read(limit + 1)
+            if not data or len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
+                raise ValueError('owned EE case bytes differ from the ledger')
+        cases.append(case)
+    return cases
+
+
+def generate(cases, generator, output, root=None, *, normal_entries=True, _accepted_producers=None):
     if output.exists():
         raise ValueError('catalog output already exists')
     if not 1 <= len(cases) <= 512:
         raise ValueError('EE bank count outside 1..512')
     records = []
+    metadata_bytes = {}
     total_bindings = 0
     generator_hash = hashlib.sha256(generator.read_bytes()).hexdigest()
     for case in cases:
@@ -121,9 +157,11 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _previ
                 not base <= entry < base + len(image):
             raise ValueError('invalid EE snapshot identity or dimensions')
         key = hashlib.sha256(base.to_bytes(4, 'little') + entry.to_bytes(4, 'little') + image).hexdigest()
-        if 'generator_sha256' in metadata and metadata['generator_sha256'] != generator_hash:
-            if _previous_identity is None or metadata['generator_sha256'] != _previous_identity[0] or \
-                    'ee_bank_' + key + '.cpp' not in _previous_identity[1]:
+        producer = metadata.get('generator_sha256')
+        if producer is not None and (type(producer) is not str or not re.fullmatch('[0-9a-f]{64}', producer)):
+            raise ValueError('invalid captured EE case producer identity')
+        if producer is not None and producer != generator_hash:
+            if _accepted_producers is None or producer not in _accepted_producers.get('ee_bank_' + key + '.cpp', ()):
                 raise ValueError('captured EE case was prepared with a different generator')
         if metadata.get('dependency_contract', 'whole-block-v0') not in ('whole-block-v0','normal-entry-v1'):
             raise ValueError('unknown EE case dependency contract')
@@ -136,6 +174,7 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _previ
         if total_bindings > 2 * 1024 * 1024:
             raise ValueError('EE catalog binding budget exceeded')
         records.append((image, metadata, key))
+        metadata_bytes[key] = raw_metadata
     if not 1 <= len(records) <= 512 or len({key for _, _, key in records}) != len(records):
         raise ValueError('invalid, duplicate or excessive EE banks')
     records.sort(key=lambda record: record[2])
@@ -143,6 +182,7 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _previ
     files = []
     bank_functions = []
     plans = []
+    case_inputs = {}
     for image, metadata, key in records:
         name = 'ee_bank_' + key
         with tempfile.TemporaryDirectory() as temporary:
@@ -188,6 +228,14 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _previ
         source.write_text(code)
         files.append(source.name)
         bank_functions.append(function)
+        metadata_hash = hashlib.sha256(metadata_bytes[key]).hexdigest()
+        directory = 'ee_cases/' + key + '-' + metadata_hash
+        case = output / directory
+        case.mkdir(parents=True)
+        (case / 'snapshot.bin').write_bytes(image)
+        (case / 'bank.json').write_bytes(metadata_bytes[key])
+        case_inputs[source.name] = {'directory':directory, 'image_sha256':metadata['image_sha256'],
+                                   'metadata_sha256':metadata_hash}
     index = catalog_index(bank_functions,plans if normal_entries else None)
     (output / 'ee_catalog.cpp').write_text(index)
     files.append('ee_catalog.cpp')
@@ -206,6 +254,9 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _previ
                 'sha256': {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in files},
                 'generator_sha256': generator_hash,
                 'bank_generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'case_producers': {'ee_bank_' + key + '.cpp': metadata['generator_sha256']
+                                   for _, metadata, key in records if metadata.get('generator_sha256') is not None},
+                'case_inputs': case_inputs,
                 'dependency_contract': 'normal-entry-v1' if normal_entries else 'whole-block-v0',
                 'dependency_plan_file':plan_file,
                 'dependency_plan_sha256': hashlib.sha256(plan_bytes).hexdigest() if normal_entries else None,
@@ -254,7 +305,25 @@ def extend_catalog(cases, generator, output, *, migrate_entry_guards=False):
         if len(source) > 64 * 1024 * 1024 or \
                 hashlib.sha256(source).hexdigest() != old['sha256'][name]:
             raise ValueError('existing EE catalog source identity changed')
+    case_producers = old.get('case_producers', {})
+    if not isinstance(case_producers, dict) or len(case_producers) > 512 or \
+            any(name not in old['sources'] or name == 'ee_catalog.cpp' or type(producer) is not str or
+                not re.fullmatch('[0-9a-f]{64}', producer) for name, producer in case_producers.items()):
+        raise ValueError('invalid existing EE case producer ledger')
+    accepted_producers = {name: {old['generator_sha256']} for name in old['sources'] if name != 'ee_catalog.cpp'}
+    for name, producer in case_producers.items():
+        accepted_producers[name].add(producer)
+    # Bootstrap catalogs produced before the per-bank ledger existed. The prior
+    # migration verified every retained bank source; equality is checked again
+    # below before any staged file can replace an existing artifact.
+    previous = old.get('previous_generator_sha256')
+    if previous is not None:
+        if type(previous) is not str or not re.fullmatch('[0-9a-f]{64}', previous):
+            raise ValueError('invalid prior EE generator identity')
+        for producers in accepted_producers.values():
+            producers.add(previous)
     old_plan = old.get('dependency_plan_file')
+    if 'case_inputs' in old: owned_cases(output, old)
     if old.get('dependency_contract') == 'normal-entry-v1':
         if old_plan != 'ee_entry_dependencies.json' or (output / old_plan).is_symlink():
             raise ValueError('existing EE dependency plan identity is invalid')
@@ -267,7 +336,7 @@ def extend_catalog(cases, generator, output, *, migrate_entry_guards=False):
         if old_contract not in ('whole-block-v0','normal-entry-v1'):
             raise ValueError('unknown existing EE dependency contract')
         new = generate(cases, generator, staged,normal_entries=migrate_entry_guards or old_contract=='normal-entry-v1',
-                       _previous_identity=(old['generator_sha256'],old['sources']) if migrate_entry_guards else None)
+                       _accepted_producers=accepted_producers)
         if migrate_entry_guards:
             new['previous_generator_sha256'] = old['generator_sha256']
             new['previous_catalog_sha256'] = hashlib.sha256(raw).hexdigest()
@@ -280,6 +349,14 @@ def extend_catalog(cases, generator, output, *, migrate_entry_guards=False):
         for name in new['sources']:
             if name not in old['sources'] and ((output / name).exists() or (output / name).is_symlink()):
                 raise ValueError('new EE source conflicts with an unrecorded artifact')
+        old_inputs = {item['directory'] for item in old.get('case_inputs', {}).values()}
+        parent = output / 'ee_cases'
+        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+            raise ValueError('EE case input parent must be an owned directory')
+        for item in new['case_inputs'].values():
+            target = output / item['directory']
+            if item['directory'] not in old_inputs and (target.exists() or target.is_symlink()):
+                raise ValueError('new EE input case conflicts with an unrecorded artifact')
         plan_file = new.get('dependency_plan_file')
         if plan_file:
             target = output / plan_file
@@ -287,6 +364,11 @@ def extend_catalog(cases, generator, output, *, migrate_entry_guards=False):
                 raise ValueError('EE dependency plan conflicts with an unrecorded artifact')
             if not target.exists() or (staged / plan_file).read_bytes() != target.read_bytes():
                 (staged / plan_file).replace(target)
+        for item in new['case_inputs'].values():
+            if item['directory'] not in old_inputs:
+                target = output / item['directory']
+                target.parent.mkdir(exist_ok=True)
+                (staged / item['directory']).replace(target)
         # Existing bank files are byte-identical, so do not touch their mtimes.
         for name in new['sources']:
             if name not in old['sources'] or new['sha256'][name] != old['sha256'][name]:

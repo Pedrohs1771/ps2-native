@@ -127,6 +127,12 @@ It verifies all old identities and refuses any old callback source rewrite.
 The bounded hashed dependency sidecar and exact entry restrictions are described
 in [`nexo-ee-entry-dependencies-v1.md`](nexo-ee-entry-dependencies-v1.md).
 
+`admit_ee_misses.py` now prepares bounded batches and reuses verified input copies
+owned by the catalog. Its retained producer ledger allows later ordinary
+extensions after a generator migration, only for already verified bank sources.
+The command, duplicate handling and failure-report scope are in
+[`nexo-ee-miss-batch-v1.md`](nexo-ee-miss-batch-v1.md).
+
 The game runtime never invokes this preparation, generator or compiler. Finite
 bank admission still compares each callback's complete **declared** footprint.
 Requested entry generation can yield a different block boundary; it does not
