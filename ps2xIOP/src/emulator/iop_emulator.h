@@ -11,10 +11,13 @@
 
 namespace ps2x::iop::detail
 {
+    struct IopNativeProgram;
+
     class IopEmulator
     {
     public:
         explicit IopEmulator(IopHost &host);
+        IopEmulator(IopHost &host, const IopNativeProgram &program);
         ~IopEmulator();
 
         IopEmulator(const IopEmulator &) = delete;
@@ -40,6 +43,10 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] uint64_t cycles() const noexcept;
         [[nodiscard]] uint64_t instructions() const noexcept;
+        [[nodiscard]] uint64_t nativeInstructions() const noexcept;
+        [[nodiscard]] uint64_t interpretedInstructions() const noexcept;
+        [[nodiscard]] bool hasNativeFault() const noexcept;
+        [[nodiscard]] std::string_view nativeDiagnostic() const noexcept;
         [[nodiscard]] uint32_t loadedModuleCount() const noexcept;
         [[nodiscard]] uint32_t threadCount() const noexcept;
         [[nodiscard]] uint32_t rpcServerCount() const noexcept;

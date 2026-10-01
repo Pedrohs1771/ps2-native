@@ -10,10 +10,14 @@
 
 namespace ps2x::iop
 {
+    namespace detail { struct IopNativeProgram; }
+
     class IopSubsystem
     {
     public:
         explicit IopSubsystem(IopHost &host);
+        // Internal AOT bridge. Entries are copied; native callbacks must outlive this subsystem.
+        IopSubsystem(IopHost &host, const detail::IopNativeProgram &program);
         ~IopSubsystem();
 
         IopSubsystem(const IopSubsystem &) = delete;

@@ -1,6 +1,7 @@
 #include "iop_emulator.h"
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
+#include "core/iop_native.h"
 #include "imports/iop_heaplib.h"
 #include "imports/iop_imports.h"
 #include "imports/iop_intrman.h"
@@ -95,7 +96,7 @@ namespace ps2x::iop::detail
             uint32_t argument = 0u;
         };
 
-        explicit Impl(IopHost &hostRef)
+        explicit Impl(IopHost &hostRef, const IopNativeProgram *program = nullptr)
             : host(hostRef),
               sysmem(host, memory),
               kernel(memory),
@@ -112,6 +113,12 @@ namespace ps2x::iop::detail
               imports(memory),
               loadcore(memory, imports)
         {
+            if (program)
+                native = std::make_unique<IopNativeDispatch>(memory, cpuCore, *program);
+#if !PS2X_IOP_ENABLE_INTERPRETER
+            else
+                native = std::make_unique<IopNativeDispatch>(memory, cpuCore, IopNativeProgram{});
+#endif
             reset();
         }
 
@@ -132,6 +139,10 @@ namespace ps2x::iop::detail
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
             totalInstructions = 0;
+            totalNativeInstructions = 0;
+            totalInterpretedInstructions = 0;
+            if (native)
+                native->resetFault();
             tracedTimeslices = 0u;
             eeCycleCarry = 0;
             activeCpu = nullptr;
@@ -379,10 +390,36 @@ namespace ps2x::iop::detail
             return ImportDisposition::Missing;
         }
 
+        void reportNativeFault(CpuState &cpu)
+        {
+            cpu.stopped = true;
+            if (!lastError.empty() || !native || !native->fault())
+                return;
+            const auto &fault = *native->fault();
+            std::ostringstream out;
+            out << "[IOP:UNSEEN_CODE] reason=" << static_cast<unsigned>(fault.kind)
+                << std::hex << " pc=0x" << fault.pc
+                << " expected=0x" << fault.expectedInstruction
+                << " observed=0x" << fault.observedInstruction;
+            lastError = out.str();
+            log(LogLevel::Error, lastError);
+        }
+
         bool step(CpuState &cpu)
         {
+            if (native && native->fault())
+            {
+                reportNativeFault(cpu);
+                return false;
+            }
             if (cpu.stopped)
                 return false;
+            if (native && (cpu.pc & 3u) != 0u)
+            {
+                (void)native->execute(cpu);
+                reportNativeFault(cpu);
+                return false;
+            }
             if (cpu.pc == kThreadReturnSentinel || cpu.pc == kCallReturnSentinel)
             {
                 cpu.stopped = true;
@@ -390,6 +427,12 @@ namespace ps2x::iop::detail
             }
             if (physicalAddress(cpu.pc) >= kRamSize)
             {
+                if (native)
+                {
+                    (void)native->execute(cpu);
+                    reportNativeFault(cpu);
+                    return false;
+                }
                 std::ostringstream out;
                 out << "[IOP] execution outside RAM pc=0x" << std::hex << cpu.pc;
                 log(LogLevel::Error, out.str());
@@ -402,6 +445,12 @@ namespace ps2x::iop::detail
             if (const auto import = imports.decode(cpu.pc))
             {
                 const ImportDisposition disposition = dispatchImport(*import, cpu);
+                if (native && disposition == ImportDisposition::Missing)
+                {
+                    native->rejectImport(cpu.pc);
+                    reportNativeFault(cpu);
+                    return false;
+                }
                 ++totalInstructions;
                 ++totalCycles;
                 if (disposition == ImportDisposition::JumpToGuest)
@@ -411,7 +460,31 @@ namespace ps2x::iop::detail
                 return !cpu.stopped;
             }
 
-            const bool running = cpuCore.executeInstruction(cpu);
+            bool running;
+            if (native)
+            {
+                running = native->execute(cpu);
+                if (native->fault())
+                {
+                    reportNativeFault(cpu);
+                    return false;
+                }
+                ++totalNativeInstructions;
+            }
+#if PS2X_IOP_ENABLE_INTERPRETER
+            else
+            {
+                running = cpuCore.executeInstruction(cpu);
+                ++totalInterpretedInstructions;
+            }
+#else
+            else
+            {
+                // Construction always configures a native dispatcher in a strict build.
+                cpu.stopped = true;
+                return false;
+            }
+#endif
             schedulePendingDma();
             ++totalInstructions;
             ++totalCycles;
@@ -477,6 +550,11 @@ namespace ps2x::iop::detail
             }
             cpu.gpr[31] = kCallReturnSentinel;
             runCpu(cpu, budget);
+            if (native && !native->fault() && !cpu.stopped && !cpu.yielded && cpu.pc != kCallReturnSentinel)
+            {
+                native->reject(IopNativeFaultKind::CallBudgetExhausted, cpu.pc);
+                reportNativeFault(cpu);
+            }
             return cpu.gpr[2];
         }
 
@@ -584,6 +662,8 @@ namespace ps2x::iop::detail
 
         void runCycles(uint64_t cycles) noexcept
         {
+            if (native && native->fault())
+                return;
             try
             {
                 const uint64_t target = totalCycles + cycles;
@@ -607,6 +687,8 @@ namespace ps2x::iop::detail
                     }
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
+                    if (native && native->fault())
+                        return;
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
                     if (std::getenv("PS2X_TRACE_IOP_SCHEDULER") && (++tracedTimeslices % 128u) == 0u)
                     {
@@ -631,6 +713,8 @@ namespace ps2x::iop::detail
         ModuleLoadResult loadImage(std::string path, std::span<const uint8_t> image, const void *arguments, uint32_t argumentSize)
         {
             ModuleLoadResult result{true, -1, -1};
+            if (native && native->fault())
+                return result;
             constexpr uint32_t maxArgumentBytes = 64u * 1024u;
             constexpr size_t maxArguments = 256u;
             if (argumentSize > maxArgumentBytes || (argumentSize != 0u && !arguments) || path.size() > maxArgumentBytes)
@@ -661,7 +745,16 @@ namespace ps2x::iop::detail
                 return result;
             }
             if (!loaded.relocationsComplete)
+            {
                 log(LogLevel::Warning, "[IOP] one or more IRX relocations were unsupported");
+                if (native)
+                {
+                    native->reject(IopNativeFaultKind::UnsupportedRelocation, loaded.entry);
+                    CpuState failed{};
+                    reportNativeFault(failed);
+                    return result;
+                }
+            }
 
             Module module;
             module.id = nextModuleId++;
@@ -692,6 +785,8 @@ namespace ps2x::iop::detail
                 throw;
             }
             freeAllocation(args);
+            if (native && native->fault())
+                return result;
             module.resident = startResult == 0u || startResult == 2u;
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);
@@ -768,6 +863,7 @@ namespace ps2x::iop::detail
         IopTimrman timrman;
         IopIoman ioman;
         IopCpuCore cpuCore;
+        std::unique_ptr<IopNativeDispatch> native;
         IopImportRegistry imports;
         IopLoadcore loadcore;
         std::map<int, Module> modules;
@@ -777,6 +873,8 @@ namespace ps2x::iop::detail
         uint32_t moduleCursor = kModuleLoadBase;
         uint64_t totalCycles = 0;
         uint64_t totalInstructions = 0;
+        uint64_t totalNativeInstructions = 0;
+        uint64_t totalInterpretedInstructions = 0;
         uint64_t eeCycleCarry = 0;
         CpuState *activeCpu = nullptr;
         std::string lastError;
@@ -790,6 +888,11 @@ namespace ps2x::iop::detail
 
     IopEmulator::IopEmulator(IopHost &host)
         : m_impl(std::make_unique<Impl>(host))
+    {
+    }
+
+    IopEmulator::IopEmulator(IopHost &host, const IopNativeProgram &program)
+        : m_impl(std::make_unique<Impl>(host, &program))
     {
     }
 
@@ -831,12 +934,15 @@ namespace ps2x::iop::detail
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
     {
-        return m_impl->rpc.handleRpc(request, *m_impl);
+        if (hasNativeFault())
+            return {};
+        RpcResult result = m_impl->rpc.handleRpc(request, *m_impl);
+        return hasNativeFault() ? RpcResult{} : result;
     }
 
     bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept
     {
-        return m_impl->rpc.hasServer(sid);
+        return !hasNativeFault() && m_impl->rpc.hasServer(sid);
     }
 
     void IopEmulator::onSifTransfer(const SifTransfer &transfer)
@@ -896,6 +1002,26 @@ namespace ps2x::iop::detail
     uint64_t IopEmulator::instructions() const noexcept
     {
         return m_impl->totalInstructions;
+    }
+
+    uint64_t IopEmulator::nativeInstructions() const noexcept
+    {
+        return m_impl->totalNativeInstructions;
+    }
+
+    uint64_t IopEmulator::interpretedInstructions() const noexcept
+    {
+        return m_impl->totalInterpretedInstructions;
+    }
+
+    bool IopEmulator::hasNativeFault() const noexcept
+    {
+        return m_impl->native && m_impl->native->fault().has_value();
+    }
+
+    std::string_view IopEmulator::nativeDiagnostic() const noexcept
+    {
+        return hasNativeFault() ? m_impl->lastError : std::string_view{};
     }
 
     uint32_t IopEmulator::loadedModuleCount() const noexcept

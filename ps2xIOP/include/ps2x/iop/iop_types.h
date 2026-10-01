@@ -155,6 +155,9 @@ namespace ps2x::iop
     {
         uint64_t emulatorCycles = 0;
         uint64_t emulatorInstructions = 0;
+        uint64_t nativeInstructions = 0;
+        uint64_t interpretedInstructions = 0;
+        uint32_t nativeFaults = 0;
         uint32_t emulatorLoadedModules = 0;
         uint32_t emulatorThreads = 0;
         uint32_t emulatorRpcServers = 0;

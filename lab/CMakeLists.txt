@@ -201,6 +201,8 @@ if(BUILD_TESTING)
         -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_vu_semantics_codegen.py)
     add_test(NAME nexo_vu_bank_codegen_tests COMMAND "${Python3_EXECUTABLE}"
         -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_vu_bank_codegen.py)
+    add_test(NAME nexo_iop_bank_codegen_tests COMMAND "${Python3_EXECUTABLE}"
+        -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_iop_bank_codegen.py)
     add_test(NAME nexo_vif_bank_codegen_tests COMMAND "${Python3_EXECUTABLE}"
         -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_vif_bank_codegen.py)
     add_test(NAME nexo_headless_isolation_tests COMMAND "${Python3_EXECUTABLE}"

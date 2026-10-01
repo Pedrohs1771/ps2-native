@@ -3,6 +3,7 @@
 #include "iop_service.h"
 #include "iop_module_manager.h"
 #include "emulator/iop_emulator.h"
+#include "emulator/core/iop_native.h"
 #include "module_factories.h"
 #include "ps2x/iop/ps2_path.h"
 
@@ -16,9 +17,9 @@ namespace ps2x::iop
     class IopSubsystem::Impl
     {
     public:
-        explicit Impl(IopHost &hostRef)
+        explicit Impl(IopHost &hostRef, const detail::IopNativeProgram *program = nullptr)
             : host(hostRef),
-              emulator(hostRef)
+              emulator(program ? detail::IopEmulator(hostRef, *program) : detail::IopEmulator(hostRef))
         {
             coreServices.emplace_back(detail::createLoadfileService(
                 host,
@@ -98,6 +99,8 @@ namespace ps2x::iop
             if (parsed.device != Ps2PathDevice::Rom0)
             {
                 ModuleLoadResult physical = emulator.loadModule(path, arguments, argumentSize);
+                if (emulator.hasNativeFault())
+                    return physical;
                 if (physical.moduleId > 0)
                 {
                     moduleManager.observePhysicalLoad(physical.moduleId, path);
@@ -132,6 +135,11 @@ namespace ps2x::iop
 
     IopSubsystem::IopSubsystem(IopHost &host)
         : m_impl(std::make_unique<Impl>(host))
+    {
+    }
+
+    IopSubsystem::IopSubsystem(IopHost &host, const detail::IopNativeProgram &program)
+        : m_impl(std::make_unique<Impl>(host, &program))
     {
     }
 
@@ -211,6 +219,8 @@ namespace ps2x::iop
 
     bool IopSubsystem::canBindRpc(uint32_t sid) const noexcept
     {
+        if (m_impl->emulator.hasNativeFault())
+            return false;
         if (m_impl->routes.find(sid) != m_impl->routes.end())
         {
             return true;
@@ -220,10 +230,14 @@ namespace ps2x::iop
 
     RpcResult IopSubsystem::handleRpc(const RpcRequest &request)
     {
+        if (m_impl->emulator.hasNativeFault())
+            return {};
         const auto route = m_impl->routes.find(request.sid);
         detail::IopService *hle = route != m_impl->routes.end() ? route->second : nullptr;
 
         RpcResult emulated = m_impl->emulator.handleRpc(request);
+        if (m_impl->emulator.hasNativeFault())
+            return {};
         if (emulated.handled || !hle)
         {
             return emulated;
@@ -283,10 +297,15 @@ namespace ps2x::iop
         DebugSnapshot snapshot;
         snapshot.emulatorCycles = m_impl->emulator.cycles();
         snapshot.emulatorInstructions = m_impl->emulator.instructions();
+        snapshot.nativeInstructions = m_impl->emulator.nativeInstructions();
+        snapshot.interpretedInstructions = m_impl->emulator.interpretedInstructions();
+        snapshot.nativeFaults = m_impl->emulator.hasNativeFault() ? 1u : 0u;
         snapshot.emulatorLoadedModules = m_impl->emulator.loadedModuleCount();
         snapshot.emulatorThreads = m_impl->emulator.threadCount();
         snapshot.emulatorRpcServers = m_impl->emulator.rpcServerCount();
         snapshot.diagnostics = m_impl->loadOutcomes;
+        if (m_impl->emulator.hasNativeFault())
+            snapshot.diagnostics.emplace_back(m_impl->emulator.nativeDiagnostic());
         if (!m_impl->lastError.empty())
         {
             snapshot.diagnostics.push_back(m_impl->lastError);

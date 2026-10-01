@@ -9,6 +9,29 @@ second-architecture validation and a qualified native game package remain
 unfinished. The identified independent VU engine and its timing differences are
 described in `PCSX2_VU_REFERENCE.md`.
 
+## Initial IOP AOT path
+
+The IOP now also has an instruction-specialized V0 bridge integrated with IRX
+startup and RPC callbacks. `generate_iop_bank.py` consumes an already relocated
+RAM bank, creates an entry for every aligned word, and emits C++ operations with
+constant instruction parameters. The native dispatcher verifies live code
+identity, supports interior entries and RAM aliases, and refuses missing,
+changed, or misaligned code without interpreting it.
+
+The synthetic acceptance corpus has 16 strict native cases, 17 diagnostic cases
+(including 292 one-step comparisons to the identified CPU model), and six
+converter cases. It includes native RPC, self modification, all RAM writers,
+pending loads and branches, unknown imports, incomplete relocations, and
+unfinished startup. `PS2X_IOP_ENABLE_INTERPRETER=OFF` removes the generic CPU
+instruction-execution symbol from the native test executable.
+
+This is preparation for M4. The game runtime still uses its diagnostic IOP
+configuration; commercial module banks, binding across relocation bases,
+independent R3000A fidelity, canonical snapshots and qualified service/timing
+contracts remain open. A synthetic startup/RPC result does not qualify Monster
+House or a complete game. Commands and the internal bank contract are in
+[`nexo-iop-aot-v0.md`](../schemas/nexo-iop-aot-v0.md).
+
 ## Build and run
 
 ```sh

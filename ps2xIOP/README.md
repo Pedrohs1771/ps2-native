@@ -4,6 +4,13 @@
 IOP kernel providing imports without a PS2 BIOS. The C++20 static library
 `ps2_iop` / `ps2x::iop` is linked into `ps2xRuntime`.
 
+There is now an initial native AOT path with an internal laboratory bank ABI.
+Constructing the subsystem with an `IopNativeProgram` requires compiled entries;
+missing or changed instructions fail with `UNSEEN_CODE` and never use the
+interpreter. `PS2X_IOP_ENABLE_INTERPRETER=OFF` excludes the diagnostic interpreter
+from the library and makes the default constructor require a native bank too.
+The game runtime has not yet been configured with commercial IOP module banks.
+
 ## Execution policy
 
 Game-specific IOP code executes from IRX modules. There is no game-profile
@@ -49,6 +56,9 @@ subsystem and host adapter.
 
 `debugSnapshot()` exposes emulator cycle/instruction counts, loaded module,
 thread and RPC-server counts, generic service metrics and load diagnostics.
+It also reports native instructions, interpreted instructions, and whether a
+persistent native fault is present (zero or one). Reset clears those counters
+and failures while retaining the configured compiled bank.
 The runtime debugger renders these in the **IOP/SIF** tab.
 
 Build standalone tests with:
@@ -61,3 +71,30 @@ ctest --test-dir out/build/iop-tests --output-on-failure
 
 The suites cover IRX execution, RPC, imports, version resolution and generic
 HLE compatibility. `ps2x_tests` also covers runtime SIF RPC/DMA integration.
+
+## Native AOT laboratory
+
+```text
+already relocated RAM words → offline C++ generation → host compiler
+                            → compiled bank → native dispatcher
+```
+
+The converter is `lab/generate_iop_bank.py`. It covers every aligned word in
+the supplied RAM range, including interior entries, with fixed instruction
+parameters. The runtime reads the live word only to verify its identity.
+The dispatcher owns its entry directory; callbacks must remain loaded while
+the subsystem uses the bank. Its ABI is internal and not installed for third
+party use yet.
+
+The bank currently binds absolute physical addresses. Source IRX identification
+and binding across relocation bases still need the module frontend. The initial
+semantics are specialized from the existing CPU model: differential agreement
+does not certify hardware semantics or timing. Native service contracts also
+retain the current qualification limits. See
+[the V0 contract](../schemas/nexo-iop-aot-v0.md) for commands and remaining gates.
+
+The standalone native tests exercise synthetic IRX startup, load and branch
+checkpoints, interior entries and aliases, code writes, empty/invalid banks,
+unresolved imports, incomplete relocations, and startup budget exhaustion.
+Diagnostic builds additionally compare the emitted operations to the identified
+CPU model. The strict build excludes its generic instruction-execution symbol.
