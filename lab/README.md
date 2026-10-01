@@ -19,18 +19,52 @@ identity, supports interior entries and RAM aliases, and refuses missing,
 changed, or misaligned code without interpreting it.
 
 The synthetic acceptance corpus has 16 strict native cases, 17 diagnostic cases
-(including 292 one-step comparisons to the identified CPU model), and six
+(including 292 one-step comparisons to the identified CPU model), and seven
 converter cases. It includes native RPC, self modification, all RAM writers,
 pending loads and branches, unknown imports, incomplete relocations, and
 unfinished startup. `PS2X_IOP_ENABLE_INTERPRETER=OFF` removes the generic CPU
 instruction-execution symbol from the native test executable.
 
 This is preparation for M4. The game runtime still uses its diagnostic IOP
-configuration; commercial module banks, binding across relocation bases,
+configuration; banks for its complete commercial corpus, binding across relocation bases,
 independent R3000A fidelity, canonical snapshots and qualified service/timing
 contracts remain open. A synthetic startup/RPC result does not qualify Monster
 House or a complete game. Commands and the internal bank contract are in
 [`nexo-iop-aot-v0.md`](../schemas/nexo-iop-aot-v0.md).
+
+### Original IRX startup bridge
+
+`PS2X_IOP_BUILD_LAB=ON` adds `nexo_iop_inspect`: it runs the existing loader
+offline, rejects incomplete relocation tables and misaligned/out-of-range entry
+points, and writes a complete relocated RAM bank plus `module.json`.
+`generate_iop_bank.py --loaded-module` reads that metadata directly; no manual
+function-entry or callback address list is supplied.
+
+```sh
+cmake -S ps2xIOP -B build/iop-aot-strict -DPS2X_IOP_BUILD_LAB=ON -DPS2X_IOP_BUILD_TESTS=ON -DPS2X_IOP_ENABLE_INTERPRETER=OFF '-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG -fno-lto' -DCMAKE_BUILD_TYPE=Release
+cmake --build build/iop-aot-strict --target nexo_iop_inspect --parallel 4
+build/iop-aot-strict/nexo_iop_inspect /path/to/module.irx /path/to/new-case
+python lab/generate_iop_bank.py --loaded-module /path/to/new-case --output /path/to/generated --symbol compiledIopProgram
+cmake -S ps2xIOP -B build/iop-aot-strict -DNEXO_IOP_BANK_CPP=/path/to/generated/iop_native_bank.cpp
+cmake --build build/iop-aot-strict --target nexo_iop_native_probe --parallel 4
+build/iop-aot-strict/nexo_iop_native_probe /path/to/module.irx /path/to/new-result
+```
+
+The native probe uses a bounded laboratory host and reports unsupported external
+operations as failures. It captures final physical IOP RAM and EE RAM, startup
+return, counters and logs. `nexo_iop_baseline_probe` is a separate target available
+only with the diagnostic interpreter enabled. Neither probe is a game runner.
+
+The original Monster House `HKSIF.IRX` startup was exercised with 85 native guest
+operations and 11 service dispatches, zero interpreted operations and no generic
+CPU execution symbol in the native binary. Its 2 MiB IOP RAM, 32 MiB EE RAM,
+startup return, counters and logs matched the identified diagnostic model.
+All 11 external IRX files passed **offline loader acceptance**, each isolated at
+the default base. This does not claim execution of the other ten modules.
+
+Relocation-family binding in the actual game, embedded `IOPRP271.IMG` modules,
+canonical hidden state and independent fidelity remain open. The commercial
+images, generated C++ and captures stay in ignored local build directories.
 
 ## Build and run
 

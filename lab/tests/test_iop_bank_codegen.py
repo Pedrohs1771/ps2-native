@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import json
+import struct
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +57,21 @@ class IopBankCodegenTests(unittest.TestCase):
             before = path.stat().st_mtime_ns
             CODEGEN.write_if_changed(path, 'source\n')
             self.assertEqual(before, path.stat().st_mtime_ns)
+
+    def test_loaded_module_supplies_base_without_manual_addresses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            metadata = {'schema_version': 1, 'base': 0x10000, 'size': 8, 'entry': 0x10000,
+                        'relocations_complete': True}
+            (path / 'module.json').write_text(json.dumps(metadata))
+            (path / 'relocated-ram.bin').write_bytes(struct.pack('<II', 0x24020000, 0))
+            base, words = CODEGEN.load_module_case(path)
+            self.assertEqual((base, words), (0x10000, [0x24020000, 0]))
+            for field, value in (('size', 12), ('entry', 0x10009), ('entry', 0x10001),
+                                 ('relocations_complete', False), ('schema_version', 2)):
+                changed = dict(metadata); changed[field] = value
+                (path / 'module.json').write_text(json.dumps(changed))
+                with self.assertRaises(ValueError): CODEGEN.load_module_case(path)
 
 
 if __name__ == '__main__': unittest.main()

@@ -5,6 +5,8 @@ project(ps2xIOP LANGUAGES CXX)
 option(PS2X_IOP_BUILD_TESTS "Build ps2xIOP emulator smoke tests" OFF)
 option(PS2X_IOP_DEBUG_SYMBOLS "Emit debug types for IOP scheduling diagnostics" OFF)
 option(PS2X_IOP_ENABLE_INTERPRETER "Include the diagnostic IOP instruction interpreter" ON)
+option(PS2X_IOP_BUILD_LAB "Build offline IOP loader/probe tools" OFF)
+set(NEXO_IOP_BANK_CPP "" CACHE FILEPATH "Offline generated absolute IOP bank for the native probe")
 
 if(PS2X_IOP_DEBUG_SYMBOLS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(src/emulator/iop_emulator.cpp src/emulator/core/iop_kernel.cpp
@@ -57,6 +59,24 @@ target_include_directories(ps2_iop
 
 add_library(ps2x::iop ALIAS ps2_iop)
 
+if(PS2X_IOP_BUILD_LAB)
+    add_executable(nexo_iop_inspect ../lab/src/iop_inspect_main.cpp)
+    target_include_directories(nexo_iop_inspect PRIVATE src ../lab/include)
+    target_link_libraries(nexo_iop_inspect PRIVATE ps2_iop)
+    if(NEXO_IOP_BANK_CPP)
+        add_executable(nexo_iop_native_probe ../lab/src/iop_native_probe_main.cpp ${NEXO_IOP_BANK_CPP})
+        target_include_directories(nexo_iop_native_probe PRIVATE src ../lab/include)
+        target_compile_definitions(nexo_iop_native_probe PRIVATE NEXO_IOP_NATIVE=1)
+        target_link_libraries(nexo_iop_native_probe PRIVATE ps2_iop)
+    endif()
+    if(PS2X_IOP_ENABLE_INTERPRETER)
+        add_executable(nexo_iop_baseline_probe ../lab/src/iop_native_probe_main.cpp)
+        target_include_directories(nexo_iop_baseline_probe PRIVATE src ../lab/include)
+        target_compile_definitions(nexo_iop_baseline_probe PRIVATE NEXO_IOP_NATIVE=0)
+        target_link_libraries(nexo_iop_baseline_probe PRIVATE ps2_iop)
+    endif()
+endif()
+
 if(PS2X_IOP_BUILD_TESTS)
     enable_testing()
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -86,6 +106,10 @@ if(PS2X_IOP_BUILD_TESTS)
     add_test(NAME ps2_iop_native_tests COMMAND ps2_iop_native_tests)
     add_test(NAME ps2_iop_codegen_tests COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/../lab/tests/test_iop_bank_codegen.py)
+    if(PS2X_IOP_BUILD_LAB)
+        add_test(NAME nexo_iop_inspect_cli_tests COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../lab/tests/test_iop_inspect_cli.py $<TARGET_FILE:nexo_iop_inspect>)
+    endif()
 
     if(PS2X_IOP_ENABLE_INTERPRETER)
         add_executable(ps2_iop_emulator_tests tests/iop_emulator_tests.cpp)

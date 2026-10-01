@@ -86,6 +86,13 @@ The dispatcher owns its entry directory; callbacks must remain loaded while
 the subsystem uses the bank. Its ABI is internal and not installed for third
 party use yet.
 
+`PS2X_IOP_BUILD_LAB=ON` builds an offline IRX loader frontend. Its output can be
+passed to the converter with `--loaded-module`, so the base and complete bank
+range are taken from loader metadata. A native startup probe accepts generated
+bank C++ through `NEXO_IOP_BANK_CPP`; the diagnostic startup probe is a separate
+target. Both record their scope and reject unsupported external host operations.
+See [the laboratory guide](../lab/README.md) for the complete commands.
+
 The bank currently binds absolute physical addresses. Source IRX identification
 and binding across relocation bases still need the module frontend. The initial
 semantics are specialized from the existing CPU model: differential agreement

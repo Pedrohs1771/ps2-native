@@ -88,11 +88,35 @@ def write_if_changed(path: Path, content: str):
         path.write_text(content)
 
 
+def load_module_case(path: Path) -> tuple[int, list[int]]:
+    metadata = json.loads((path / 'module.json').read_text())
+    if (not isinstance(metadata, dict) or type(metadata.get('schema_version')) is not int or
+            metadata['schema_version'] != 1 or metadata.get('relocations_complete') is not True):
+        raise ValueError('loaded IOP module schema/relocations unsupported')
+    size = metadata.get('size')
+    entry = metadata.get('entry')
+    base = metadata.get('base')
+    if type(size) is not int or type(entry) is not int or type(base) is not int:
+        raise ValueError('loaded IOP module dimensions must be integers')
+    if size <= 0 or size > RAM_SIZE or size % 4 or entry % 4 or not base <= entry < base + size:
+        raise ValueError('loaded IOP module dimensions/entry invalid')
+    memory_path = path / 'relocated-ram.bin'
+    if memory_path.stat().st_size != size:
+        raise ValueError('loaded IOP RAM size differs from metadata')
+    data = memory_path.read_bytes()
+    if len(data) != size:
+        raise ValueError('loaded IOP RAM changed while reading')
+    words = list(struct.unpack('<' + 'I' * (size // 4), data))
+    validate(base, words)
+    return base, words
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--memory', type=Path, help='already relocated little-endian instruction bytes')
     source.add_argument('--words-json', type=Path, help='laboratory fixture with base and words')
+    source.add_argument('--loaded-module', type=Path, help='offline inspector output; supplies its own base')
     parser.add_argument('--base', type=lambda value: int(value, 0), default=None)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path, required=True)
@@ -107,6 +131,13 @@ def main():
         if len(data) % 4:
             parser.error('IOP bank bytes must be aligned to four bytes')
         base, words = args.base, list(struct.unpack('<' + 'I' * (len(data) // 4), data))
+    elif args.loaded_module:
+        if args.base is not None:
+            parser.error('--base is provided by --loaded-module')
+        try:
+            base, words = load_module_case(args.loaded_module)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
     else:
         if args.base is not None:
             parser.error('--base is provided by --words-json')

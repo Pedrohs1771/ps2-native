@@ -160,7 +160,10 @@ namespace ps2x::iop::detail
                 if (relsec.type != SHT_REL && relsec.type != SHT_RELA)
                     continue;
                 if (relsec.info >= sections.size())
+                {
+                    allSupported = false;
                     continue;
+                }
 
                 const Elf32Shdr &targetSection = sections[relsec.info];
                 const uint32_t targetBase = static_cast<uint32_t>(static_cast<int64_t>(targetSection.addr) + delta);
@@ -185,8 +188,12 @@ namespace ps2x::iop::detail
                 const uint32_t entrySize = relsec.type == SHT_RELA
                                                ? std::max<uint32_t>(relsec.entsize, sizeof(Elf32Rela))
                                                : std::max<uint32_t>(relsec.entsize, sizeof(Elf32Rel));
-                if (entrySize == 0u || !checkedRange(image.size(), relsec.offset, relsec.size))
+                if (entrySize == 0u || relsec.size % entrySize != 0u ||
+                    !checkedRange(image.size(), relsec.offset, relsec.size))
+                {
+                    allSupported = false;
                     continue;
+                }
 
                 for (uint32_t offset = 0; offset + entrySize <= relsec.size; offset += entrySize)
                 {
@@ -237,7 +244,7 @@ namespace ps2x::iop::detail
                         continue;
                     }
                     const uint32_t place = static_cast<uint32_t>(place64);
-                    if (place + 3u >= IopMemory::RamSize)
+                    if (place >= IopMemory::RamSize || 4u > IopMemory::RamSize - place)
                     {
                         allSupported = false;
                         continue;
@@ -294,7 +301,7 @@ namespace ps2x::iop::detail
                     }
                 }
             }
-            return allSupported;
+            return allSupported && hi16.empty();
         }
     }
 

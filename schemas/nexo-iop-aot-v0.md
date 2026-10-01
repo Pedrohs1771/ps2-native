@@ -94,3 +94,20 @@ Sempre: validar bancos, manter erros reproduzíveis, testar antes de commit.
 Esclarecer com o usuário somente se surgir requisito externo ao plano autorizado.
 Nunca: fallback interpretado no modo nativo, alterar vendors, publicar ISO/assets,
 usar APIs pagas, afirmar M4 completo a partir apenas destes testes sintéticos.
+
+## Próximo passo: frontend do carregador e corpus comercial
+
+Adicionar um inspector offline que usa o carregador identificado, rejeita
+relocations incompletas e produz RAM já relocada mais metadados de base, entry,
+GP e tamanho. Um probe separado liga esse banco ao subsystem estrito, carrega
+o IRX original e registra startup, contadores, diagnósticos e RAM final.
+Um probe diagnóstico separado usa o interpretador como referência provisória.
+Comparar retorno, contadores e RAM é uma verificação limitada: não qualifica
+estado oculto, hardware, serviços nem a campanha. Chamadas externas não
+implementadas pelo host do probe devem falhar, sem simular sucesso.
+
+Os módulos comerciais e o C++ derivado ficam em `build/`, fora do Git. Antes
+do corpus comercial, testar CLI, limites e relocations em um ELF sintético.
+Depois exercitar IRX reais da ISO já inventariada. O binding de diferentes
+bases ainda será uma etapa seguinte: este probe não exige que o jogo use
+permanentemente a base escolhida para o teste.
