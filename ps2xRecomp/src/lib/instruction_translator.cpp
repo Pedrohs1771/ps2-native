@@ -176,7 +176,7 @@ namespace ps2recomp
         case OPCODE_XORI:
             return fmt::format("SET_GPR_U64(ctx, {}, GPR_U64(ctx, {}) ^ (uint64_t)(uint16_t){});", inst.rt, inst.rs, inst.immediate);
         case OPCODE_LUI:
-            return fmt::format("SET_GPR_S32(ctx, {}, (int32_t)((uint32_t){} << 16));", inst.rt, inst.immediate);
+            return fmt::format("SET_GPR_S32(ctx, {}, (int32_t)((uint32_t){} << 16));", inst.rt, m_codeGenerator.dataImmediateExpression(inst));
         case OPCODE_LB:
             return fmt::format("SET_GPR_S32(ctx, {}, (int8_t){});", inst.rt, genRead(8, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate)));
         case OPCODE_LH:
@@ -194,7 +194,7 @@ namespace ps2recomp
         case OPCODE_SH:
             return genWrite(16, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), fmt::format("(uint16_t)GPR_U32(ctx, {})", inst.rt)) + ";";
         case OPCODE_SW:
-            return genWrite(32, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), fmt::format("GPR_U32(ctx, {})", inst.rt)) + ";";
+            return genWrite(32, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, m_codeGenerator.dataImmediateExpression(inst)), fmt::format("GPR_U32(ctx, {})", inst.rt)) + ";";
         case OPCODE_LQ:
             return fmt::format("SET_GPR_VEC(ctx, {}, {});", inst.rt, genRead(128, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate)));
         case OPCODE_SQ:

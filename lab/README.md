@@ -240,6 +240,35 @@ hardware fidelity and native execution of the candidate remain open. Candidate
 recognition alone cannot resume the stopped game. Evidence is under
 `build/lab/latest-ee-data-family-job.txt`.
 
+### Generated native EE data-family functions
+
+The offline `ps2_native_data_family` frontend now reuses the existing semantic
+emitters with typed LUI/SW data operands and relative PC expressions. Its generated
+wrapper guards the complete physical RAM structure and normal entry, extracts
+live data fields, and calls a precompiled native body. All instruction resume
+labels and standalone terminal slots are retained. There is no opcode execution
+loop or compilation in the runtime function. Initial regions are linear, with an
+optional terminal JR/JALR plus slot; unsupported forms fail explicitly. See the
+[`native synthesis contract`](../schemas/nexo-ee-native-data-family-v0.md).
+
+The synthetic compiled fixture passed **168 execution comparisons** over three
+families, 36 concrete variants/bases and every normal entry. It compares the
+identified complete EE context codec and all 32 MiB of RAM. The actual observed
+eight-word suffix was also compiled as **one shared function**, passing **64
+entry comparisons** across its eight observed variants/bases, including the new
+miss at `0x184f474`. Its generated fixture compiled in **2.275 seconds**, linked
+in **0.423 seconds** without LTO and ran in **2.548 seconds**. These are constructed
+context tests against the shared conservative emitter, not independent hardware
+or complete-machine game replay.
+
+The initial 226-proposal sweep generated **167 candidates** and rejected **59**
+unsupported shapes in **0.397 seconds**. Generated source is not an executed or
+approved family. All 34 prior concrete bank sources remained byte-identical to
+the archived converter's output. The game catalog, backend and executable have
+not been extended with these functions yet. Family admission, materializer/domain
+proofs, fetch/write/alias/device semantics and all complete-game gates remain
+open. Evidence is under `build/lab/latest-ee-family-native-job.txt`.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

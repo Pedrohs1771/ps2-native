@@ -20,6 +20,7 @@
 
 #include <fmt/format.h>
 #include <sstream>
+#include <stdexcept>
 #include <algorithm>
 #include <cstring>
 #include <unordered_set>
@@ -248,6 +249,25 @@ namespace ps2recomp
     }
 
     CodeGenerator::~CodeGenerator() = default;
+
+    std::string CodeGenerator::guestPcExpression(uint32_t address, bool uppercase) const
+    {
+        const auto literal = uppercase ? fmt::format("0x{:X}u", address) : fmt::format("0x{:x}u", address);
+        return m_nativeDataFamily ? "ADD32(family_base, " + literal + ")" : literal;
+    }
+
+    std::string CodeGenerator::dataImmediateExpression(const Instruction &instruction) const
+    {
+        const auto slot = m_nativeDataSlots.find(instruction.address);
+        if (!m_nativeDataFamily || slot == m_nativeDataSlots.end())
+            return std::to_string(instruction.opcode == OPCODE_LUI ? instruction.immediate : instruction.simmediate);
+        const auto value = fmt::format("family_parameters[{}]",slot->second);
+        if (instruction.opcode == OPCODE_LUI && instruction.rs == 0u)
+            return value;
+        if (instruction.opcode == OPCODE_SW)
+            return "(uint32_t)(int32_t)(int16_t)" + value;
+        throw std::invalid_argument("unsupported native data operand");
+    }
 
     std::string CodeGenerator::translateInstruction(const Instruction &inst)
     {

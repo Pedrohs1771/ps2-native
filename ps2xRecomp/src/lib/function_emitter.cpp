@@ -87,14 +87,17 @@ namespace ps2recomp
             sanitizedName = nameBuilder.str();
         }
 
-        ss << "void " << sanitizedName << "(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime) {\n";
+        ss << (cg.m_nativeDataFamily ? "static void " : "void ") << sanitizedName
+           << "(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime";
+        if (cg.m_nativeDataFamily) ss << ", uint32_t family_base, const uint16_t *family_parameters";
+        ss << ") {\n";
         ss << "#ifdef PS2_FUNCTION_LOG_TRACKER\n";
         ss << "    PS_LOG_ENTRY(\"" << sanitizedName << "\");\n";
         ss << "#endif\n";
         ss << "\n";
         if (!resumeTargets.empty())
         {
-            ss << "    switch (ctx->pc) {\n";
+            ss << (cg.m_nativeDataFamily ? "    switch (ctx->pc - family_base) {\n" : "    switch (ctx->pc) {\n");
             for (uint32_t target : resumeTargets)
             {
                 ss << "        case 0x" << std::hex << target << "u: goto label_" << target << ";\n"
@@ -103,8 +106,7 @@ namespace ps2recomp
             ss << "        default: break;\n";
             ss << "    }\n\n";
         }
-        ss << "    ctx->pc = 0x" << std::hex << function.start << "u;\n"
-           << std::dec;
+        ss << "    ctx->pc = " << cg.guestPcExpression(function.start) << ";\n";
         ss << "\n";
 
         bool lastInstructionWasControlFlow = false;
@@ -196,8 +198,7 @@ namespace ps2recomp
 
                         if (gifDmaKickPlan.completesAt(i))
                         {
-                            ss << "    ctx->pc = 0x" << std::hex << inst.address << "u;\n"
-                               << std::dec;
+                            ss << "    ctx->pc = " << cg.guestPcExpression(inst.address) << ";\n";
                             ss << "    " << gifDmaKickCall(gifDmaKickPlan) << "\n";
                             gifDmaKickPlan = {};
                         }
@@ -206,8 +207,7 @@ namespace ps2recomp
                         continue;
                     }
 
-                    ss << "    ctx->pc = 0x" << std::hex << inst.address << "u;\n"
-                       << std::dec;
+                    ss << "    ctx->pc = " << cg.guestPcExpression(inst.address) << ";\n";
                     const MemoryAccessHint memoryHint = resolveMemoryAccessHint(inst, constantRegisters);
                     ss << "    " << cg.translateInstruction(inst, memoryHint);
                     if (inst.isMmio)
@@ -235,8 +235,7 @@ namespace ps2recomp
         // Fallthrough with no terminating branch: publish the next PC so the EE dispatcher does not re-enter this function.
         if (!instructions.empty() && !lastInstructionWasControlFlow)
         {
-            ss << "    ctx->pc = 0x" << std::hex << function.end << "u;\n"
-               << std::dec;
+            ss << "    ctx->pc = " << cg.guestPcExpression(function.end) << ";\n";
         }
 
         // A jump directly to a delay-slot address executes that instruction
@@ -248,7 +247,7 @@ namespace ps2recomp
             for (const Instruction &slot : independentDelayEntries)
             {
                 ss << "label_" << std::hex << slot.address << ":\n{\n";
-                ss << "    ctx->pc = 0x" << slot.address << "u;\n";
+                ss << "    ctx->pc = " << cg.guestPcExpression(slot.address) << ";\n";
                 if (slot.hasDelaySlot)
                 {
                     // A branch in an architectural delay slot is unpredictable.
@@ -258,8 +257,8 @@ namespace ps2recomp
                 else
                 {
                     ss << "    " << cg.translateInstruction(slot) << "\n";
-                    ss << "    if (ctx->pc == 0x" << std::hex << slot.address
-                       << "u) ctx->pc = 0x" << slot.address + 4u << "u;\n";
+                    ss << "    if (ctx->pc == " << cg.guestPcExpression(slot.address)
+                       << ") ctx->pc = " << cg.guestPcExpression(slot.address + 4u) << ";\n";
                     ss << "    return;\n";
                 }
                 ss << std::dec << "}\n";

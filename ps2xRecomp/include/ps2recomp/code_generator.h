@@ -2,6 +2,7 @@
 #define PS2RECOMP_CODE_GENERATOR_H
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <map>
@@ -81,6 +82,12 @@ namespace ps2recomp
         bool m_emitInstructionComments = true;
         RecompilerReporter *m_reporter = nullptr;
         std::string m_currentFunctionName;
+        // Used only by the validated offline data-family frontend. Canonical
+        // instruction addresses are offsets; no caller-supplied C++ expressions.
+        bool m_nativeDataFamily = false;
+        std::map<uint32_t, size_t> m_nativeDataSlots;
+        std::string guestPcExpression(uint32_t address, bool uppercase = false) const;
+        std::string dataImmediateExpression(const Instruction &instruction) const;
 
         std::string translateInstruction(const Instruction &inst);
         std::string translateInstruction(const Instruction &inst, const MemoryAccessHint &memoryHint);

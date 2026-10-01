@@ -30,6 +30,9 @@ target_link_libraries(nexo_iop_capture_fixture PRIVATE ps2_iop)
 add_executable(nexo_ee_aot_tests tests/ee_aot_tests.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_ee_aot_tests PRIVATE ../ps2xTest/include ../ps2xRuntime/src/lib)
 target_link_libraries(nexo_ee_aot_tests PRIVATE ps2_runtime)
+add_executable(nexo_ee_data_family_codegen_tests tests/ee_data_family_codegen_tests.cpp)
+target_include_directories(nexo_ee_data_family_codegen_tests PRIVATE ../ps2xTest/include)
+target_link_libraries(nexo_ee_data_family_codegen_tests PRIVATE ps2_recomp_lib)
 add_executable(nexo_ee_snapshot_tests tests/ee_snapshot_tests.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_ee_snapshot_tests PRIVATE include ../ps2xTest/include)
 target_link_libraries(nexo_ee_snapshot_tests PRIVATE ps2_runtime)
@@ -62,8 +65,23 @@ add_library(nexo_vu_replay_support STATIC src/vu_replay.cpp)
 target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(EE_DATA_FAMILY_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/ee_data_family_fixture.cpp")
+add_custom_command(OUTPUT "${EE_DATA_FAMILY_FIXTURE}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_ee_data_family_fixture.py"
+        $<TARGET_FILE:ps2_native_data_family> $<TARGET_FILE:ps2_native_overlay> "${EE_DATA_FAMILY_FIXTURE}"
+    DEPENDS ps2_native_data_family ps2_native_overlay tests/generate_ee_data_family_fixture.py
+    VERBATIM)
+add_executable(nexo_ee_data_family_execution_tests tests/ee_data_family_execution_tests.cpp "${EE_DATA_FAMILY_FIXTURE}")
+target_include_directories(nexo_ee_data_family_execution_tests PRIVATE include tests ../ps2xTest/include)
+target_link_libraries(nexo_ee_data_family_execution_tests PRIVATE ps2_runtime)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nexo_ee_data_family_execution_tests PRIVATE -O1 -fno-lto)
+    target_link_options(nexo_ee_data_family_execution_tests PRIVATE -fno-lto)
+endif()
 if(BUILD_TESTING)
     add_test(NAME nexo_ee_aot_tests COMMAND nexo_ee_aot_tests)
+    add_test(NAME nexo_ee_data_family_codegen_tests COMMAND nexo_ee_data_family_codegen_tests)
+    add_test(NAME nexo_ee_data_family_execution_tests COMMAND nexo_ee_data_family_execution_tests)
     add_test(NAME nexo_ee_snapshot_tests COMMAND nexo_ee_snapshot_tests)
     add_test(NAME nexo_ee_context_inventory_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_context_inventory.py)

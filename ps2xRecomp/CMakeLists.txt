@@ -117,6 +117,8 @@ add_executable(ps2_recomp ${PS2RECOMP_EXE_SOURCES})
 
 add_executable(ps2_native_overlay src/tools/native_overlay_main.cpp)
 target_link_libraries(ps2_native_overlay PRIVATE ps2_recomp_lib)
+add_executable(ps2_native_data_family src/tools/native_data_family_main.cpp)
+target_link_libraries(ps2_native_data_family PRIVATE ps2_recomp_lib)
 
 target_link_libraries(ps2_recomp
 PRIVATE
