@@ -269,6 +269,48 @@ not been extended with these functions yet. Family admission, materializer/domai
 proofs, fetch/write/alias/device semantics and all complete-game gates remain
 open. Evidence is under `build/lab/latest-ee-family-native-job.txt`.
 
+### Experimental precompiled family admission in the game
+
+The finite family matcher/backend now selects immutable native structures by
+their complete masked RAM identity and entry offset, across physical bases.
+It rejects ambiguous matches and pending architectural slots and repeats
+admission at invocation. The generated native function then rechecks its guard
+and reads its live typed parameters. There is no guest compiler or opcode
+execution loop in this family path. The build option defaults OFF and requires
+the AOT EE laboratory profile. See the
+[catalog and admission contract](../schemas/nexo-ee-family-catalog-v0.md).
+
+The offline publisher hashes generated sources and input provenance, merges
+duplicate structures and records unsupported bodies. CMake checks manifest
+types, counts, laboratory flags, paths and hashes before compiling. Neither
+publication nor a successful match establishes producer domains or code
+closure. Fetch/cache/writes/aliases and independent fidelity remain open.
+
+The actual Monster House test used two families, generated in **0.093 seconds**:
+the observed eight-word saved-frame suffix and its eleven-word fixed prefix.
+The native incremental build took **13.861 seconds**, followed by a
+**16.428-second game link**, with **zero original game compilations** and no
+LTO. No new concrete bank or per-address TOML entry was added. The final
+provenance publication took 0.115 seconds and preserved both generated bodies
+byte-for-byte.
+
+An owned Xvfb `:90` display and isolated silent audio sink reached New Game.
+The log passed the previous `0x184f448` missing entry and recorded its
+`0x184f474` continuation, then stopped at another uncovered callback
+`0x184f498`, source `0x1ba930`. The capture contains EE model context and RAM;
+it is not a complete machine checkpoint. All five memory-card files remained
+unchanged, and the runner/display/audio helper exited. Agent-supplied menu
+inputs are recorded; autonomous gameplay has not been validated.
+
+The matcher and backend recheck groups each passed three C++ cases. Eight
+Python cases cover publication/provenance and malformed CMake inputs. The
+native concrete-directory group also passed four cases. These are laboratory
+regressions, not PS2 or campaign approval. After restoring the diagnostic
+development profile, **76/76 CTest groups** and **487/487 general C++ cases**
+passed. Coverage of loaded code, control-flow
+family synthesis, producer/fetch proofs, native VU, Android and 60 FPS remain
+open. Evidence is under `build/lab/latest-ee-family-admission-job.txt`.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

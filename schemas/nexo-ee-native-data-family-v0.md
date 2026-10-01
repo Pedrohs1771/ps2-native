@@ -3,7 +3,8 @@
 This frontend implements a restricted conversion step of README §12.6. It
 produces C++ ahead of time using the existing EE instruction and delay-slot
 emitters. It does not approve closure, discover a producer invariant, prove
-fetch/cache/write/alias semantics or integrate a new dispatcher into the game.
+fetch/cache/write/alias semantics. Its separate experimental catalog integration
+is described in [finite family admission](nexo-ee-family-catalog-v0.md).
 
 ## Converter interface
 
@@ -92,10 +93,13 @@ All 34 prior concrete bank sources were regenerated with both the archived and
 new converter and remained byte-identical. This guards against accidental
 default-generator changes; it does not certify semantic cache correctness.
 
-Next: create a bounded immutable family catalog and runtime admission adapter,
-including revalidation at invocation and precise context/entry ownership; cover
-the unchanged prefix and unsupported structures; trace the materializer and
+The bounded immutable catalog and invocation recheck now exist as an opt-in
+laboratory experiment. The first game run passed its previous initializer miss
+and stopped at the next uncovered callback; full code coverage is still open.
+
+Next: cover whole loaded structures and unsupported control flow in batches;
+trace the materializer and
 establish admissible parameter domains; validate fetch/writer/alias/timing and
-independent fidelity. Game dispatch, campaign, native VU, Android and sustained
+independent fidelity. Complete game dispatch, campaign, native VU, Android and sustained
 60 FPS remain unqualified. Source generation or model equality alone cannot
 authorize a strict native package.
