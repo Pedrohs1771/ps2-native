@@ -7,6 +7,11 @@
 
 namespace ps2native::ee_aot
 {
+    Lookup Dispatcher::admitNormalEntry(const uint8_t *ram,const R5900Context *context) const
+    {
+        if (!context || context->in_delay_slot) return {nullptr,Status::UnsupportedEntryContext};
+        return lookup(ram,context->pc);
+    }
     Diagnosis Dispatcher::diagnose(const uint8_t *ram,uint32_t pc) const
     {
         Diagnosis result{lookup(ram,pc),{}};

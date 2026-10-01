@@ -46,6 +46,25 @@ void register_native_overlay_tests()
         catch (const std::exception &) { rejected = true; }
         tc.IsTrue(rejected, "Missing delay slot must not become a synthetic NOP");
     });
+    suite.Run("normal_overlay_entry_guards_exclude_unreachable_prefixes", [](TestCase &tc)
+    {
+        const auto bytes = words({0u,0u,0x2402002au,0x03e00008u,0x24420001u});
+        const auto code = ps2recomp::generateNativeOverlay(bytes,0x10000u,0x10000u);
+        tc.IsTrue(code.find("{0x10008u,ps2native_block_10000,0x10008u,0xcu,snapshot+0x8u}") != std::string::npos,
+                  "Normal interior entry guards its suffix without the skipped prefix");
+        tc.IsTrue(code.find("{0x10010u,ps2native_block_10000,0x10010u,0x4u,snapshot+0x10u}") != std::string::npos,
+                  "Standalone delay address depends on its own instruction only");
+    });
+    suite.Run("normal_overlay_entry_guards_retain_reachable_loop_prefixes", [](TestCase &tc)
+    {
+        // BGTZ t0 branches from 0x10008 back to 0x10004.
+        const auto bytes = words({0u,0x2508ffffu,0x1d00fffeu,0u});
+        const auto code = ps2recomp::generateNativeOverlay(bytes,0x10000u,0x10000u);
+        tc.IsTrue(code.find("{0x10008u,ps2native_block_10000,0x10004u,0xcu,snapshot+0x4u}") != std::string::npos,
+                  "A local backedge includes instructions before the entry that can execute later");
+        tc.IsTrue(code.find("{0x1000cu,ps2native_block_10000,0x1000cu,0x4u,snapshot+0xcu}") != std::string::npos,
+                  "Independent slot entry does not take its preceding branch");
+    });
     suite.Run("native_overlay_executes_and_invalidates_replaced_code", [](TestCase &tc)
     {
         // Integration is opt-in because it requires the host C++ compiler.

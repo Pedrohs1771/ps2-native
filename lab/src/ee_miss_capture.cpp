@@ -24,6 +24,7 @@ namespace ps2native::nexo
             case ee_aot::Status::MisalignedPc:return "MisalignedPc";
             case ee_aot::Status::OutsideRam:return "OutsideRam";
             case ee_aot::Status::NoRam:return "NoRam";
+            case ee_aot::Status::UnsupportedEntryContext:return "UnsupportedEntryContext";
             }
             return "InvalidStatus";
         }

@@ -123,6 +123,41 @@ and timestamps. Gameplay, save correctness, 60 FPS, Android, VU runtime migratio
 complete checkpoint replay and universal closure remain open.
 Evidence is in the ignored directory recorded by `build/lab/latest-ee-miss-job.txt`.
 
+### Batch correction of normal-entry dependencies
+
+The repeated prefix mismatch above now has a generic offline correction. Normal
+entries guard their suffix plus any earlier local static target reachable within
+the callback. Standalone terminal slot entries guard their own instruction; the
+runtime adapter rejects pending architectural delay contexts and rechecks bytes
+at invocation. Raw RAM diagnosis remains a query, not context admission. The
+diagnostic DSO driver explicitly retains legacy whole-block guards.
+See [`nexo-ee-entry-dependencies-v1.md`](../schemas/nexo-ee-entry-dependencies-v1.md)
+for the sidecar, producer checks and precise unresolved obligations.
+
+Migrating **33 banks / 524,557 entries** took **9.135 seconds**, producing **58,945
+dependency runs** without changing any bank C++ source. The index/runtime/test
+build took **9.547 seconds** and retained **all 33 bank object hashes and
+timestamps**. Actual game relink took **10.969 seconds** with no LTO and zero
+original game compilations. Both saved prefix-only failures passed guard replay;
+the second address-specific regression bank was not added to the catalog.
+
+The isolated actual game reached its title, main menu and new-game file menu.
+Attempting to start the selected game then stopped at `0x1724d70`, called from
+`0x1baae4`, with `MissingEntry` and zero candidates. RAM, model context and the
+64 KiB window were captured automatically. This is a newly uncovered region,
+not either previous prefix-only rejection. Existing memory-card files were backed
+up before confirming the test. No complete gameplay qualification is claimed.
+Synthetic adapter execution verifies local loops, stale-code rejection after
+resolution, skipped prefixes, standalone slots and preservation of guest RAM and
+context on rejection. Migration tests reject callback source rewrites and retain
+prior timestamps. Evidence is under `build/lab/latest-ee-entry-job.txt`.
+The restored diagnostic profile passed **69 CTest groups and 487 general cases**;
+the catalog group includes **14 Python cases**. The native EE profile passed its
+four C++ cases. Profile restoration took **13.773 seconds**, preserving all 54
+common runtime objects. The five preexisting test memory-card files were unchanged.
+Full entry/fetch semantics, native VU in the game, independent fidelity, campaign,
+saves, Android, universal coverage and sustained 60 FPS remain open.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

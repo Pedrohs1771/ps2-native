@@ -8,7 +8,7 @@
 
 namespace ps2native::ee_aot
 {
-    enum class Status { Ready, MissingEntry, CodeChanged, MisalignedPc, OutsideRam, NoRam };
+    enum class Status { Ready, MissingEntry, CodeChanged, MisalignedPc, OutsideRam, NoRam, UnsupportedEntryContext };
     struct Lookup
     {
         PS2Runtime::RecompiledFunction function = nullptr;
@@ -37,6 +37,7 @@ namespace ps2native::ee_aot
     public:
         explicit Dispatcher(const Program &program);
         [[nodiscard]] Lookup lookup(const uint8_t *ram, uint32_t pc) const;
+        [[nodiscard]] Lookup admitNormalEntry(const uint8_t *ram,const R5900Context *context) const;
         [[nodiscard]] Diagnosis diagnose(const uint8_t *ram, uint32_t pc) const;
         [[nodiscard]] size_t bindings() const noexcept { return m_entries.size(); }
         [[nodiscard]] size_t pages() const noexcept { return m_heads.size() / slotsPerPage; }

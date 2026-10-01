@@ -69,6 +69,21 @@ int main()
             binding.sourceBytes=bytes.data()+1;binding.sourceBegin=0x10001;binding.address=0x10004;binding.sourceSize=4;
             test.IsTrue(check(),"Unaligned dependency footprint rejected");
         });
+        suite.Run("normal_entry_admission_rejects_pending_delay_context", [](TestCase &test)
+        {
+            std::vector<uint8_t> bytes(8,0),ram(PS2_RAM_SIZE);
+            const PS2NativeOverlayBinding binding{0x10000,first,0x10000,8,bytes.data()};
+            const Bank bank{0x10000,bytes,std::span(&binding,1)};
+            Dispatcher dispatcher(Program{std::span(&bank,1)});
+            R5900Context context{};context.pc=0x10000;
+            test.IsTrue(dispatcher.admitNormalEntry(ram.data(),&context).function==first,"Normal context admitted");
+            context.in_delay_slot=true;
+            test.IsTrue(dispatcher.admitNormalEntry(ram.data(),&context).status==Status::UnsupportedEntryContext,
+                        "Pending architectural slot is not reinterpreted as a standalone address");
+            test.IsTrue(dispatcher.admitNormalEntry(ram.data(),nullptr).status==Status::UnsupportedEntryContext,
+                        "Missing invocation context cannot satisfy the entry contract");
+            test.IsTrue(context.in_delay_slot,"Rejected entry preserves its pending delay state");
+        });
     });
     if (ps2xUsesAotEeOverlays())
         MiniTest::Case("AOT EE runtime admission", [](TestCase &suite)

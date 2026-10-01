@@ -37,7 +37,8 @@ def main():
             output = Path(temporary) / "overlay.so"
             log = cache / (key + ".log")
             with log.open("w") as stream:
-                subprocess.run([str(generator), source, base, entry, str(cpp)], stdout=stream,
+                # This diagnostic consumer has no normal-entry invocation adapter.
+                subprocess.run([str(generator), source, base, entry, str(cpp), "--legacy-footprints"], stdout=stream,
                                stderr=subprocess.STDOUT, check=True, timeout=30)
                 args = [compiler, "-std=c++20", "-O0", "-fno-lto", "-shared", "-fPIC",
                         "-I" + str(include), "-I" + str(root / "ps2xIOP/include"),

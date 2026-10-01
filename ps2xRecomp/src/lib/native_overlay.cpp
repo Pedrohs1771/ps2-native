@@ -5,13 +5,15 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 
 namespace ps2recomp
 {
-    std::string generateNativeOverlay(std::span<const uint8_t> bytes, uint32_t base, uint32_t entry)
+    std::string generateNativeOverlay(std::span<const uint8_t> bytes, uint32_t base, uint32_t entry,
+                                     OverlayDependencyContract contract)
     {
         constexpr uint32_t ramSize = 32u * 1024u * 1024u;
         if ((base & 3u) || (entry & 3u) || (bytes.size() & 3u) || bytes.empty() ||
@@ -31,6 +33,8 @@ namespace ps2recomp
         generator.setEmitInstructionComments(false);
         std::map<uint32_t, Function> blocks;
         std::map<uint32_t, std::string> emitted;
+        std::map<uint32_t, uint32_t> localDependencyFloor;
+        std::map<uint32_t, uint32_t> independentSlot;
         std::set<uint32_t> visited;
         std::set<uint32_t> covered;
         std::deque<uint32_t> pending{entry};
@@ -93,6 +97,21 @@ namespace ps2recomp
                 instructionCount += instructions.size();
                 for (const auto &inst : instructions) covered.insert(inst.address);
                 emitted.emplace(start, code);
+                uint32_t floor = std::numeric_limits<uint32_t>::max();
+                for (const auto &inst : instructions)
+                {
+                    if (!inst.hasDelaySlot) continue;
+                    independentSlot[start] = inst.address + 4u;
+                    const auto includeLocal = [&](uint32_t target)
+                    {
+                        if (inside(target) && target >= start && target < function.end)
+                            floor = std::min(floor,target);
+                    };
+                    if (inst.isBranch) includeLocal(decoder.getBranchTarget(inst));
+                    if (inst.opcode == OPCODE_J || inst.opcode == OPCODE_JAL)
+                        includeLocal(decoder.getJumpTarget(inst));
+                }
+                localDependencyFloor[start] = floor;
                 blocks.emplace(start, std::move(function));
                 for (uint32_t next : successors) if (inside(next)) pending.push_back(next);
             }
@@ -119,8 +138,18 @@ namespace ps2recomp
         for (const auto &[pc, owner] : owners)
         {
             const auto &block = blocks.at(owner);
-            out << "{0x" << std::hex << pc << "u," << block.name << ",0x" << owner
-                << "u,0x" << block.end - owner << "u,snapshot+0x" << owner - base << "u},\n";
+            uint32_t begin = owner;
+            if (contract == OverlayDependencyContract::NormalEntry)
+            {
+                // A normal resume label skips the linear prefix. The callback
+                // can still loop through a fixed local target before that label.
+                // A standalone slot label returns without taking its branch.
+                const auto slot = independentSlot.find(owner);
+                begin = slot != independentSlot.end() && slot->second == pc
+                      ? pc : std::min(pc,localDependencyFloor.at(owner));
+            }
+            out << "{0x" << std::hex << pc << "u," << block.name << ",0x" << begin
+                << "u,0x" << block.end - begin << "u,snapshot+0x" << begin - base << "u},\n";
         }
         out << std::dec << "};\nextern \"C\" const PS2NativeOverlayBinding *ps2xOverlayGetBindings(size_t *count,uint32_t *abi) {"
                "*count=sizeof(bindings)/sizeof(bindings[0]); *abi=PS2_NATIVE_OVERLAY_ABI; return bindings;}\n";

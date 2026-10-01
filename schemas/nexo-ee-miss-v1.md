@@ -108,6 +108,9 @@ producer executable hash. Output is fresh `snapshot.bin` and `bank.json`, with
 RAM, context, request, image, generator and preparer hashes. These identify the
 observed producers and bytes; they do not authenticate capture origin or prove
 semantics. Catalog regeneration checks a recorded generator hash when supplied.
+New prepared cases explicitly record `dependency_contract=normal-entry-v1`.
+Old untagged cases retain `whole-block-v0` metadata; catalog generation verifies
+them against the original descriptors before applying normal refinements.
 
 Extension requires all previous cases plus the new case, validates old source
 hashes and generator identity, and refuses removal or rewriting of prior banks.
@@ -117,6 +120,12 @@ Use an exclusively owned offline directory without concurrent producers/builds.
 Interruption can leave an incomplete update: reuse requires fresh hash validation,
 and conflicting unrecorded artifacts require a fresh catalog. This is an
 incremental build aid, not a qualified semantic cache or publication protocol.
+
+An explicit `--extend --migrate-entry-guards` can refine the index while retaining
+every prior bank source exactly, including when changing the producer binary.
+It verifies all old identities and refuses any old callback source rewrite.
+The bounded hashed dependency sidecar and exact entry restrictions are described
+in [`nexo-ee-entry-dependencies-v1.md`](nexo-ee-entry-dependencies-v1.md).
 
 The game runtime never invokes this preparation, generator or compiler. Finite
 bank admission still compares each callback's complete **declared** footprint.

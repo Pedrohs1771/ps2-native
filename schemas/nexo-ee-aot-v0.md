@@ -41,6 +41,12 @@ collisions. The tool emits up to 512 banks, an index, and `catalog.json` with
 source hashes, bank identities and generator/script hashes. No C++ compilation
 occurs in the game runtime.
 
+New catalogs use the explicit `normal-entry-v1` dependency policy. Legacy bank
+sources remain identical; the index refines copied descriptors after checking
+callback identity and local backedges. The sidecar, migration commands, invocation
+adapter and limitations are in
+[`nexo-ee-entry-dependencies-v1.md`](nexo-ee-entry-dependencies-v1.md).
+
 A complete manifest is written last. Failed generation can leave sources in a
 fresh output directory; those sources are not an admitted catalog. There is no
 automatic overwrite of previous cases. Explicit `--extend` validates an existing
@@ -73,7 +79,9 @@ Limits are 512 banks, 64 KiB per image, 32,768 bindings per bank, and 2,097,152
 total bindings. Invalid dimensions, misidentified pointers, unaligned footprints,
 null callbacks and duplicate PCs within a bank reject the directory. Lookup
 distinguishes `Ready`, `MissingEntry`, `CodeChanged`, `MisalignedPc`, `OutsideRam`
-and `NoRam`. This V0 admits physical addresses only; other aliases fail admission.
+and `NoRam`. Invocation admission additionally rejects `UnsupportedEntryContext`
+for null or pending-delay contexts and rechecks bytes at the actual context PC.
+This V0 admits physical addresses only; other aliases fail admission.
 
 Actual runtime misses emit `EE:UNSEEN_CODE` and request a stop. This overrides
 diagnostic continue/skip policies, including the earlier branch-report path.
@@ -82,7 +90,7 @@ their original precedence and are not newly qualified by this change.
 
 ## Explicit unresolved obligations
 
-- Guards observe RAM **at lookup**. Instruction-cache visibility, DMA/store
+- Guards observe RAM at query and **again at invocation**. Instruction-cache visibility, DMA/store
   publication epochs, alias coherence and changes during a running block are
   unqualified. Matching RAM bytes alone is not a fetch-state proof.
 - Entry context, temporal device contracts, hidden kernel state and independent

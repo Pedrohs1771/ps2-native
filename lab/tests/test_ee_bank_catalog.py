@@ -1,9 +1,12 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
+import shutil
+import shlex
 import sys
 import tempfile
 import unittest
@@ -81,6 +84,39 @@ class EeCatalogTests(unittest.TestCase):
             self.assertEqual((self.root / 'first' / name).read_bytes(),
                              (self.root / 'second' / name).read_bytes())
 
+    def test_entry_dependency_runs_preserve_holes_backedges_and_slot_entries(self):
+        rows = [{'address': 0x10000, 'source_begin': 0x10000, 'source_bytes': 16},
+                {'address': 0x10004, 'source_begin': 0x10004, 'source_bytes': 12},
+                {'address': 0x10008, 'source_begin': 0x10004, 'source_bytes': 12},
+                {'address': 0x1000C, 'source_begin': 0x1000C, 'source_bytes': 4},
+                {'address': 0x10014, 'source_begin': 0x10014, 'source_bytes': 4}]
+        runs = CODEGEN.dependency_runs(rows)
+        restored = []
+        for start, end, begin, stop in runs:
+            for address in range(start, end, 4):
+                source = address if begin == 0xFFFFFFFF else begin
+                restored.append({'address': address, 'source_begin': source, 'source_bytes': stop - source})
+        self.assertEqual(restored, rows)
+
+    def test_migration_updates_index_only_and_preserves_producer_identity(self):
+        case = self.case('one', 42)
+        old_generator = self.root / 'old-generator'
+        shutil.copyfile(GENERATOR, old_generator)
+        with old_generator.open('ab') as stream: stream.write(b'\0identified-previous-producer')
+        old_generator.chmod(0o700)
+        first = CODEGEN.generate([case], old_generator, self.root / 'catalog', normal_entries=False)
+        source = self.root / 'catalog' / first['sources'][0]
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        metadata = json.loads((case / 'bank.json').read_text())
+        metadata['generator_sha256'] = first['generator_sha256']
+        (case / 'bank.json').write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError): CODEGEN.extend_catalog([case], GENERATOR, self.root / 'catalog')
+        second = CODEGEN.extend_catalog([case], GENERATOR, self.root / 'catalog', migrate_entry_guards=True)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+        self.assertEqual(second['dependency_contract'], 'normal-entry-v1')
+        self.assertEqual(second['previous_generator_sha256'], first['generator_sha256'])
+        self.assertEqual(second['generator_sha256'], hashlib.sha256(GENERATOR.read_bytes()).hexdigest())
+
     def test_extension_preserves_existing_bank_bytes_and_timestamps(self):
         one, two = self.case('one', 42), self.case('two', 7)
         first = self.generate([one])
@@ -96,6 +132,24 @@ class EeCatalogTests(unittest.TestCase):
         source.write_text('// tampered\n')
         with self.assertRaises(ValueError): CODEGEN.extend_catalog([one, two], GENERATOR, output)
         self.assertEqual((output / 'catalog.json').read_bytes(), manifest_before)
+
+    def test_guard_migration_refuses_any_callback_source_rewrite(self):
+        case = self.case('one', 42)
+        output = self.root / 'catalog'
+        CODEGEN.generate([case], GENERATOR, output, normal_entries=False)
+        before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                  for path in output.iterdir()}
+        changed = self.root / 'changed-generator'
+        changed.write_text('#!' + sys.executable + '\n'
+                           'import subprocess,sys\nfrom pathlib import Path\n'
+                           'subprocess.run([' + repr(str(GENERATOR)) + ',*sys.argv[1:]],check=True)\n'
+                           'p=Path(sys.argv[4])\n'
+                           'p.write_text(p.read_text()+"\\n// changed callback producer\\n")\n')
+        changed.chmod(0o700)
+        with self.assertRaisesRegex(ValueError, 'rewrite'):
+            CODEGEN.extend_catalog([case], changed, output, migrate_entry_guards=True)
+        self.assertEqual({path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in output.iterdir()}, before)
 
     def test_extension_rejects_malformed_manifests_and_unrecorded_artifacts(self):
         one, two = self.case('one', 42), self.case('two', 7)
@@ -137,10 +191,13 @@ int main() {
     result.function(ram.data(),&ctx,nullptr);
     if (_mm_extract_epi32(ctx.r[2],0)!=bank.image[0]+1 || ctx.pc!=0x20000) return 2;
     ctx.pc=0x10004; ctx.r[2]=_mm_set_epi32(0,0,0,100);
+    ram[0x10000]^=1; // Changed instruction is skipped by this normal entry.
     result=dispatcher.lookup(ram.data(),ctx.pc);
     if (!result.function) return 3;
     result.function(ram.data(),&ctx,nullptr);
     if (_mm_extract_epi32(ctx.r[2],0)!=101 || ctx.pc!=0x20000) return 4;
+    if (dispatcher.lookup(ram.data(),0x10000).status!=Status::CodeChanged) return 9;
+    ram[0x10000]^=1;
     ctx.pc=0x10008;
     result=dispatcher.lookup(ram.data(),ctx.pc);
     if (!result.function) return 5;
@@ -164,6 +221,119 @@ int main() {
         result = subprocess.run([str(self.root / 'fixture')], timeout=10)
         self.assertEqual(result.returncode, 0)
 
+    def test_runtime_adapter_rechecks_code_and_preserves_rejected_contexts(self):
+        one = self.case('one', 42)
+        loop = self.root / 'loop'
+        loop.mkdir()
+        image = struct.pack('<IIII', 0, 0x2508FFFF, 0x1D00FFFE, 0)
+        (loop / 'snapshot.bin').write_bytes(image)
+        (loop / 'bank.json').write_text(json.dumps({
+            'schema_version': 1, 'base': 0x20000, 'entry': 0x20000,
+            'image_bytes': len(image), 'image_sha256': hashlib.sha256(image).hexdigest(),
+            'bindings': [{'address': pc, 'source_begin': 0x20000, 'source_bytes': 16}
+                         for pc in range(0x20000, 0x20010, 4)]}))
+        manifest = self.generate([one, loop])
+        source = self.root / 'adapter.cpp'
+        source.write_text('''#include "ps2_ee_aot.h"
+#include "ps2_ee_overlay_backend.h"
+#include "ps2_native_overlay.h"
+#include <array>
+#include <cstring>
+const ps2native::ee_aot::Program &compiledEeProgram();
+int main() {
+  PS2Runtime runtime;
+  if (!runtime.memory().initialize()) return 1;
+  auto *ram=runtime.memory().getRDRAM();
+  for (const auto &bank:compiledEeProgram().banks)
+    std::memcpy(ram+bank.base,bank.image.data(),bank.image.size());
+  R5900Context ctx{};ctx.pc=0x10000;ctx.r[31]=_mm_set_epi32(0,0,0,0x30000);
+  auto callback=ps2xResolveNativeOverlay(&runtime,ram,ctx.pc);
+  if (!callback) return 2;
+  callback(ram,&ctx,&runtime);
+  if (runtime.isStopRequested() || _mm_extract_epi32(ctx.r[2],0)!=43 || ctx.pc!=0x30000) return 3;
+  ctx.pc=0x10004;ctx.r[2]=_mm_set_epi32(0,0,0,100);ram[0x10000]^=1;
+  callback=ps2xResolveNativeOverlay(&runtime,ram,ctx.pc);
+  if (!callback) return 4;
+  callback(ram,&ctx,&runtime);
+  if (_mm_extract_epi32(ctx.r[2],0)!=101 || ctx.pc!=0x30000) return 5;
+  ctx.pc=0x20008;ctx.r[8]=_mm_set_epi32(0,0,0,3);ram[0x20000]=1;
+  callback=ps2xResolveNativeOverlay(&runtime,ram,ctx.pc);
+  if (!callback) return 6;
+  callback(ram,&ctx,&runtime);
+  if (ctx.pc!=0x20010 || _mm_extract_epi32(ctx.r[8],0)!=0) return 7;
+  ram[0x20004]^=1;
+  if (ps2xResolveNativeOverlay(&runtime,ram,0x20008)) return 8;
+  // A standalone slot must not repeat its preceding conditional branch.
+  ctx.pc=0x2000C;ctx.r[8]=_mm_set_epi32(0,0,0,3);
+  callback=ps2xResolveNativeOverlay(&runtime,ram,ctx.pc);
+  if (!callback) return 9;
+  callback(ram,&ctx,&runtime);
+  if (ctx.pc!=0x20010 || _mm_extract_epi32(ctx.r[8],0)!=3) return 10;
+  // Bytes can change after resolution and before invocation.
+  ctx.pc=0x10004;
+  callback=ps2xResolveNativeOverlay(&runtime,ram,ctx.pc);
+  if (!callback) return 11;
+  ram[0x10004]^=1;
+  std::array<uint8_t,sizeof(ctx)> before{};std::memcpy(before.data(),&ctx,sizeof(ctx));
+  std::vector<uint8_t> memoryBefore(ram,ram+PS2_RAM_SIZE);
+  callback(ram,&ctx,&runtime);
+  if (!runtime.isStopRequested() || std::memcmp(before.data(),&ctx,sizeof(ctx)) ||
+      std::memcmp(memoryBefore.data(),ram,PS2_RAM_SIZE)) return 12;
+  ram[0x10004]^=1;
+  // A pending architectural delay context is rejected without clearing it.
+  PS2Runtime delayed;
+  ctx.pc=0x10004;ctx.in_delay_slot=true;
+  callback=ps2xResolveNativeOverlay(&delayed,ram,ctx.pc);
+  if (!callback) return 13;
+  std::memcpy(before.data(),&ctx,sizeof(ctx));
+  memoryBefore.assign(ram,ram+PS2_RAM_SIZE);
+  callback(ram,&ctx,&delayed);
+  if (!delayed.isStopRequested() || !ctx.in_delay_slot ||
+      std::memcmp(before.data(),&ctx,sizeof(ctx)) ||
+      std::memcmp(memoryBefore.data(),ram,PS2_RAM_SIZE)) return 14;
+  PS2Runtime missing;
+  callback(ram,nullptr,&missing);
+  return missing.isStopRequested() ? 0 : 15;
+}
+''')
+        build = GENERATOR.parent.parent
+        link = shlex.split((build / 'lab/CMakeFiles/nexo_ee_aot_tests.dir/link.txt').read_text())
+        libraries = link[link.index('-o') + 2:]
+        libraries = [str((build / 'lab' / item).resolve()) if not item.startswith('-') else item
+                     for item in libraries]
+        command = ['c++', '-std=c++20', '-O0', '-fno-lto', '-msse4.1',
+                   '-DPS2X_RUNTIME_AOT_EE_OVERLAYS=1']
+        command += ['-I' + str(ROOT / directory) for directory in
+                    ('ps2xRuntime/include', 'ps2xRuntime/src/lib',
+                     'ps2xRuntime/src/lib/Kernel', 'ps2xIOP/include')]
+        command += [str(source), str(ROOT / 'lab/tests/empty_ee_table.cpp'),
+                    str(ROOT / 'ps2xRuntime/src/lib/ps2_ee_overlay_backend.cpp')]
+        command += [str(self.root / 'catalog' / name) for name in manifest['sources']]
+        command += ['-o', str(self.root / 'adapter'), '-Wl,--start-group', *libraries, '-Wl,--end-group']
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        env = os.environ.copy()
+        for key in ('PS2X_EE_MISS_CAPTURE_DIR', 'PS2X_IOP_CAPTURE_DIR'):
+            env.pop(key, None)
+        result = subprocess.run([str(self.root / 'adapter')], capture_output=True, text=True, env=env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_diagnostic_driver_keeps_legacy_whole_block_guards(self):
+        case = self.case('one', 42)
+        env = os.environ.copy()
+        env['PS2X_NATIVE_OVERLAY_GENERATOR'] = str(GENERATOR)
+        env['PS2X_NATIVE_OVERLAY_CACHE'] = str(self.root / 'driver-cache')
+        library = self.root / 'library.txt'
+        result = subprocess.run([sys.executable, str(ROOT / 'tools/ps2native/native_overlay_driver.py'),
+                                 str(case / 'snapshot.bin'), '0x10000', '0x10000', str(library)],
+                                capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        spec = importlib.util.spec_from_file_location('extract_driver', ROOT / 'lab/extract_ee_overlay.py')
+        extractor = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(extractor)
+        _, metadata = extractor.extract(Path(library.read_text().strip()).read_bytes(), 0x10000)
+        self.assertEqual(metadata['bindings'], json.loads((case / 'bank.json').read_text())['bindings'])
+
     def test_cmake_rejects_ambiguous_schema_and_changed_sources(self):
         manifest = self.generate([self.case('one', 42)])
         catalog = self.root / 'catalog/catalog.json'
@@ -175,6 +345,9 @@ int main() {
             self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
         check(True)
         for changed in ({**manifest, 'schema_version': '1'},
+                        {**manifest, 'dependency_contract': 'unknown-v9'},
+                        {**manifest, 'dependency_contract': True},
+                        {**manifest, 'dependency_plan_sha256': '0' * 64},
                         {**manifest, 'sources': manifest['sources'][:-1]},
                         {**manifest, 'sources': [manifest['sources'][0]] * 2},
                         {**manifest, 'sources': ['../outside.cpp', 'ee_catalog.cpp']}):

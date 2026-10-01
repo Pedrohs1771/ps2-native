@@ -79,6 +79,7 @@ def prepare(capture, generator, output):
             hashlib.sha256(generator.read_bytes()).hexdigest() != generator_hash:
         raise ValueError('offline EE generator identity/root/bindings were not admitted')
     metadata = {'schema_version': 1, 'origin': 'observed-ee-miss', 'base': base, 'entry': entry,
+                'dependency_contract': 'normal-entry-v1',
                 'image_bytes': size, 'image_sha256': hashlib.sha256(image).hexdigest(), 'bindings': rows,
                 'capture_request_sha256': hashlib.sha256(request_bytes).hexdigest(),
                 'ee_ram_sha256': hashlib.sha256(ram).hexdigest(), 'cpu_snapshot_sha256': cpu_hash,
