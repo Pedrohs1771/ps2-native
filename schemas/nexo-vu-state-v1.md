@@ -3,6 +3,9 @@
 This is a checkpoint of **all persistent execution state in the current
 `VU1Interpreter` implementation**, at an instruction-pair boundary. It is not
 a claim that this implementation models every hidden state of PS2 hardware.
+Version 1 has an implicitly empty second-XGKICK request slot. Checkpoints with
+an already-issued request waiting for PATH1 use the lossless extension in
+`nexo-vu-state-v2.md`. Empty-slot states keep their existing version-1 bytes.
 The producer must pause execution and concurrent writers before serialization.
 The surrounding replay must identify the semantic implementation and capture
 code, data, VIF, GIF, GS, and external events at the same causal boundary.

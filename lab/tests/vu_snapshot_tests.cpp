@@ -449,6 +449,61 @@ int main()
                 t.Equals(fx->packets.front()[16], uint8_t(0xAC), "Packet payload remains intact");
         });
 
+        tc.Run("a queued XGKICK checkpoint retains its source and pending upper result", [](TestCase &t)
+        {
+            auto fx=std::make_unique<Fixture>(); auto vu=std::make_unique<VU1Interpreter>();
+            const uint64_t first=0x8008ull|(2ull<<58),second=0x8001ull|(2ull<<58);
+            std::memcpy(fx->memory.getVU1Data(),&first,8);
+            std::memset(fx->memory.getVU1Data()+16,0x11,128);
+            std::memcpy(fx->memory.getVU1Data()+144,&second,8);
+            std::memset(fx->memory.getVU1Data()+160,0x22,16);
+            pair(fx->memory.getVU1Code(),0,special(0x6C,1));
+            pair(fx->memory.getVU1Code(),8,special(0x6C,2),upper(0x28,0x8,2,1,3));
+            pair(fx->memory.getVU1Code(),16,0x10040001);
+            pair(fx->memory.getVU1Code(),24,lowerNop,nop|(1u<<30));
+            pair(fx->memory.getVU1Code(),32,lowerNop);
+            vu->state().vi[2]=9; vu->state().vf[1][0]=2; vu->state().vf[2][0]=7;
+            fx->run(*vu,2,true);
+            const auto encoded=VuSnapshotCodec::encode(*vu);
+            t.Equals(encoded[8],uint8_t(2),"A pending second kick uses the explicit version-2 extension");
+            t.Equals(encoded.size(),size_t(70262),"The extension is thirteen portable bytes");
+            VU1Interpreter destination;
+            VuSnapshotCodec::restore(destination,encoded);
+            const auto empty=VuSnapshotCodec::encode(VU1Interpreter{});
+            VuSnapshotCodec::restore(destination,empty);
+            t.Equals(VuSnapshotCodec::encode(destination),empty,"Version-1 restore clears a destination's prior queued request");
+            vu->state().vi[2]=1;
+            std::memset(fx->memory.getVU1Data()+160,0x33,16);
+            compareContinuation(t,*fx,*vu,100);
+            t.Equals(vu->state().vf[3][0],9.0f,"The upper result was issued before suspension");
+            t.Equals(fx->packets.size(),size_t(2),"Both packets are emitted exactly once after restore");
+            if (fx->packets.size()==2)
+                t.Equals(fx->packets[1][16],uint8_t(0x33),"The queued operand is latched but future payload reads remain live");
+            t.Equals(VuSnapshotCodec::encode(*vu)[8],uint8_t(1),"Empty queues retain the existing canonical encoding");
+            for (unsigned corruption=0;corruption<6;++corruption)
+            {
+                auto bad=encoded;
+                if (corruption==0) bad[bad.size()-13]=1; // Misaligned byte address.
+                if (corruption==1) bad[bad.size()-12]=0x40; // Outside 16 KiB.
+                if (corruption==2) bad[bad.size()-9]=3; // Issue clock after cycle 2.
+                if (corruption==3) bad.back()=0; // Empty queue has a version-1 encoding.
+                if (corruption==4) bad.back()=2; // Noncanonical boolean.
+                if (corruption==5) bad[67838]=0; // Version-1 payload's active PATH1 flag.
+                reseal(bad); const auto before=VuSnapshotCodec::encode(*vu);
+                bool rejected=false;
+                try { VuSnapshotCodec::restore(*vu,bad); } catch (const std::invalid_argument&) { rejected=true; }
+                t.IsTrue(rejected,"Invalid queued descriptors are rejected transactionally");
+                t.Equals(VuSnapshotCodec::encode(*vu),before,"Failed restore cannot alter live state");
+            }
+            VU1Interpreter vu0(VU1Interpreter::Unit::VU0);
+            const auto vu0Before=VuSnapshotCodec::encode(vu0);
+            auto wrongUnit=encoded; wrongUnit[12]=0; reseal(wrongUnit);
+            bool rejected=false;
+            try { VuSnapshotCodec::restore(vu0,wrongUnit); } catch (const std::invalid_argument&) { rejected=true; }
+            t.IsTrue(rejected,"VU0 cannot import a queued VU1 PATH1 transfer");
+            t.Equals(VuSnapshotCodec::encode(vu0),vu0Before,"Unit validation is transactional too");
+        });
+
         tc.Run("corruption truncation trailing bytes and version mismatch cannot alter state", [](TestCase &t)
         {
             auto vu = std::make_unique<VU1Interpreter>();

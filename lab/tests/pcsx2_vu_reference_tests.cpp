@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <future>
+#include <algorithm>
 
 using namespace ps2native::nexo;
 namespace
@@ -15,12 +16,13 @@ struct Fixture
 {
     alignas(16) std::array<uint8_t,16384> code{},data{};
     std::vector<std::vector<uint8_t>> packets;
+    std::function<void()> observePacket;
     std::vector<uint8_t> seed=VuSnapshotCodec::encode(VU1Interpreter{});
     void pair(size_t pc,uint32_t lower,uint32_t upper)
     { std::memcpy(code.data()+pc,&lower,4); std::memcpy(code.data()+pc+4,&upper,4); }
     std::unique_ptr<Pcsx2Vu1Reference> reference()
     { return std::make_unique<Pcsx2Vu1Reference>(seed,code,data,[&](auto bytes)
-        { packets.emplace_back(bytes.begin(),bytes.end()); }); }
+        { packets.emplace_back(bytes.begin(),bytes.end()); if (observePacket) observePacket(); }); }
     VU1State model()
     {
         auto memory=std::make_unique<PS2Memory>();
@@ -140,6 +142,37 @@ int main()
                 t.Equals(ref->issues()[1].cycle,uint64_t(2),"Upstream IADD issues immediately after ILW");
             t.IsTrue(model.cycles>ref->cycles(),"The load-consumer scheduling disagreement is retained");
         });
+        tc.Run("independent dispatch observes the second XGKICK upper before first packet delivery",[](TestCase& t)
+        {
+            Fixture f;
+            f.pair(0,0x10020009,0x000002FF); // VI2 = second packet's qword address.
+            f.pair(8,0x0101000B,0x000002FF); // LQ.x VF1, 11(VI0).
+            f.pair(16,0x0102000C,0x000002FF); // LQ.x VF2, 12(VI0).
+            f.pair(24,0x800006FC,0x000002FF);
+            f.pair(32,0x800016FC,0x010208E8); // XGKICK VI2 / ADD.x VF3,VF1,VF2.
+            f.pair(40,0x8000033C,0x400002FF); f.pair(48,0x8000033C,0x000002FF);
+            const uint64_t first=0x8008ull|(2ull<<58),second=0x8001ull|(2ull<<58);
+            std::memcpy(f.data.data(),&first,8); std::memset(f.data.data()+16,0x11,128);
+            std::memcpy(f.data.data()+144,&second,8); std::memset(f.data.data()+160,0x22,16);
+            const float a=2,b=7; std::memcpy(f.data.data()+176,&a,4); std::memcpy(f.data.data()+192,&b,4);
+            auto ref=f.reference(); std::vector<size_t> dispatchedAtDelivery;
+            f.observePacket=[&] { dispatchedAtDelivery.push_back(ref->issues().size()); };
+            ref->enableIssueTrace(); ref->execute(true,0,0,0);
+            t.Equals(ref->issues().size(),size_t(7),"The independent case has seven instruction pairs");
+            // The upstream bulk flush records its chunk before adding its
+            // drain cycles. Observation order is stronger than comparing two
+            // equal raw timestamps from different diagnostic points.
+            if (!dispatchedAtDelivery.empty())
+                t.Equals(dispatchedAtDelivery[0],size_t(5),"The second upper dispatch precedes delivery of the first packet");
+            if (ref->issues().size()==7)
+                t.IsTrue(ref->issues()[5].cycle>ref->issues()[4].cycle+1,"The following pair is delayed by the pending transfer");
+            t.Equals(ref->projection().vf[12],0x41100000u,"The independent upper ADD produces nine");
+            t.Equals(f.packets.size(),size_t(2),"Both source packets are delivered in order");
+            if (f.packets.size()==2)
+                t.IsTrue(f.packets[0].size()==144 && f.packets[0][16]==0x11 && f.packets[1].size()==32 && f.packets[1][16]==0x22,
+                    "The reference preserves both packet payloads");
+        });
+
         tc.Run("isolates end of program XGKICK drain from instruction issue",[](TestCase& t)
         {
             Fixture plain; plain.pair(0,0x8000033C,0x400002FF); plain.pair(8,0x8000033C,0x000002FF);

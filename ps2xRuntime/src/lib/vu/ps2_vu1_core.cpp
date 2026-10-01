@@ -76,6 +76,7 @@ void VU1Interpreter::resetScheduler()
     m_viWritePipeline = {};
     m_accWritePipeline = {};
     m_xgkick = {};
+    m_queuedXgkick = {};
     m_vfReady = {};
     m_viReady = {};
     m_accReady = {};
@@ -930,6 +931,13 @@ void VU1Interpreter::finishXgkick()
     else if (m_activeGs)
         m_activeGs->processGIFPacket(m_xgkick.packet.data(), m_xgkick.totalBytes);
     m_xgkick.active = false;
+    if (m_queuedXgkick.pending)
+    {
+        const auto queued = m_queuedXgkick;
+        m_queuedXgkick = {};
+        startXgkick(queued.sourceAddress / 16u);
+        m_xgkick.issueCycle = queued.issueCycle;
+    }
 }
 
 void VU1Interpreter::startXgkick(uint32_t qwordAddress)
@@ -938,6 +946,18 @@ void VU1Interpreter::startXgkick(uint32_t qwordAddress)
         return;
 
     const uint32_t sourceAddress = (qwordAddress * 16u) % m_activeVuDataSize;
+    if (m_xgkick.active)
+    {
+        // VU manual 3.4.9: the second XGKICK and its Upper issue together.
+        // Its latched request stalls the following pair until PATH1 is free.
+        if (m_queuedXgkick.pending)
+        {
+            reportReservedInstruction(false, 0xFFFFFFF7u);
+            return;
+        }
+        m_queuedXgkick = {sourceAddress, m_cycle, true};
+        return;
+    }
     m_xgkick = {};
     m_xgkick.active = true;
     m_xgkick.sourceAddress = sourceAddress;
@@ -963,7 +983,7 @@ void VU1Interpreter::advanceTo(uint64_t targetCycle)
 
 bool VU1Interpreter::pipelinesPending() const
 {
-    if (m_fdiv.valid || m_xgkick.active)
+    if (m_fdiv.valid || m_xgkick.active || m_queuedXgkick.pending)
         return true;
     for (const ScalarPipelineEntry &entry : m_efu)
         if (entry.valid)
@@ -1035,7 +1055,7 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
             if (entry.valid)
                 ready = std::max(ready, entry.readyCycle);
     }
-    if (decoded.lowerUsage.pipeline == PipelineXgkick && m_xgkick.active)
+    if (m_queuedXgkick.pending)
         ready = std::max(ready, m_cycle + 1u);
     return ready;
 }

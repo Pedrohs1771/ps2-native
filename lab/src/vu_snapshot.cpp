@@ -224,6 +224,16 @@ void VuSnapshotCodec::validate(const VU1Interpreter &vu)
         kick.currentTagEnd > kick.packet.size() || (kick.copiedBytes & 15u) != 0 ||
         (kick.totalBytes & 15u) != 0 || (kick.currentTagEnd & 15u) != 0,
         "invalid VU XGKICK extent");
+    const auto &queued = vu.m_queuedXgkick;
+    if (queued.pending)
+    {
+        fail(vu.m_unit != VU1Interpreter::Unit::VU1 || !kick.active,
+            "queued VU XGKICK requires an active VU1 transfer");
+        fail((queued.sourceAddress & 15u) != 0 || queued.sourceAddress >= 16384u ||
+            queued.issueCycle > vu.m_cycle, "invalid queued VU XGKICK operand or issue clock");
+    }
+    else fail(queued.sourceAddress != 0 || queued.issueCycle != 0,
+        "noncanonical empty VU XGKICK queue");
 }
 
 std::vector<uint8_t> VuSnapshotCodec::encode(const VU1Interpreter &vu)
@@ -232,11 +242,17 @@ std::vector<uint8_t> VuSnapshotCodec::encode(const VU1Interpreter &vu)
     Writer writer;
     writer.bytes.reserve(maximumSize);
     writer.bytes.insert(writer.bytes.end(), magic.begin(), magic.end());
-    writer(formatVersion);
+    writer(vu.m_queuedXgkick.pending ? queuedXgkickFormatVersion : formatVersion);
     writer(static_cast<uint32_t>(vu.m_unit));
     writer(uint32_t{0});
     writer(uint32_t{0});
     fields(writer, vu);
+    if (vu.m_queuedXgkick.pending)
+    {
+        writer(vu.m_queuedXgkick.sourceAddress);
+        writer(vu.m_queuedXgkick.issueCycle);
+        writer(vu.m_queuedXgkick.pending);
+    }
     if (writer.bytes.size() > maximumSize) throw std::logic_error("VU snapshot exceeds its format bound");
     putU32(writer.bytes, 16, static_cast<uint32_t>(writer.bytes.size() - headerSize));
     putU32(writer.bytes, 20, checksum(writer.bytes));
@@ -251,7 +267,8 @@ void VuSnapshotCodec::restore(VU1Interpreter &vu, std::span<const uint8_t> bytes
     Reader reader{bytes, 8};
     uint32_t version = 0, unit = 0, length = 0, crc = 0;
     reader(version); reader(unit); reader(length); reader(crc);
-    if (version != formatVersion) throw std::invalid_argument("unsupported canonical VU snapshot version");
+    if (version != formatVersion && version != queuedXgkickFormatVersion)
+        throw std::invalid_argument("unsupported canonical VU snapshot version");
     if (unit > 1 || unit != static_cast<uint32_t>(vu.m_unit))
         throw std::invalid_argument("canonical VU snapshot unit mismatch");
     if (length != bytes.size() - headerSize || crc != checksum(bytes))
@@ -259,6 +276,14 @@ void VuSnapshotCodec::restore(VU1Interpreter &vu, std::span<const uint8_t> bytes
 
     auto candidate = std::make_unique<VU1Interpreter>(vu.m_unit);
     fields(reader, *candidate);
+    if (version == queuedXgkickFormatVersion)
+    {
+        reader(candidate->m_queuedXgkick.sourceAddress);
+        reader(candidate->m_queuedXgkick.issueCycle);
+        reader(candidate->m_queuedXgkick.pending);
+        if (!candidate->m_queuedXgkick.pending)
+            throw std::invalid_argument("version-2 VU snapshot requires a pending XGKICK");
+    }
     if (reader.offset != bytes.size()) throw std::invalid_argument("extra canonical VU snapshot fields");
     validate(*candidate);
     // The candidate's host bindings are null and its decoded cache is invalid.

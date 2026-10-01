@@ -380,6 +380,71 @@ int main()
             const std::array code{kick}; const std::array budgets{1u, 1u, 1u, 2u};
             compareLowerProgram(t, code, budgets, true);
         });
+        tc.Run("native queued XGKICK preserves its upper issue and portable continuation", [](TestCase& t)
+        {
+            forbiddenCalls=0;
+            auto modelMemory=std::make_unique<Fixture>(),nativeMemory=std::make_unique<Fixture>();
+            auto model=std::make_unique<VU1Interpreter>(),native=std::make_unique<VU1Interpreter>();
+            constexpr uint32_t kick2=special(0x6C,2),increment4=0x10040001,endNop=nop|(1u<<30);
+            auto* code=modelMemory->memory.getVU1Code();
+            for (unsigned pc=0;pc<PS2_VU1_CODE_SIZE;pc+=8) { word(code+pc,lowerNop); word(code+pc+4,nop); }
+            word(code,kick); word(code+8,kick2); word(code+12,add);
+            word(code+16,increment4); word(code+28,endNop);
+            const uint64_t first=0x8008ull|(2ull<<58),second=0x8001ull|(2ull<<58);
+            auto* data=modelMemory->memory.getVU1Data();
+            std::memcpy(data,&first,8); std::memset(data+16,0x11,128);
+            std::memcpy(data+144,&second,8); std::memset(data+160,0x22,16);
+            std::memcpy(nativeMemory->memory.getVU1Code(),code,PS2_VU1_CODE_SIZE);
+            std::memcpy(nativeMemory->memory.getVU1Data(),data,PS2_VU1_DATA_SIZE);
+            model->state().vi[2]=9; model->state().vf[1][0]=2; model->state().vf[2][0]=7;
+            VuSnapshotCodec::restore(*native,VuSnapshotCodec::encode(*model));
+            const auto descriptors=VuNativeAccess::inspectMicrocode({code,PS2_VU1_CODE_SIZE},VU1Interpreter::Unit::VU1);
+            std::vector<VuNativeAccess::Entry> entries;
+            for (const auto& descriptor:descriptors)
+            {
+                decltype(VuNativeAccess::Entry::upper) u=nullptr;
+                decltype(VuNativeAccess::Entry::lower) l=nullptr;
+                switch (descriptor.upper)
+                { case nop:u=&VuNativeAccess::upper<nop>;break; case add:u=&VuNativeAccess::upper<add>;break;
+                  case endNop:u=&VuNativeAccess::upper<endNop>;break; default:throw std::runtime_error("unexpected test upper"); }
+                switch (descriptor.lower)
+                { case lowerNop:l=&VuNativeAccess::lower<lowerNop>;break; case kick:l=&VuNativeAccess::lower<kick>;break;
+                  case kick2:l=&VuNativeAccess::lower<kick2>;break; case increment4:l=&VuNativeAccess::lower<increment4>;break;
+                  default:throw std::runtime_error("unexpected test lower"); }
+                entries.push_back({&descriptor,u,l});
+            }
+            const VuNativeProgram program{VU1Interpreter::Unit::VU1,entries,{code,PS2_VU1_CODE_SIZE}};
+            const std::array budgets{1u,1u,3u,12u,3u};
+            for (size_t index=0;index<budgets.size();++index)
+            {
+                model->resume(code,PS2_VU1_CODE_SIZE,data,PS2_VU1_DATA_SIZE,modelMemory->gs,&modelMemory->memory,0,0,budgets[index]);
+                {
+                    NativeScope scope;
+                    VuNativeAccess::resume(*native,program,nativeMemory->memory.getVU1Data(),PS2_VU1_DATA_SIZE,
+                        nativeMemory->gs,&nativeMemory->memory,0,0,budgets[index]);
+                }
+                t.Equals(VuSnapshotCodec::encode(*native),VuSnapshotCodec::encode(*model),"All pending state agrees at each budget boundary");
+                t.Equals(nativeMemory->packets,modelMemory->packets,"Transfer order agrees at each boundary");
+                if (index==1)
+                {
+                    const auto snapshot=VuSnapshotCodec::encode(*native);
+                    t.Equals(snapshot[8],uint8_t(2),"Native suspension preserves a queued XGKICK");
+                    VuSnapshotCodec::restore(*native,snapshot);
+                    native->state().vi[2]=1; model->state().vi[2]=1;
+                    std::memset(data+160,0x33,16);
+                    std::memset(nativeMemory->memory.getVU1Data()+160,0x33,16);
+                }
+                if (index==2)
+                {
+                    t.Equals(native->state().vf[3][0],9.0f,"The second Upper commits before PATH1 is free");
+                    t.Equals(native->state().pc,16u,"The following pair remains stalled");
+                }
+            }
+            t.Equals(forbiddenCalls,0u,"No generic VU execution is reachable in this native case");
+            t.Equals(nativeMemory->packets.size(),size_t(2),"Both native transfers complete exactly once");
+            if (nativeMemory->packets.size()==2)
+                t.Equals(nativeMemory->packets[1][16],uint8_t(0x33),"Native delivery uses the queued operand and later payload bytes");
+        });
         tc.Run("an unknown native entry fails without fallback and restores host rounding", [](TestCase &t)
         {
             forbiddenCalls = 0;

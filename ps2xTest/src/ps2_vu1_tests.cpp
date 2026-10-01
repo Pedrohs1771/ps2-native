@@ -1446,7 +1446,39 @@ void register_ps2_vu1_tests()
             }
         });
 
-        tc.Run("a second XGKICK stalls until the active PATH1 transfer completes", [](TestCase &t)
+        tc.Run("a queued XGKICK lets its upper pair execute and stalls the following pair", [](TestCase &t)
+        {
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
+            const uint64_t firstTag=makeGifTag(8u,GIF_FMT_IMAGE,0u,true);
+            const uint64_t secondTag=makeGifTag(1u,GIF_FMT_IMAGE,0u,true);
+            std::memcpy(fx.data,&firstTag,8); std::memset(fx.data+16,0x11,128);
+            std::memcpy(fx.data+144,&secondTag,8); std::memset(fx.data+160,0x22,16);
+            std::vector<std::vector<uint8_t>> packets;
+            fx.mem.setGifPacketCallback([&](const uint8_t* bytes,uint32_t count)
+            { packets.emplace_back(bytes,bytes+count); });
+            writeVuInstructionPair(fx.code,0,makeVuLowerSpecial(0x6Cu,1u),kVuUpperNop);
+            writeVuInstructionPair(fx.code,8,makeVuLowerSpecial(0x6Cu,2u),makeVuUpper(0x28u,0x8u,2u,1u,3u));
+            writeVuInstructionPair(fx.code,16,0x10040001u,kVuUpperNop);
+            writeVuInstructionPair(fx.code,24,0x8000033Cu,kVuUpperNop|(1u<<30));
+            writeVuInstructionPair(fx.code,32,0x8000033Cu,kVuUpperNop);
+            VU1Interpreter vu;
+            vu.state().vi[2]=9; vu.state().vf[1][0]=2; vu.state().vf[2][0]=7;
+            vu.execute(fx.code,PS2_VU1_CODE_SIZE,fx.data,PS2_VU1_DATA_SIZE,fx.gs,&fx.mem,0,0,0,5);
+            t.Equals(vu.state().vf[3][0],9.0f,"The second pair's upper ADD commits while the first PATH1 transfer is active");
+            t.Equals(vu.state().pc,16u,"The next pair waits after the second XGKICK has issued");
+            t.Equals(vu.state().vi[4],0,"The following lower instruction has not executed");
+            t.IsTrue(packets.empty(),"Neither IMAGE packet is prematurely completed");
+            vu.state().vi[2]=1; // A queued instruction must retain its issued source operand.
+            vu.resume(fx.code,PS2_VU1_CODE_SIZE,fx.data,PS2_VU1_DATA_SIZE,fx.gs,&fx.mem,0,0,100);
+            t.Equals(packets.size(),size_t(2),"Both queued transfers complete in order after resume");
+            if (packets.size()==2)
+                t.IsTrue(packets[0].size()==144 && packets[0][16]==0x11 && packets[1].size()==32 && packets[1][16]==0x22,
+                    "The queued source address was latched before the host changed VI2");
+            t.Equals(vu.state().vi[4],1,"The following pair executes after the preceding transfer finishes");
+        });
+
+        tc.Run("a second XGKICK retains ordered packets while delaying later pairs", [](TestCase &t)
         {
             PS2Memory mem;
             t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");

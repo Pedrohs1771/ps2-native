@@ -193,6 +193,15 @@ disagreements while checking the loaded value and completed transfer.
 
 ## Remaining timing obligations
 
+The manufacturer's VU User's Manual v6.0, pp.44-45/168, describes integer-load
+data hazards and ILW's four-cycle latency. This supports retaining the model's
+load-consumer waits rather than adopting the pinned interpreter's omitted IALU
+stall. It remains documentary evidence, without a new physical measurement.
+The same manual's pp.52/196 describe the following-pair stall for a second
+XGKICK. The runtime now latches that request while allowing its Upper to issue;
+the queued checkpoint extension is documented in `schemas/nexo-vu-state-v2.md`.
+[Manufacturer manual mirror](https://studylib.net/doc/25815876/vuusersmanual.158394566).
+
 Retain exact original input, source, executable, policy, and output identities.
 Use the complete trace and reduced microtests to establish the required
 hardware timing and observable device boundaries before changing the model.

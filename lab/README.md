@@ -4,8 +4,10 @@ This implements a **partial preparation** for the first increment in the root
 README, section 31.1. It preserves the current VU runtime as a regression
 baseline and implements a laboratory AOT V0 backend for finite microcode banks.
 An original VIF-call replay now includes VU, GIF and CPU GS state. An independent
-reference, broader external-input closure, second-architecture validation and a
-qualified native game package remain unfinished.
+reference with a qualified full state relation, broader external-input closure,
+second-architecture validation and a qualified native game package remain
+unfinished. The identified independent VU engine and its timing differences are
+described in `PCSX2_VU_REFERENCE.md`.
 
 ## Build and run
 
@@ -46,7 +48,11 @@ Commercial game data belongs in ignored local build workspaces.
 The state codec covers pending vector/integer/ACC writes, delayed flags, Q/P
 results, readiness and resource clocks, branch history and partially transferred
 XGKICK packets. Host pointers and derived decode caches are rebuilt on restore.
-See the versioned documents in `schemas/` for field order and bounds.
+See the versioned documents in `schemas/` for field order and bounds. States
+with a second XGKICK already issued and waiting for PATH1 use the version-2
+extension; empty request slots retain the exact version-1 encoding. Tests
+exercise the second pair's Upper operation, its latched source, live future
+payload reads, and continuation without generic VU execution in the AOT path.
 
 Legacy `.bin` register images remain useful only with the original host ABI.
 They cannot substitute for `input-state.nexo` in this tool.

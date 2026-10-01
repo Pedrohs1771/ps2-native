@@ -194,6 +194,12 @@ private:
         bool active = false;
         bool currentTagEop = false;
     };
+    struct QueuedXgkick
+    {
+        uint32_t sourceAddress = 0;
+        uint64_t issueCycle = 0;
+        bool pending = false;
+    };
 
     static constexpr uint32_t kFmacLatency = 4u;
     static constexpr uint32_t kAccForwardLatency = 1u;
@@ -221,6 +227,7 @@ private:
     std::array<PendingViWrite, kMaxPendingViWrites> m_viWritePipeline{};
     std::array<PendingAccWrite, kMaxPendingAccWrites> m_accWritePipeline{};
     XgkickPipeline m_xgkick{};
+    QueuedXgkick m_queuedXgkick{};
     std::array<std::array<uint64_t, 4>, 32> m_vfReady{};
     std::array<uint64_t, 16> m_viReady{};
     std::array<uint64_t, 4> m_accReady{};
