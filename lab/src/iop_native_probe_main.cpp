@@ -12,14 +12,18 @@ const ps2x::iop::detail::IopNativeProgram &compiledIopProgram();
 
 int main(int argc, char **argv)
 {
-    if (argc != 3)
+    if (argc != 3 && argc != 4)
     {
-        std::cerr << "Usage: nexo_iop_probe IRX NEW_OUTPUT_DIRECTORY\n";
+        std::cerr << "Usage: nexo_iop_probe IRX NEW_OUTPUT_DIRECTORY [LOAD_COUNT]\n";
         return 2;
     }
     try
     {
         using namespace ps2native::nexo::iop_lab;
+        size_t consumed = 0u;
+        const auto loadCount = argc == 4 ? std::stoul(argv[3], &consumed, 10) : 1u;
+        if (loadCount == 0u || loadCount > 32u || (argc == 4 && consumed != std::string_view(argv[3]).size()))
+            throw std::runtime_error("load count outside 1..32");
         const std::filesystem::path output(argv[2]);
         if (std::filesystem::exists(output))
             throw std::runtime_error("output directory already exists");
@@ -30,12 +34,23 @@ int main(int argc, char **argv)
         ps2x::iop::IopSubsystem iop(host);
 #endif
         ps2x::iop::ModuleLoadResult loaded{true, -1, -1};
+        std::vector<ps2x::iop::ModuleLoadResult> loads;
         std::string executionError;
-        try { loaded = iop.loadModule("host:probe.irx"); }
+        bool budgetUnqualified = false;
+        try
+        {
+            for (unsigned instance = 0; instance < loadCount; ++instance)
+            {
+                const auto before = iop.debugSnapshot().emulatorInstructions;
+                loaded = iop.loadModule("host:probe.irx");
+                loads.push_back(loaded);
+                budgetUnqualified |= iop.debugSnapshot().emulatorInstructions - before >= 2'000'000u;
+                if (loaded.moduleId < 0 || budgetUnqualified) break;
+            }
+        }
         catch (const std::exception &error) { executionError = error.what(); }
         const auto snapshot = iop.debugSnapshot();
-        const bool budgetUnqualified = snapshot.emulatorInstructions >= 2'000'000u;
-        const bool accepted = loaded.moduleId > 0 && snapshot.nativeFaults == 0u &&
+        const bool accepted = loaded.moduleId > 0 && loads.size() == loadCount && snapshot.nativeFaults == 0u &&
                               host.unsupported.empty() && executionError.empty() && !budgetUnqualified;
         if (!std::filesystem::create_directory(output))
             throw std::runtime_error("cannot create output directory");
@@ -57,7 +72,13 @@ int main(int argc, char **argv)
                << ",\"unqualified_budget\":" << (budgetUnqualified ? "true" : "false")
                << ",\"unsupported_host_operation\":" << jsonString(host.unsupported)
                << ",\"execution_error\":" << jsonString(executionError)
-               << ",\"dropped_logs\":" << host.droppedLogs << ",\"logs\":[";
+               << ",\"dropped_logs\":" << host.droppedLogs << ",\"module_loads\":[";
+        for (size_t i = 0; i < loads.size(); ++i)
+        {
+            if (i) report << ',';
+            report << "{\"module_id\":" << loads[i].moduleId << ",\"start_result\":" << loads[i].startResult << '}';
+        }
+        report << "],\"logs\":[";
         for (size_t i = 0; i != host.logs.size(); ++i)
         {
             if (i) report << ',';

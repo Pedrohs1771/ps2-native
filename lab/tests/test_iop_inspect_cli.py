@@ -46,6 +46,8 @@ class IopInspectCliTests(unittest.TestCase):
         data = (output / 'relocated-ram.bin').read_bytes()
         self.assertEqual(len(data), metadata['size'])
         self.assertEqual(data[:16], fixture()[0x100:0x110])
+        self.assertEqual((output / 'source-image.bin').read_bytes(), fixture())
+        self.assertEqual(metadata['relocation_masks'], [])
 
     def test_sony_data_relocation_at_two_bases(self):
         for base in (0x10000, 0x20000):
@@ -53,6 +55,8 @@ class IopInspectCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             data = (output / 'relocated-ram.bin').read_bytes()
             self.assertEqual(struct.unpack_from('<I', data, 12)[0], base + 12)
+            metadata = json.loads((output / 'module.json').read_text())
+            self.assertEqual(metadata['relocation_masks'], [{'offset': 12, 'mask': 0xffffffff}])
 
     def test_unsupported_relocation_emits_no_bank(self):
         result, output = self.run_case(fixture(255))

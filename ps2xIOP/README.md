@@ -93,9 +93,12 @@ bank C++ through `NEXO_IOP_BANK_CPP`; the diagnostic startup probe is a separate
 target. Both record their scope and reject unsupported external host operations.
 See [the laboratory guide](../lab/README.md) for the complete commands.
 
-The bank currently binds absolute physical addresses. Source IRX identification
-and binding across relocation bases still need the module frontend. The initial
-semantics are specialized from the existing CPU model: differential agreement
+The original bank binds absolute physical addresses. The optional IRX family
+frontend adds full source-image identity and binding across loader-selected
+bases, with static operation/register fields and bound immediate/jump operands.
+Module unload/reset retire bindings; the full kernel lifecycle on module
+replacement remains unqualified. The initial semantics are specialized from
+the existing CPU model: differential agreement
 does not certify hardware semantics or timing. Native service contracts also
 retain the current qualification limits. See
 [the V0 contract](../schemas/nexo-iop-aot-v0.md) for commands and remaining gates.

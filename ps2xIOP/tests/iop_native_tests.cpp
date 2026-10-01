@@ -11,6 +11,14 @@ using iop_test::require;
 
 const IopNativeProgram &iopFixtureBank();
 const IopNativeProgram &iopRpcFixtureBank();
+void nativeFamilyBindings();
+void nativeFamilyAdmission();
+void nativeFamilyStartup();
+void nativeFamilyReplacement();
+#if PS2X_IOP_ENABLE_INTERPRETER
+void nativeFamilyDifferential();
+void nativeOperandDifferential();
+#endif
 
 namespace
 {
@@ -391,8 +399,14 @@ int main()
         {"compiled self modification", selfModification}, {"all RAM writers", memoryWriterGuards},
         {"invalid banks", invalidBanks}, {"bank ownership", bankOwnership},
         {"native RPC and changed callback", nativeRpc},
+        {"relocatable family bindings/reset", nativeFamilyBindings},
+        {"relocatable family admission", nativeFamilyAdmission},
+        {"relocatable family startup", nativeFamilyStartup},
+        {"relocatable family replacement", nativeFamilyReplacement},
 #if PS2X_IOP_ENABLE_INTERPRETER
         {"identified model differential", identifiedModelDifferential},
+        {"identified model family differential", nativeFamilyDifferential},
+        {"identified model operand differential", nativeOperandDifferential},
 #endif
     };
     unsigned failures = 0;

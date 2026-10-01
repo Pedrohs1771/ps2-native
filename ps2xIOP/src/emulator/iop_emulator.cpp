@@ -142,7 +142,7 @@ namespace ps2x::iop::detail
             totalNativeInstructions = 0;
             totalInterpretedInstructions = 0;
             if (native)
-                native->resetFault();
+                native->reset();
             tracedTimeslices = 0u;
             eeCycleCarry = 0;
             activeCpu = nullptr;
@@ -756,6 +756,13 @@ namespace ps2x::iop::detail
                 }
             }
 
+            if (native && !native->bindModule(image, loaded))
+            {
+                CpuState failed{};
+                reportNativeFault(failed);
+                return result;
+            }
+
             Module module;
             module.id = nextModuleId++;
             module.path = std::move(path);
@@ -841,6 +848,8 @@ namespace ps2x::iop::detail
             kernel.terminateThreadsInRange(it->second.base, it->second.size);
             rpc.removeServersInRange(it->second.base, it->second.size);
             imports.eraseRange(it->second.base, it->second.size);
+            if (native)
+                native->unbindRange(it->second.base, it->second.size);
             modules.erase(it);
             kernel.cleanupDeadThreads();
             if (result)

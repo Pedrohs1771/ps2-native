@@ -33,10 +33,10 @@ um jogo completo. Não altera o README principal.
 - Relocation não suportada e startup que termina apenas por esgotar seu budget
   também produzem falhas, antes de publicar um módulo bem-sucedido.
 
-Ainda faltam: frontend IRX com identidade completa do módulo, binding de
-relocations para diferentes bases, descoberta de código latente, snapshots
-canônicos independentes da ABI, serviços e tempo qualificados, reset/substituição
-de módulos e cobertura dos módulos comerciais. O banco absoluto desta etapa
+Ainda faltam: integração das famílias IRX no jogo, descoberta de código latente,
+snapshots canônicos independentes da ABI, serviços e tempo qualificados,
+lifecycle completo de substituição de módulos e cobertura do corpus comercial.
+O banco absoluto original desta etapa
 não deve ser anunciado como suporte universal a IRX.
 
 A auditoria do modelo de instruções também precisa cobrir JALR com registradores
@@ -111,3 +111,37 @@ do corpus comercial, testar CLI, limites e relocations em um ELF sintético.
 Depois exercitar IRX reais da ISO já inventariada. O binding de diferentes
 bases ainda será uma etapa seguinte: este probe não exige que o jogo use
 permanentemente a base escolhida para o teste.
+
+## Famílias relocáveis de IRX
+
+O próximo banco contém a identidade completa dos bytes IRX e uma entrada por
+palavra do span carregado. O inspector exporta as máscaras das escritas de
+relocation e a imagem fonte. O gerador distingue três casos:
+
+- Palavra fixa: função já especializada, com guarda de igualdade exata.
+- J/JAL com R_MIPS_26 ou operação I com imediato de 16 bits: operação e
+  registradores constantes, operando ligado pelo carregador antes do startup.
+- Relocation de palavra inteira ou forma não admitida: posição sem função
+  executável; entrar nela produz falha, nunca decodificação genérica.
+
+A máscara não pode alterar opcode nem campos que escolhem a operação. As
+funções parametrizadas são geradas offline e recebem apenas operandos; opcode,
+registradores e formas de controle continuam constantes em C++.
+
+O despacho copia imagens e descritores na construção. Depois das relocations,
+confere identidade da imagem, dimensões, máscaras e bits fixos e publica um
+diretório ligado à base efetiva. A palavra completa ligada fica como guarda
+contra alterações posteriores, incluindo alterações apenas no operando.
+Uma nova ligação que sobrepõe uma anterior invalida o diretório anterior inteiro.
+Reset remove ligações e falhas, preservando as famílias compiladas e o banco
+absoluto configurado. Uma falha de ligação impede startup e publicação do módulo.
+Unload retira o diretório do módulo; a substituição completa do estado de kernel,
+threads e serviços permanece uma obrigação independente.
+
+Testar primeiro dois endereços, parâmetros HI/LO e J, dados R_MIPS_32 não
+executáveis, identidade completa, ownership, substituição, reset e alteração
+posterior. Depois gerar a família HKSIF original e carregar duas instâncias
+consecutivas pelo subsystem estrito sem escolher seus endereços manualmente.
+Essa ligação usa o carregador identificado como materializador confiável;
+não prova fidelidade independente, fechamento de código gerado pelo jogo,
+publicação concorrente/epochs nem substituição completa do kernel.

@@ -33,13 +33,21 @@ int main(int argc, char **argv)
         try
         {
             writeBytes(output / "relocated-ram.bin", memory.ram().subspan(loaded.base, loaded.size));
+            writeBytes(output / "source-image.bin", image);
             std::ofstream metadata(output / "module.json");
             metadata << "{\n\"schema_version\":1,\"base\":" << loaded.base
                      << ",\"size\":" << loaded.size << ",\"entry\":" << loaded.entry
                      << ",\"gp\":" << loaded.gp << ",\"next_module_cursor\":" << loaded.nextModuleCursor
                      << ",\"image_bytes\":" << image.size()
                      << ",\"relocations_complete\":true,\"instruction_words\":" << loaded.size / 4u
-                     << ",\"scope\":\"identified loader, absolute relocated bank, no guest execution\"\n}\n";
+                     << ",\"relocation_masks\":[";
+            for (size_t i = 0; i < loaded.relocationMasks.size(); ++i)
+            {
+                if (i) metadata << ',';
+                const auto &relocation = loaded.relocationMasks[i];
+                metadata << "{\"offset\":" << relocation.offset << ",\"mask\":" << relocation.mask << '}';
+            }
+            metadata << "],\"scope\":\"identified loader, relocated bank and operand masks, no guest execution\"\n}\n";
             metadata.close();
             if (!metadata)
                 throw std::runtime_error("cannot write module metadata");

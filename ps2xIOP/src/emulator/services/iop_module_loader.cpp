@@ -146,8 +146,10 @@ namespace ps2x::iop::detail
                               const std::vector<Elf32Shdr> &sections,
                               int64_t delta,
                               uint32_t loadBase,
+                              uint32_t loadSpan,
                               bool isIopRelocatable,
-                              IopMemory &memory)
+                              IopMemory &memory,
+                              std::vector<IopImageRelocationMask> &masks)
         {
             if (sections.empty())
                 return true;
@@ -249,6 +251,16 @@ namespace ps2x::iop::detail
                         allSupported = false;
                         continue;
                     }
+                    if ((place & 3u) || place < loadBase || place - loadBase >= loadSpan ||
+                        4u > loadSpan - (place - loadBase))
+                    {
+                        allSupported = false;
+                        continue;
+                    }
+                    auto recordMask = [&](uint32_t mask)
+                    {
+                        masks.push_back({place - loadBase, mask});
+                    };
 
                     const uint32_t word = memory.read32(place);
                     const int32_t addend = relsec.type == SHT_RELA
@@ -260,19 +272,23 @@ namespace ps2x::iop::detail
                         break;
                     case R_MIPS_32:
                     case R_MIPS_REL32:
+                        recordMask(0xffffffffu);
                         memory.write32(place, static_cast<uint32_t>(static_cast<int64_t>(addend) + symbolValue));
                         break;
                     case R_MIPS_26:
                     {
+                        recordMask(0x03ffffffu);
                         const uint32_t target = ((word & 0x03FFFFFFu) << 2u) + symbolValue;
                         memory.write32(place, (word & 0xFC000000u) | ((target >> 2u) & 0x03FFFFFFu));
                         break;
                     }
                     case R_MIPS_HI16:
+                        recordMask(0xffffu);
                         hi16.push_back({place, symbolValue, symbolIndex});
                         break;
                     case R_MIPS_LO16:
                     {
+                        recordMask(0xffffu);
                         const int32_t lo = static_cast<int16_t>(word & 0xFFFFu);
                         for (auto pending = hi16.begin(); pending != hi16.end();)
                         {
@@ -293,6 +309,7 @@ namespace ps2x::iop::detail
                         break;
                     }
                     case R_MIPS_16:
+                        recordMask(0xffffu);
                         memory.write32(place, (word & 0xFFFF0000u) | (static_cast<uint32_t>(addend + symbolValue) & 0xFFFFu));
                         break;
                     default:
@@ -301,6 +318,19 @@ namespace ps2x::iop::detail
                     }
                 }
             }
+            std::sort(masks.begin(), masks.end(), [](const auto &a, const auto &b)
+            {
+                return a.offset < b.offset;
+            });
+            size_t count = 0u;
+            for (const auto &mask : masks)
+            {
+                if (count && masks[count - 1u].offset == mask.offset)
+                    masks[count - 1u].mask |= mask.mask;
+                else
+                    masks[count++] = mask;
+            }
+            masks.resize(count);
             return allSupported && hi16.empty();
         }
     }
@@ -528,8 +558,10 @@ namespace ps2x::iop::detail
                                                       sectionHeaders,
                                                       delta,
                                                       base,
+                                                      span,
                                                       isIopRelocatable,
-                                                      memory);
+                                                      memory,
+                                                      result.relocationMasks);
 
         result.base = base;
         result.size = span;

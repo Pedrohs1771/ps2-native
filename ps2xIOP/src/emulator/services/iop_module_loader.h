@@ -22,6 +22,12 @@ namespace ps2x::iop::detail
         MalformedImage,
     };
 
+    struct IopImageRelocationMask
+    {
+        uint32_t offset;
+        uint32_t mask;
+    };
+
     struct IopImageLoadResult
     {
         IopImageLoadError error = IopImageLoadError::MalformedImage;
@@ -31,6 +37,7 @@ namespace ps2x::iop::detail
         uint32_t gp = 0;
         uint32_t nextModuleCursor = 0;
         bool relocationsComplete = true;
+        std::vector<IopImageRelocationMask> relocationMasks;
 
         [[nodiscard]] explicit operator bool() const noexcept
         {

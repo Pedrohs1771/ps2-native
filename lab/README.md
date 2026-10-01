@@ -18,15 +18,15 @@ constant instruction parameters. The native dispatcher verifies live code
 identity, supports interior entries and RAM aliases, and refuses missing,
 changed, or misaligned code without interpreting it.
 
-The synthetic acceptance corpus has 16 strict native cases, 17 diagnostic cases
-(including 292 one-step comparisons to the identified CPU model), and seven
-converter cases. It includes native RPC, self modification, all RAM writers,
+The synthetic acceptance corpus has 20 strict native cases, 23 diagnostic cases
+(including 292 absolute and 159 parameterized one-step comparisons to the
+identified CPU model), and 12 converter cases. It includes native RPC, self modification, all RAM writers,
 pending loads and branches, unknown imports, incomplete relocations, and
 unfinished startup. `PS2X_IOP_ENABLE_INTERPRETER=OFF` removes the generic CPU
 instruction-execution symbol from the native test executable.
 
 This is preparation for M4. The game runtime still uses its diagnostic IOP
-configuration; banks for its complete commercial corpus, binding across relocation bases,
+configuration; banks for its complete commercial corpus,
 independent R3000A fidelity, canonical snapshots and qualified service/timing
 contracts remain open. A synthetic startup/RPC result does not qualify Monster
 House or a complete game. Commands and the internal bank contract are in
@@ -65,6 +65,41 @@ the default base. This does not claim execution of the other ten modules.
 Relocation-family binding in the actual game, embedded `IOPRP271.IMG` modules,
 canonical hidden state and independent fidelity remain open. The commercial
 images, generated C++ and captures stay in ignored local build directories.
+
+### Relocatable IRX families
+
+The inspector also emits `source-image.bin` and per-word relocation masks.
+`generate_iop_bank.py --family-module` embeds the full image identity and generates
+fixed operation shapes with bound operands. It admits immediate-16 operand
+forms and J/JAL targets. Full-word relocated data and unqualified operand forms
+receive no executable callback; jumping to them fails explicitly.
+
+```sh
+build/iop-aot-strict/nexo_iop_inspect /path/to/module.irx /path/to/new-family-case
+python lab/generate_iop_bank.py --family-module /path/to/new-family-case --output /path/to/family-generated --symbol compiledIopProgram
+cmake -S ps2xIOP -B build/iop-aot-strict -DNEXO_IOP_BANK_CPP=/path/to/family-generated/iop_native_bank.cpp
+cmake --build build/iop-aot-strict --target nexo_iop_native_probe --parallel 4
+build/iop-aot-strict/nexo_iop_native_probe /path/to/module.irx /path/to/new-family-result 2
+```
+
+The subsystem binds the compiled family after relocation and before startup.
+The dispatcher owns image/entry metadata, checks source identity, dimensions,
+relocation masks and fixed instruction bits, then guards the complete bound
+word before each native guest operation. Reset clears bindings while retaining
+compiled families. Directory replacement invalidates a previous overlapping
+binding completely; module unload also retires its directory.
+
+The original HKSIF family passed two consecutive startups, automatically placed
+at `0x10000` and `0x10500`: 170 native operations, 22 service dispatches, zero
+interpreted operations and no native faults. Full RAM and all reported fields
+apart from native/diagnostic counters agreed with the identified model. A
+modified source image failed before executing a native operation.
+
+This is one module's startup coverage. The loader remains an identified model;
+independent fidelity, hidden state, service/version/timing contracts, code
+publication epochs and full kernel lifecycle on replacement are open. Buffer
+load identity variants, the complete module corpus and final game integration
+are also open. Matching a family at two bases does not qualify M4 or a game.
 
 ## Build and run
 
