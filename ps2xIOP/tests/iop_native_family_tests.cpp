@@ -68,7 +68,7 @@ namespace
                 case 0x3c020001u: entry.executeOperand = &IopNativeAccess::instructionRelocated<0x3c020001u, 0xffffu>; break;
                 case 0x2442001cu: entry.executeOperand = &IopNativeAccess::instructionRelocated<0x2442001cu, 0xffffu>; break;
                 case 0x08004005u: entry.executeOperand = &IopNativeAccess::instructionRelocated<0x08004005u, 0x03ffffffu>; break;
-                case 0x2402ffffu: entry.execute = &IopNativeAccess::instruction<0x2402ffffu>; break;
+                case 0x2402ffffu: entry.executeOperand = &IopNativeAccess::instructionRelocated<0x24020000u, 0xffffu>; break;
                 case 0x03e00008u: entry.execute = &IopNativeAccess::instruction<0x03e00008u>; break;
                 case 0u: entry.execute = &IopNativeAccess::instruction<0u>; break;
                 default: require(mask == 0xffffffffu, "unknown fixture operation"); break;
@@ -99,6 +99,9 @@ void nativeFamilyBindings()
         for (unsigned i = 0; i < 6u; ++i) require(native.execute(cpu), "bound family execution failed");
         require(cpu.gpr[2] == base + 28u && cpu.pc == 0x1ffffcu,
                 "HI/LO/J operands or aliased PC were not preserved");
+        cpu = {}; cpu.pc = base + 16u;
+        require(native.execute(cpu) && cpu.gpr[2] == 0xffffffffu,
+                "shared fixed immediate changed a non-relocated operation");
     }
     IopCpuState cpu{}; cpu.pc = 0x3001cu;
     require(!native.execute(cpu) && native.fault()->kind == IopNativeFaultKind::MissingEntry,
@@ -113,6 +116,14 @@ void nativeFamilyBindings()
     cpu = {}; cpu.pc = loaded.base; const auto before = cpu;
     require(!native.execute(cpu) && native.fault()->kind == IopNativeFaultKind::CodeChanged && cpu.pc == before.pc,
             "changing only a bound operand escaped the identity guard");
+    native.reset();
+    const auto fixedLoaded = IopModuleLoader::load(original, memory, 0x20000u);
+    require(native.bindModule(original, fixedLoaded), "fixed operand guard setup failed");
+    memory.write32(fixedLoaded.base + 16u, 0x24020009u);
+    cpu = {}; cpu.pc = fixedLoaded.base + 16u;
+    require(!native.execute(cpu) && native.fault()->kind == IopNativeFaultKind::CodeChanged &&
+            cpu.pc == fixedLoaded.base + 16u && cpu.gpr[2] == 0u,
+            "shared fixed operand callback accepted a changed original immediate");
 }
 
 void nativeFamilyAdmission()
@@ -138,6 +149,18 @@ void nativeFamilyAdmission()
     try { IopNativeDispatch native(memory, core, fixture.program()); }
     catch (const std::invalid_argument &) { rejected = true; }
     require(rejected, "operation-changing mask accepted in compiled manifest");
+    for (unsigned variant = 0; variant < 3u; ++variant)
+    {
+        Fixture callbacks;
+        auto &entry = callbacks.entries[4]; // Non-relocated ADDIU uses the shared operand callback.
+        if (variant == 0u) entry.execute = &IopNativeAccess::instruction<0x2402ffffu>;
+        if (variant == 1u) entry.executeOperand = nullptr;
+        if (variant == 2u) entry.instruction = 0x03e00008u;
+        rejected = false;
+        try { IopNativeDispatch invalid(memory, core, callbacks.program()); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        require(rejected, "invalid fixed operand callback pair/shape admitted");
+    }
 }
 
 void nativeFamilyStartup()

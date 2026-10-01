@@ -25,8 +25,9 @@ pending loads and branches, unknown imports, incomplete relocations, and
 unfinished startup. `PS2X_IOP_ENABLE_INTERPRETER=OFF` removes the generic CPU
 instruction-execution symbol from the native test executable.
 
-This is preparation for M4. The game runtime still uses its diagnostic IOP
-configuration; banks for its complete commercial corpus,
+This is preparation for M4. The default game runtime uses its diagnostic IOP
+configuration; an explicit native IOP catalog option is described below.
+Banks for its complete commercial corpus,
 independent R3000A fidelity, canonical snapshots and qualified service/timing
 contracts remain open. A synthetic startup/RPC result does not qualify Monster
 House or a complete game. Commands and the internal bank contract are in
@@ -60,7 +61,7 @@ operations and 11 service dispatches, zero interpreted operations and no generic
 CPU execution symbol in the native binary. Its 2 MiB IOP RAM, 32 MiB EE RAM,
 startup return, counters and logs matched the identified diagnostic model.
 All 11 external IRX files passed **offline loader acceptance**, each isolated at
-the default base. This does not claim execution of the other ten modules.
+the default base. The later catalog experiment below also executed their startups.
 
 Relocation-family binding in the actual game, embedded `IOPRP271.IMG` modules,
 canonical hidden state and independent fidelity remain open. The commercial
@@ -100,6 +101,65 @@ independent fidelity, hidden state, service/version/timing contracts, code
 publication epochs and full kernel lifecycle on replacement are open. Buffer
 load identity variants, the complete module corpus and final game integration
 are also open. Matching a family at two bases does not qualify M4 or a game.
+
+### Shared multi-module catalog and runtime adapter
+
+`--family-catalog` accepts multiple inspector directories and emits one catalog.
+Each full image keeps its own directory and complete bound-word guards. Immediate
+and jump target operands share compiled operation shapes across modules, including
+non-relocated instructions whose original words must still match exactly. The
+operation pool is explicitly instantiated once, in 64 stable hash shards; module
+directories contain references only. Unchanged files retain their mtimes.
+
+```sh
+python lab/generate_iop_bank.py --family-catalog /path/to/case-a /path/to/case-b --output /path/to/catalog --symbol compiledIopProgram
+cmake -S ps2xIOP -B build/iop-catalog-strict -DPS2X_IOP_BUILD_TESTS=ON -DPS2X_IOP_BUILD_LAB=ON -DPS2X_IOP_ENABLE_INTERPRETER=OFF -DNEXO_IOP_BANK_CPP= -DNEXO_IOP_BANK_MANIFEST=/path/to/catalog/catalog.json -DCMAKE_BUILD_TYPE=Release '-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG -fno-lto'
+cmake --build build/iop-catalog-strict --parallel 4
+ctest --test-dir build/iop-catalog-strict --output-on-failure
+build/iop-catalog-strict/nexo_iop_native_probe /path/to/module.irx /path/to/new-result
+```
+
+CMake admits only generated C++ basenames and checks the hashes of every source
+and the semantics header. Source/header changes trigger manifest revalidation
+before building. The converter has eight catalog tests covering normalization,
+deduplication, incremental stability, unsafe manifests and changed sources.
+
+For the 11 external Monster House IRX images, generation took 0.40 s and a new
+standalone library/catalog/probe/test build took 27.58 s with four workers and
+`-O1 -fno-lto`. Their 156,928 directory words selected 3,933 shared kernels;
+435 relocated-data or unqualified words have no executable callback. All 11
+isolated startups completed: 1,915 native operations, zero interpreted operations
+and zero native faults. Each reported state and full IOP/EE RAM matched the
+identified diagnostic model. Created background threads were not exercised.
+These measurements cover this IOP corpus, not whole-game conversion or FPS.
+
+The experimental root integration uses the actual runtime file/memory adapter:
+
+```sh
+cmake -S . -B build/runtime-native-iop -DPS2X_BUILD_NEXO_LAB=ON -DPS2X_FAST_ITERATION=ON -DPS2X_IOP_ENABLE_INTERPRETER=OFF -DPS2X_RUNTIME_NATIVE_IOP=ON -DNEXO_IOP_BANK_MANIFEST=/path/to/catalog/catalog.json
+cmake --build build/runtime-native-iop --target nexo_iop_runtime_probe --parallel 4
+env -u DISPLAY -u WAYLAND_DISPLAY SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy build/runtime-native-iop/lab/nexo_iop_runtime_probe /path/to/module.irx /path/to/new-runtime-result
+```
+
+The runtime probe initializes RAM only, never window/audio or EE/VU execution,
+and loads the module twice through `PS2Runtime::loadIopModule`. Original HKSIF
+completed both startups with 170 native operations, zero interpreted operations
+and no faults; full RAM and reported state matched the actual diagnostic runtime
+adapter. The native executable lacks the generic IOP instruction-execution symbol.
+The opt-in requires a compiled catalog and the IOP interpreter disabled; it does
+not qualify the application's EE/VU paths. In the root fast-iteration profile,
+both the IOP library and catalog use `-O1 -fno-lto` and disable IPO.
+In the existing root cache, rebuilding the native adapter/library/catalog with
+that profile took 27.37 s; the next unchanged build took 0.26 s. Regenerating the
+same catalog took 0.39 s and preserved all 78 source/header/manifest mtimes. A
+one-byte change to the original HKSIF source was rejected by the actual runtime
+before any guest operation, with no interpreted fallback.
+
+Combined dependency ordering, background threads/RPC, embedded `IOPRP271.IMG`,
+buffer-load identity variants, import code guards, full replacement lifecycle,
+independent fidelity, service/timing contracts and complete game execution remain
+open. All commercial inputs, generated sources and RAM captures remain local in
+ignored build directories.
 
 ## Build and run
 

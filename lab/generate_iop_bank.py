@@ -109,13 +109,17 @@ def valid_operand(word: int, mask: int) -> bool:
     return opcode == 1 or 4 <= opcode <= 0xf or 0x20 <= opcode <= 0x26 or 0x28 <= opcode <= 0x2b or opcode == 0x2e
 
 
-def generate_family_bank(base: int, words: list[int], masks: list[int], image: bytes, symbol: str) -> str:
+def validate_family(base: int, words: list[int], masks: list[int], image: bytes):
     validate(base, words)
-    validate_symbol(symbol)
-    if not image or len(image) > 64 * 1024 * 1024:
+    if not isinstance(image, (bytes, bytearray)) or not image or len(image) > 64 * 1024 * 1024:
         raise ValueError('IOP family image outside 1..64 MiB')
     if len(masks) != len(words) or any(type(mask) is not int or mask not in (0, 0xffff, 0x03ffffff, 0xffffffff) for mask in masks):
         raise ValueError('IOP family relocation masks invalid')
+
+
+def generate_family_bank(base: int, words: list[int], masks: list[int], image: bytes, symbol: str) -> str:
+    validate_family(base, words, masks, image)
+    validate_symbol(symbol)
     entries = []
     for index, (word, mask) in enumerate(zip(words, masks)):
         fixed = f'&IopNativeAccess::instruction<{word:#010x}u>' if mask == 0 else 'nullptr'
@@ -132,6 +136,97 @@ def generate_family_bank(base: int, words: list[int], masks: list[int], image: b
             f'const std::array<IopNativeModule, 1> modules = {{{{{{image, {len(words) * 4}u, entries}}}}}};\n'
             'const IopNativeProgram program{{}, modules};\n}\n'
             f'const IopNativeProgram &{symbol}() {{ return program; }}\n')
+
+
+def catalog_kernel(word: int, relocation_mask: int):
+    if relocation_mask:
+        if not valid_operand(word, relocation_mask):
+            return None
+        operand_mask = relocation_mask
+    else:
+        operand_mask = (0xffff if valid_operand(word, 0xffff) else
+                        0x03ffffff if valid_operand(word, 0x03ffffff) else 0)
+    return word & ~operand_mask, operand_mask
+
+
+def kernel_reference(kernel):
+    if kernel is None:
+        return 'nullptr, nullptr'
+    word, mask = kernel
+    if mask:
+        return f'nullptr, &IopNativeAccess::instructionRelocated<{word:#010x}u, {mask:#010x}u>'
+    return f'&IopNativeAccess::instruction<{word:#010x}u>, nullptr'
+
+
+def generate_catalog(cases, symbol: str, root: Path) -> dict[str, str]:
+    validate_symbol(symbol)
+    if not cases:
+        raise ValueError('IOP catalog requires at least one module')
+    modules = {}
+    for base, words, masks, image in cases:
+        validate_family(base, words, masks, image)
+        image = bytes(image)
+        identity = hashlib.sha256(image).hexdigest()
+        normalized = [word & ~mask for word, mask in zip(words, masks)]
+        module = (normalized, masks, image)
+        if identity in modules and modules[identity] != module:
+            raise ValueError('IOP source identity has conflicting fixed bits/dimensions/masks')
+        modules[identity] = module
+    files = {'iop_native_semantics.h': generate_semantics(root)}
+    kernels = set()
+    inventory = []
+    for identity, (words, masks, image) in sorted(modules.items()):
+        rows = []
+        executable = 0
+        for index, (word, mask) in enumerate(zip(words, masks)):
+            kernel = catalog_kernel(word, mask)
+            if kernel is not None:
+                kernels.add(kernel); executable += 1
+            rows.append(f'    {{{index * 4:#010x}u, {word:#010x}u, {mask:#010x}u, {kernel_reference(kernel)}}},')
+        image_rows = [','.join(f'{byte:#04x}' for byte in image[offset:offset + 16]) + ','
+                      for offset in range(0, len(image), 16)]
+        files[f'module-{identity}.cpp'] = (
+            '#include "emulator/core/iop_native.h"\n#include <array>\n'
+            'using namespace ps2x::iop::detail;\nnamespace\n{\n'
+            f'const std::array<uint8_t, {len(image)}> image = {{{{\n' + '\n'.join(image_rows) + '\n}};\n'
+            f'const std::array<IopNativeModuleEntry, {len(words)}> entries = {{{{\n'
+            + '\n'.join(rows) + '\n}};\n}\n'
+            f'const IopNativeModule &family_{identity}()\n{{\n'
+            f'    static const IopNativeModule module{{image, {len(words) * 4}u, entries}};\n'
+            '    return module;\n}\n')
+        inventory.append({'source_sha256': identity, 'image_bytes': len(image), 'size': len(words) * 4,
+                          'words': len(words), 'executable_words': executable,
+                          'excluded_words': len(words) - executable})
+    shards = {}
+    for word, mask in sorted(kernels):
+        shard = hashlib.sha256(struct.pack('<II', word, mask)).digest()[0] & 63
+        args = 'IopCpuState &, IopMemory &, IopCpuCore &'
+        if mask:
+            definition = f'template bool IopNativeAccess::instructionRelocated<{word:#010x}u, {mask:#010x}u>({args}, uint32_t);'
+        else:
+            definition = f'template bool IopNativeAccess::instruction<{word:#010x}u>({args});'
+        shards.setdefault(shard, []).append(definition)
+    for shard, definitions in sorted(shards.items()):
+        files[f'kernels-{shard:02x}.cpp'] = ('#include "iop_native_semantics.h"\n'
+            'namespace ps2x::iop::detail\n{\n' + '\n'.join(definitions) + '\n}\n')
+    declarations = [f'const IopNativeModule &family_{identity}();' for identity in sorted(modules)]
+    views = [f'        family_{identity}(),' for identity in sorted(modules)]
+    files['iop_native_registry.cpp'] = (
+        '#include "emulator/core/iop_native.h"\n#include <array>\n'
+        'using namespace ps2x::iop::detail;\n' + '\n'.join(declarations) + '\n'
+        f'const IopNativeProgram &{symbol}()\n{{\n'
+        f'    static const std::array<IopNativeModule, {len(modules)}> modules = {{{{\n'
+        + '\n'.join(views) + '\n    }};\n'
+        '    static const IopNativeProgram program{{}, modules};\n    return program;\n}\n')
+    model = (root / 'ps2xIOP/src/emulator/core/iop_cpu_interpreter.cpp').read_text()
+    files['catalog.json'] = json.dumps({'schema_version': 1, 'symbol': symbol,
+        'sources': sorted(name for name in files if name.endswith('.cpp')),
+        'kernel_count': len(kernels), 'kernel_shards': len(shards), 'modules': inventory,
+        'model_sha256': hashlib.sha256(model.encode()).hexdigest(),
+        'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'sha256': {name: hashlib.sha256(contents.encode()).hexdigest() for name, contents in sorted(files.items())},
+        'scope': 'identified-model IOP AOT catalog; no whole-game, hardware or service qualification'}, indent=2) + '\n'
+    return files
 
 
 def write_if_changed(path: Path, content: str):
@@ -194,11 +289,23 @@ def main():
     source.add_argument('--words-json', type=Path, help='laboratory fixture with base and words')
     source.add_argument('--loaded-module', type=Path, help='offline inspector output; supplies its own base')
     source.add_argument('--family-module', type=Path, help='inspector output with source identity and relocation masks')
+    source.add_argument('--family-catalog', type=Path, nargs='+', help='multiple inspector outputs, with shared native kernels')
     parser.add_argument('--base', type=lambda value: int(value, 0), default=None)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--symbol', required=True)
     args = parser.parse_args()
+    if args.family_catalog:
+        if args.base is not None:
+            parser.error('--base is provided by the module metadata')
+        try:
+            files = generate_catalog([load_family_case(path) for path in args.family_catalog], args.symbol, args.root)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        args.output.mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            write_if_changed(args.output / name, content)
+        return
     if args.memory:
         if args.base is None:
             parser.error('--memory requires --base')

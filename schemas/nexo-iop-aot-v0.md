@@ -145,3 +145,34 @@ consecutivas pelo subsystem estrito sem escolher seus endereços manualmente.
 Essa ligação usa o carregador identificado como materializador confiável;
 não prova fidelidade independente, fechamento de código gerado pelo jogo,
 publicação concorrente/epochs nem substituição completa do kernel.
+
+## Catálogo de múltiplos módulos e funções compartilhadas
+
+Gerar um registro que reúne famílias de várias imagens, sem recompilar o
+executável a cada seleção de IRX. Cada imagem mantém seu diretório, identidade
+completa e guardas. Máscaras e bits fixos iguais devem normalizar para o mesmo
+descritor, independentemente da base usada no inspector.
+
+Para operações I e J/JAL, também compartilhar a forma compilada quando o
+imediato/target é constante no arquivo original. Nesse caso a guarda continua
+exigindo a palavra completa, pois a máscara de relocation é zero. Passar o
+operando ao callback não permite variar opcode/registradores nem relaxa a
+identidade do código. Formas sem operando compartilhável continuam fixas.
+
+Emitir funções em um pool separado, instanciado uma vez por forma, dividido em
+64 arquivos por hash estável. Os diretórios somente referenciam as funções;
+não incluem suas definições. Acrescentar um módulo deve preservar arquivos
+anteriores que não dependem dele. Identidades duplicadas podem ser deduplicadas
+apenas quando tamanho, máscaras e todos os bits fixos coincidem.
+
+O manifesto JSON declara somente basenames C++ gerados, schema e inventário.
+CMake valida o schema, os nomes, a existência e os hashes dos arquivos,
+incluindo o header de semântica. Mudanças nesses arquivos exigem nova validação
+antes do build, mesmo sem alteração no manifesto. A configuração
+estrita usa esse catálogo sem interpretador IOP. A integração experimental ao
+PS2Runtime exige explicitamente catálogo e interpretador desabilitado.
+
+Validar primeiro deduplicação, bases, estabilidade incremental, guardas e links
+com dois IRX sintéticos. Depois compilar o catálogo dos 11 IRX externos da ISO
+e observar todos os startups, incluindo falhas, sem inventar serviços. Registrar
+resultados por módulo; não declarar M4/jogo aprovado a partir de startup.

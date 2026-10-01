@@ -9,6 +9,7 @@ option(PS2X_ENABLE_RUNNER_UNITY_BUILD "Build ps2EntryRunner with CMake unity bui
 set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 32 CACHE STRING "Unity build batch size for ps2EntryRunner")
 option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2EntryRunner" ON)
 option(PS2X_ENABLE_RELEASE_IPO "Enable whole-program optimization/LTO for final release packaging" OFF)
+option(PS2X_RUNTIME_NATIVE_IOP "Use an offline compiled IOP catalog in PS2Runtime (experimental)" OFF)
 option(PS2X_FAST_ITERATION "Use -O1 and no LTO for fast development relinks" ON)
 option(PS2X_FAST_ITERATION_OPTIMIZE_VU "Use -O2 for private VU sources during fast iteration" ON)
 option(PS2X_FAST_ITERATION_OPTIMIZE_GS_CPU "Use -O2 with FP contraction disabled for the private CPU GS backend" OFF)
@@ -633,6 +634,13 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+if(PS2X_RUNTIME_NATIVE_IOP)
+    if(PS2X_IOP_ENABLE_INTERPRETER OR NOT TARGET ps2_iop_compiled_catalog)
+        message(FATAL_ERROR "Native runtime IOP requires a compiled catalog and PS2X_IOP_ENABLE_INTERPRETER=OFF")
+    endif()
+    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_RUNTIME_NATIVE_IOP=1)
+    target_link_libraries(ps2_runtime PUBLIC ps2_iop_compiled_catalog)
+endif()
 if(UNIX AND NOT APPLE AND NOT PS2X_IS_ANDROID)
     target_link_libraries(ps2_runtime PRIVATE ${CMAKE_DL_LIBS})
     # Native overlay DSOs reuse runtime methods exported by the host runner.

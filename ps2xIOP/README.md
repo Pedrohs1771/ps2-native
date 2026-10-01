@@ -9,7 +9,9 @@ Constructing the subsystem with an `IopNativeProgram` requires compiled entries;
 missing or changed instructions fail with `UNSEEN_CODE` and never use the
 interpreter. `PS2X_IOP_ENABLE_INTERPRETER=OFF` excludes the diagnostic interpreter
 from the library and makes the default constructor require a native bank too.
-The game runtime has not yet been configured with commercial IOP module banks.
+The runtime defaults to the diagnostic configuration. An experimental native
+IOP catalog option has passed original HKSIF startup through its actual adapter;
+complete commercial game execution remains unqualified.
 
 ## Execution policy
 
@@ -82,6 +84,8 @@ already relocated RAM words → offline C++ generation → host compiler
 The converter is `lab/generate_iop_bank.py`. It covers every aligned word in
 the supplied RAM range, including interior entries, with fixed instruction
 parameters. The runtime reads the live word only to verify its identity.
+Parameterized kernels also extract admitted immediate/jump operands after the
+full bound-word guard; opcode and register fields remain compiled constants.
 The dispatcher owns its entry directory; callbacks must remain loaded while
 the subsystem uses the bank. Its ABI is internal and not installed for third
 party use yet.
@@ -92,6 +96,18 @@ range are taken from loader metadata. A native startup probe accepts generated
 bank C++ through `NEXO_IOP_BANK_CPP`; the diagnostic startup probe is a separate
 target. Both record their scope and reject unsupported external host operations.
 See [the laboratory guide](../lab/README.md) for the complete commands.
+
+`--family-catalog` generates a shared operation pool and per-image directories for
+multiple IRX files. Set `NEXO_IOP_BANK_MANIFEST` instead of `NEXO_IOP_BANK_CPP` to
+link it. CMake verifies source/header hashes before building. Stable hash shards
+and unchanged-file preservation support incremental compilation. The root
+`PS2X_FAST_ITERATION` profile compiles the IOP library and catalog with
+`-O1 -fno-lto`, with IPO disabled.
+
+At the root, `PS2X_RUNTIME_NATIVE_IOP=ON` requires a compiled catalog and
+`PS2X_IOP_ENABLE_INTERPRETER=OFF`. The laboratory runtime probe loads modules
+through the real adapter without initializing a window. This option covers IOP
+only; EE/VU, complete services and final game qualification are separate gates.
 
 The original bank binds absolute physical addresses. The optional IRX family
 frontend adds full source-image identity and binding across loader-selected

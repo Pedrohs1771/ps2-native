@@ -41,7 +41,11 @@ namespace ps2x::iop::detail
                      entry.relocationMask != 0x03ffffffu && entry.relocationMask != 0xffffffffu))
                     throw std::invalid_argument("invalid IOP native module entry/mask");
                 const bool operand = IopNativeAccess::validRelocationOperand(entry.instruction, entry.relocationMask);
-                if ((entry.relocationMask == 0u && (!entry.execute || entry.executeOperand)) ||
+                const bool fixedOperand = IopNativeAccess::validRelocationOperand(entry.instruction, 0xffffu) ||
+                                          IopNativeAccess::validRelocationOperand(entry.instruction, 0x03ffffffu);
+                if ((entry.relocationMask == 0u &&
+                     ((entry.execute != nullptr) == (entry.executeOperand != nullptr) ||
+                      (entry.executeOperand && !fixedOperand))) ||
                     (entry.relocationMask != 0u && (entry.execute || (operand != (entry.executeOperand != nullptr)))))
                     throw std::invalid_argument("invalid IOP native module operation");
             }

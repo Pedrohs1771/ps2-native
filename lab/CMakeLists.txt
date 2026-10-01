@@ -8,6 +8,11 @@ target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_compile_definitions(ps2_runtime PRIVATE PS2X_NEXO_LAB=1)
 target_compile_features(ps2_runtime PRIVATE cxx_std_20)
 
+add_executable(nexo_iop_runtime_probe src/iop_runtime_probe_main.cpp tests/empty_ee_table.cpp)
+target_include_directories(nexo_iop_runtime_probe PRIVATE include)
+target_compile_definitions(nexo_iop_runtime_probe PRIVATE NEXO_IOP_RUNTIME_PROBE_NATIVE=$<BOOL:${PS2X_RUNTIME_NATIVE_IOP}>)
+target_link_libraries(nexo_iop_runtime_probe PRIVATE ps2_runtime)
+
 add_library(nexo_vu_snapshot INTERFACE)
 target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(nexo_vu_snapshot INTERFACE ps2_runtime)

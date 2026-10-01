@@ -17,6 +17,9 @@
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
+#if defined(PS2X_RUNTIME_NATIVE_IOP) && PS2X_RUNTIME_NATIVE_IOP
+const ps2x::iop::detail::IopNativeProgram &compiledIopProgram();
+#endif
 #if PS2X_NEXO_LAB
 #include "nexo/vif_capture.h"
 #endif
@@ -668,7 +671,11 @@ PS2Runtime::PS2Runtime()
             ps2_log::log_stream().setstate(std::ios::badbit);
     });
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
+#if defined(PS2X_RUNTIME_NATIVE_IOP) && PS2X_RUNTIME_NATIVE_IOP
+    m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost, compiledIopProgram());
+#else
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
+#endif
 
     m_eeScheduler = std::make_unique<EeScheduler>(*this);
 
