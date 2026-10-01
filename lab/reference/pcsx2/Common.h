@@ -15,7 +15,10 @@ using u32=uint32_t; using s32=int32_t; using u64=uint64_t; using s64=int64_t;
 using u128=__uint128_t; using s128=__int128_t; using uint=unsigned int;
 #define __fi
 #define __ri
-#define VUM_LOG(...) ((void)0)
+void referenceVuDiagnostic(const char* function);
+// Diagnostic arguments remain unevaluated, just as in the disabled logger.
+// The pinned interpreter calls IdebugUPPER after both issue-stall checks.
+#define VUM_LOG(...) referenceVuDiagnostic(__func__)
 #define CPU_LOG(...) ((void)0)
 #define pxFail(message) throw std::runtime_error(message)
 #define jNO_DEFAULT default: throw std::runtime_error("unsupported upstream GIF flag")

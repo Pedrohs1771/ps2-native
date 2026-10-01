@@ -131,7 +131,8 @@ int main(int argc,char** argv)
 {
     try
     {
-        if (argc!=3) throw std::invalid_argument("usage: nexo_vif_pcsx2_reference <observed-case> <new-output-directory>");
+        const bool trace=argc==4 && std::string_view(argv[3])=="--issue-trace";
+        if (argc!=3 && !trace) throw std::invalid_argument("usage: nexo_vif_pcsx2_reference <observed-case> <new-output-directory> [--issue-trace]");
         unsetenv("PS2X_CAPTURE_SCENE"); setenv("PS2X_FUNCTION_TRACE","0",1);
         const std::filesystem::path directory(argv[1]),output(argv[2]);
         if (std::filesystem::exists(output)) throw std::invalid_argument("reference output must be a new directory");
@@ -148,7 +149,9 @@ int main(int argc,char** argv)
             if (e.kind==1 && e.args[4]>=expectedBanks.size())
                 throw std::invalid_argument("recorded callback refers to an absent code bank");
         if (seed.fbrst || seed.vpuStat) throw std::invalid_argument("reference initial domain excludes VU0 activity and interrupt enables");
-        std::vector<uint8_t> vif,gif,gs,code,data,events,projection,chunks;
+        std::vector<uint8_t> vif,gif,gs,code,data,events,projection,chunks,issues;
+        std::vector<size_t> issueStarts;
+        size_t issueCount=0;
         std::vector<VuReferenceProjection> callbackOutputs;
         std::vector<std::vector<uint8_t>> banks;
         uint64_t ns=0; VuReferenceProjection final;
@@ -171,9 +174,11 @@ int main(int argc,char** argv)
                 m.submitGifPacket(GifPathId::Path1,packet.data(),uint32_t(packet.size()));
                 if (!runtime->gifArbiter().empty()) throw std::runtime_error("reference domain excludes suspended GIF delivery");
             });
+            if (trace) reference.enableIssueTrace();
             const auto execute=[&](bool fresh,uint32_t pc,uint32_t top,uint32_t itop)
             {
                 if (callbackOutputs.size()>=256) throw std::runtime_error("reference callback budget exceeded");
+                if (trace) issueStarts.push_back(reference.issues().size());
                 reference.execute(fresh,pc,top,itop); callbackOutputs.push_back(reference.projection());
             };
             m.setVu1MscalCallback([&](uint32_t pc,uint32_t top,uint32_t itop) { execute(true,pc,top,itop); });
@@ -190,6 +195,14 @@ int main(int argc,char** argv)
             a(uint32_t(reference.chunks().size()));
             for (const auto& c:reference.chunks()) { a(c.cycle); a(c.packetEnd); a(c.bytes); }
             chunks=a.finish();
+            if (trace)
+            {
+                binary::Writer writer({'N','E','X','O','V','P','I',0},2,6u*1024u*1024u);
+                issueCount=reference.issues().size(); writer(uint32_t(issueCount));
+                for (const auto& issue:reference.issues())
+                { writer(issue.cycle); writer(issue.pc); writer(issue.lower); writer(issue.upper); }
+                issues=writer.finish();
+            }
         }
         VU1Interpreter model; VuSnapshotCodec::restore(model,expected.vu);
         if (!recorded.empty() && recorded.back().cycle>model.state().cycles)
@@ -252,7 +265,10 @@ int main(int argc,char** argv)
                     << ",\"recorded_elapsed\":" << end-expectedStarts[i] << '}';
             }
         }
-        report << "]}\n";
+        report << "],\"issue_trace\":{\"enabled\":" << (trace?"true":"false")
+            << ",\"clock_phase\":\"upstream_after_leading_tick_and_issue_stalls\",\"count\":" << issueCount << ",\"callback_starts\":[";
+        for (size_t i=0;i<issueStarts.size();++i) { if (i) report << ','; report << issueStarts[i]; }
+        report << "]}}\n";
         if (!std::filesystem::create_directory(output)) throw std::runtime_error("cannot exclusively create reference output directory");
         write(output/"reference-events.nexo",events); write(output/"reference-chunks.nexo",chunks);
         write(output/"reference-vu-projection.nexo",projection); write(output/"reference-vif.nexo",vif);
@@ -262,6 +278,7 @@ int main(int argc,char** argv)
         callbackWriter(uint32_t(callbackOutputs.size()));
         for (const auto& state:callbackOutputs) callbackWriter(encodeProjection(state));
         write(output/"reference-callbacks.nexo",callbackWriter.finish());
+        if (trace) write(output/"reference-issues.nexo",issues);
         write(output/"report.json",report.str()); write(output/".complete",std::array<uint8_t,1>{1});
         std::cout << report.str(); return equal?0:2;
     }

@@ -1,6 +1,7 @@
 #include "MiniTest.h"
 #include "nexo/vu_snapshot.h"
 #include "nexo/vu_replay.h"
+#include "nexo/canonical_binary.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_vu1.h"
@@ -129,6 +130,28 @@ struct CaptureDirectory
         return result;
     }
 };
+struct CaptureOption
+{
+    std::string name;
+    std::optional<std::string> previous;
+    CaptureOption(const char* key,const char* value):name(key)
+    {
+        if (const char* old=std::getenv(key)) previous=old;
+#ifdef _WIN32
+        if (_putenv_s(key,value)) throw std::runtime_error("cannot configure diagnostic option");
+#else
+        if (setenv(key,value,1)) throw std::runtime_error("cannot configure diagnostic option");
+#endif
+    }
+    ~CaptureOption()
+    {
+#ifdef _WIN32
+        _putenv_s(name.c_str(),previous?previous->c_str():"");
+#else
+        if (previous) setenv(name.c_str(),previous->c_str(),1); else unsetenv(name.c_str());
+#endif
+    }
+};
 
 std::vector<uint8_t> read(const std::filesystem::path &path)
 {
@@ -219,8 +242,36 @@ int main()
             t.Equals(directories.size(), size_t(1), "Fresh call consumes the capture request once");
             if (directories.size() != 1) return;
             checkCapture(t, directories.front(), *fx, *vu, 5);
+            t.IsFalse(std::filesystem::exists(directories.front()/"issues.nexo"),"Full issue histories are opt-in");
             fx->run(*vu, 1, false);
             t.Equals(capture.captures().size(), size_t(1), "No additional capture without another request");
+        });
+
+        tc.Run("portable full issue trace retains the beginning beyond the legacy ring",[](TestCase& t)
+        {
+            CaptureOption enabled("PS2X_CAPTURE_VU_ISSUES","1");
+            CaptureOption continuous("PS2X_CAPTURE_VU_CONTINUOUS","1");
+            auto fx=std::make_unique<Fixture>(); auto vu=std::make_unique<VU1Interpreter>();
+            for (uint32_t pc=0;pc<4816;pc+=8) pair(fx->memory.getVU1Code(),pc,lowerNop);
+            pair(fx->memory.getVU1Code(),4800,lowerNop,nop|0x40000000u);
+            CaptureDirectory capture; fx->run(*vu,700,true);
+            auto directories=capture.captures(); t.Equals(directories.size(),size_t(1),"One complete microcall was captured");
+            if (directories.size()!=1) return;
+            t.Equals(read(directories.front()/".issue-complete"),std::vector<uint8_t>{1},"A complete full issue history is explicitly marked");
+            const auto bytes=read(directories.front()/"issues.nexo");
+            ps2native::nexo::binary::Reader reader(bytes,{'N','E','X','O','V','P','I',0},1,6u*1024u*1024u);
+            uint32_t count=0; reader(count); t.Equals(count,602u,"Both end pairs and the first 600 pairs remain available");
+            for (uint32_t i=0;i<count;++i)
+            {
+                uint64_t cycle; uint32_t pc,lower,upper;
+                reader(cycle); reader(pc); reader(lower); reader(upper);
+                t.Equals(pc,i*8u,"The trace retains the beginning and the complete PC sequence");
+                t.Equals(cycle,uint64_t(i),"The model's pre-issue cycle is retained");
+            }
+            reader.finish();
+            t.IsTrue(std::filesystem::exists(capture.path/".vu-request"),"Explicit continuous capture rearms after publication");
+            fx->run(*vu,700,true);
+            t.Equals(capture.captures().size(),size_t(2),"The next callback receives its own history");
         });
 
         tc.Run("MSCNT diagnostics capture the pending pipeline before resuming", [](TestCase &t)

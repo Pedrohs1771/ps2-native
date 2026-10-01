@@ -24,6 +24,11 @@ struct VuReferenceChunk
     bool packetEnd=false;
     std::vector<uint8_t> bytes;
 };
+struct VuReferenceIssue
+{
+    uint64_t cycle=0; // Upstream clock after its leading tick and issue stalls.
+    uint32_t pc=0,lower=0,upper=0;
+};
 class Pcsx2Vu1Reference
 {
     struct Impl;
@@ -42,5 +47,9 @@ public:
     VuReferenceProjection projection() const;
     const std::vector<VuReferenceChunk>& chunks() const;
     uint64_t cycles() const;
+    // Observes the unmodified core's upper-dispatch diagnostic point. Disabled
+    // by default; enable only before the first microcall of this machine.
+    void enableIssueTrace();
+    const std::vector<VuReferenceIssue>& issues() const;
 };
 }

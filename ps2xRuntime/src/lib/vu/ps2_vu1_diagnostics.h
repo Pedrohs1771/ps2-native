@@ -3,12 +3,14 @@
 #include "runtime/ps2_vu1.h"
 #if PS2X_NEXO_LAB
 #include "nexo/vu_snapshot.h"
+#include "nexo/canonical_binary.h"
 #endif
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -36,6 +38,9 @@ struct Capture
     std::vector<uint8_t> path1Events{'N','E','X','O','G','I','F',0, 1,0,0,0, 0,0,0,0};
     uint32_t path1Count = 0;
     bool path1RecordingFailed = false;
+    struct Issue { uint64_t cycle; uint32_t pc,lower,upper; };
+    std::vector<Issue> fullIssues;
+    bool issueTraceEnabled=false,continuousIssueCapture=false,issueRecordingFailed=false;
 #endif
     std::array<TraceEntry, 512> trace{};
     uint64_t issues = 0, startCycle = 0, codeGeneration = 0;
@@ -58,6 +63,10 @@ struct Capture
             result->input = vu.state();
 #if PS2X_NEXO_LAB
             result->inputCanonical = ps2native::nexo::VuSnapshotCodec::encode(vu);
+            const char* issues=std::getenv("PS2X_CAPTURE_VU_ISSUES");
+            result->issueTraceEnabled=issues && std::strcmp(issues,"1")==0;
+            const char* continuous=std::getenv("PS2X_CAPTURE_VU_CONTINUOUS");
+            result->continuousIssueCapture=result->issueTraceEnabled && continuous && std::strcmp(continuous,"1")==0;
 #endif
             result->code.assign(code, code + codeSize);
             result->data.assign(data, data + dataSize);
@@ -81,6 +90,17 @@ struct Capture
         auto &entry = trace[issues++ % trace.size()];
         entry = {cycle, state.pc, lower, upper, state.status, state.mac, state.clip, {}, state};
         std::copy(std::begin(state.vi), std::end(state.vi), entry.vi.begin());
+#if PS2X_NEXO_LAB
+        if (issueTraceEnabled && !issueRecordingFailed)
+        {
+            try
+            {
+                if (fullIssues.size()>=262144) throw std::runtime_error("VU issue trace exceeded its bound");
+                fullIssues.push_back({cycle,state.pc,lower,upper});
+            }
+            catch (...) { issueRecordingFailed=true; }
+        }
+#endif
     }
 
 #if PS2X_NEXO_LAB
@@ -138,6 +158,14 @@ struct Capture
             binary("input-state.nexo", inputCanonical.data(), inputCanonical.size());
             binary("output-state.nexo", outputCanonical.data(), outputCanonical.size());
             binary("path1-events.nexo", path1Events.data(), path1Events.size());
+            if (issueTraceEnabled)
+            {
+                if (issueRecordingFailed || fullIssues.size()!=issues) throw std::runtime_error("incomplete VU issue history");
+                ps2native::nexo::binary::Writer a({'N','E','X','O','V','P','I',0},1,6u*1024u*1024u);
+                a(uint32_t(fullIssues.size()));
+                for (const auto& issue:fullIssues) { a(issue.cycle); a(issue.pc); a(issue.lower); a(issue.upper); }
+                const auto encoded=a.finish(); binary("issues.nexo",encoded.data(),encoded.size());
+            }
 #endif
             const uint64_t count = std::min<uint64_t>(issues, trace.size());
             // One local-ABI VU1State per ISSUE, in the same chronological
@@ -171,6 +199,20 @@ struct Capture
             }
             out.close();
             if (!out) throw std::runtime_error("cannot write VU instruction trace");
+#if PS2X_NEXO_LAB
+            if (issueTraceEnabled)
+            {
+                const uint8_t complete=1; binary(".issue-complete",&complete,1);
+                if (continuousIssueCapture)
+                {
+                    // Rearm only this explicitly opted-in laboratory case.
+                    // Consumers must still check all expected callback receipts.
+                    std::ofstream marker(directory.parent_path()/".vu-request",std::ios::binary|std::ios::trunc);
+                    marker.put(1); marker.close();
+                    if (!marker) throw std::runtime_error("cannot rearm continuous VU issue capture");
+                }
+            }
+#endif
             std::fprintf(stderr, "[vu-capture] directory=%s\n", directory.string().c_str());
         }
         catch (const std::exception &error)

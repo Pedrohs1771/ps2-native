@@ -110,13 +110,93 @@ The current replay is `tested_only`; `full_reference_qualified`,
 `final_package_qualified`, and `whole_gameplay_qualified` remain false.
 The measured host time for this one call is not a gameplay FPS measurement.
 
-## Next diagnostic work
+## Complete instruction issue traces
+
+Tracing is optional and disabled by default. The following commands replay the
+same original VIF input with the original callback sequence. They do not open
+a window or drive a running game process. All output directories must be new.
+
+```sh
+cmake --build build --target nexo_vif_issue_trace nexo_vif_pcsx2_reference -j 4
+env -u DISPLAY -u WAYLAND_DISPLAY build/lab/nexo_vif_issue_trace \
+  /absolute/path/to/observed-case /new/model-trace
+env -u DISPLAY -u WAYLAND_DISPLAY build/lab/nexo_vif_pcsx2_reference \
+  /absolute/path/to/observed-case /new/reference-trace --issue-trace
+# The identified case returns 2: its timing disagreement is retained.
+python3 lab/compare_vu_issue_traces.py \
+  --case /absolute/path/to/observed-case --model /new/model-trace \
+  --reference /new/reference-trace --output /new/timing-map.json
+```
+
+The model records every pair, including histories longer than the legacy
+512-entry diagnostic ring. Each callback has its own complete receipt and
+canonical input/output state. The reference uses the pinned interpreter's
+upper-dispatch logging point after its leading cycle tick and issue stalls.
+The unchanged upstream core is not patched to add observations. Its shim
+identifies the existing diagnostic call; diagnostic arguments remain unevaluated.
+
+`NEXOVPI\0` uses the version-1 CRC32 envelope. Variant 1 means the model issue
+point and variant 2 means the upstream dispatch point. The payload is a u32
+count followed by cycle u64, byte-PC u32, lower-word u32, and upper-word u32.
+Each history is bounded at 262,144 pairs and 6 MiB. The adapter's identified
+coordinate relation is `model issue = reference dispatch clock - 1`. Both raw
+clocks are retained; this relation describes logging phases and does not remove
+stalls or end-of-program drain time.
+
+The mapper verifies receipts, checksums, callback partitions, original callback
+arguments, full code-bank bytes, and clock horizons. A changed PC, instruction,
+or pair count stops timing alignment. It reports the first disagreement and
+every change in accumulated issue delta, then separately reports the tail from
+the last issue to callback completion. Input and output digests bind this map
+to its observed artifacts.
+
+## Observed timing decomposition
+
+The complete original-case trace contains **3,761 identical instruction pairs**
+across nine callbacks. Enabling tracing preserves the model's entire recorded
+output state and event stream. The independent reference also preserves its
+untraced architectural outputs, packets, and cycle count.
+
+| Callback | Pairs | Last issue delta | Model tail | Reference tail | Elapsed delta |
+|---|---:|---:|---:|---:|---:|
+| 0 | 254 | 8 | 14 | 1 | 21 |
+| 1 | 254 | 8 | 14 | 1 | 21 |
+| 2 | 255 | 10 | 1 | 1 | 10 |
+| 3 | 245 | 10 | 1 | 1 | 10 |
+| 4 | 412 | 11 | 14 | 1 | 24 |
+| 5 | 412 | 11 | 14 | 1 | 24 |
+| 6 | 1,105 | 16 | 74 | 1 | 89 |
+| 7 | 412 | 11 | 14 | 1 | 24 |
+| 8 | 412 | 11 | 14 | 1 | 24 |
+
+All values are guest cycles. For each callback, elapsed delta equals last
+issue delta plus model tail minus reference tail. Totals are **96 issue cycles
+and 151 tail cycles**, accounting for the entire 247-cycle disagreement.
+
+Bank 0 first differs at byte-PC `0x148`, lower word `0x800f18f0`: an integer add
+consuming VI15 after ILW. Bank 1 first differs at byte-PC `0x28`, lower word
+`0x80016b70`: an integer add consuming the preceding loaded VI registers.
+The model waits for its four-cycle pending VI writes. In the pinned upstream
+interpreter, `_vuRegsILW` declares four cycles but `_vuTestLowerStalls` only
+dispatches integer dependency stall checks for the branch pipeline. ILW writes
+the upstream VI value immediately; IADD can therefore issue before that load's
+declared completion. This is a difference between implementations, not proof
+that either implementation's timing agrees with physical hardware.
+
+At E termination the upstream core clears its VU-running bit before flushing
+pending XGKICK data. The final packet transfer then does not advance its VU
+clock. The model's `flushPipelines` advances cycles while pending transfers
+drain. Two reduced cross-engine regression cases preserve these observations:
+ILW followed by dependent IADD, and an E-terminated XGKICK IMAGE packet compared
+with the same two-pair NOP program. They deliberately preserve timing
+disagreements while checking the loaded value and completed transfer.
+
+## Remaining timing obligations
 
 Retain exact original input, source, executable, policy, and output identities.
-Locate the first instruction timing disagreement using pair-level traces of
-both engines. Distinguish instruction issue stalls, pipeline completion, and
-XGKICK drain timing. Construct independent microtests for the implicated
-dependency before changing the model. Do not subtract a constant, reset a
+Use the complete trace and reduced microtests to establish the required
+hardware timing and observable device boundaries before changing the model.
+Do not subtract a fitted constant, reset a
 clock between callbacks, or adopt every PCSX2 approximation as hardware truth.
 
 Then expand the input-state relation beyond reset, execute on a second

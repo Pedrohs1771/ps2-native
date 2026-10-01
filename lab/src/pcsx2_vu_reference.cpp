@@ -24,6 +24,7 @@ struct UpstreamOwnership
     ~UpstreamOwnership() { upstreamOwned.clear(std::memory_order_release); }
 };
 std::function<void(std::span<const uint8_t>,bool,uint64_t)> receiveChunk;
+std::function<void()> receiveIssue;
 std::vector<uint8_t> identifiedResetSeed()
 {
     // Fixed schema-v1 domain, independent of the current model constructor.
@@ -40,6 +41,10 @@ std::vector<uint8_t> identifiedResetSeed()
     put32(seed,20,ps2native::nexo::binary::checksum(seed));
     return seed;
 }
+}
+void referenceVuDiagnostic(const char* function)
+{
+    if (receiveIssue && std::strcmp(function,"_vu1ExecUpper")==0) receiveIssue();
 }
 u32 ReferenceGifUnit::TransferGSPacketData(GIF_TRANSFER_TYPE type,u8* memory,u32 size,bool aligned)
 {
@@ -59,6 +64,8 @@ struct Pcsx2Vu1Reference::Impl
     PacketReceiver receiver;
     std::vector<uint8_t> pending;
     std::vector<VuReferenceChunk> trace;
+    std::vector<VuReferenceIssue> issueTrace;
+    bool issueTraceEnabled=false,started=false;
     size_t observedBytes=28; // Canonical chunk envelope + count.
     bool failed=false;
     Impl(std::span<const uint8_t> seed,std::span<uint8_t> micro,std::span<uint8_t> data,PacketReceiver target):receiver(std::move(target))
@@ -89,7 +96,7 @@ struct Pcsx2Vu1Reference::Impl
             if (end) { receiver(pending); pending.clear(); }
         };
     }
-    ~Impl() { receiveChunk={}; VU1.Mem=nullptr; VU1.Micro=nullptr; }
+    ~Impl() { receiveChunk={}; receiveIssue={}; VU1.Mem=nullptr; VU1.Micro=nullptr; }
     void check() const
     {
         if (thread!=std::this_thread::get_id()) throw std::runtime_error("reference owner cannot move across threads");
@@ -117,6 +124,7 @@ void Pcsx2Vu1Reference::execute(bool fresh,uint32_t pc,uint32_t top,uint32_t ito
         VU0.VI[REG_VPU_STAT].UL|=0x100;
         // Isolated monotonic VU clock; no EE scheduler is being simulated.
         cpuRegs.cycle=VU1.cycle;
+        impl->started=true;
         CpuIntVU1.Execute(budget);
         if (VU1.cycle-cpuRegs.cycle>budget || (VU0.VI[REG_VPU_STAT].UL&0x100) ||
             VU1.xgkickenable || !impl->pending.empty())
@@ -136,4 +144,19 @@ VuReferenceProjection Pcsx2Vu1Reference::projection() const
 }
 const std::vector<VuReferenceChunk>& Pcsx2Vu1Reference::chunks() const { impl->check(); return impl->trace; }
 uint64_t Pcsx2Vu1Reference::cycles() const { impl->check(); return VU1.cycle; }
+void Pcsx2Vu1Reference::enableIssueTrace()
+{
+    impl->check();
+    if (impl->started || impl->issueTraceEnabled) throw std::invalid_argument("enable reference issue tracing once before execution");
+    impl->issueTraceEnabled=true;
+    receiveIssue=[this]
+    {
+        if (impl->issueTrace.size()>=262144) throw std::runtime_error("reference issue trace exceeded its bound");
+        const uint32_t pc=(VU1.VI[REG_TPC].UL-8u)&0x3fffu;
+        uint32_t lower=0,upper=0;
+        std::memcpy(&lower,VU1.Micro+pc,4); std::memcpy(&upper,VU1.Micro+pc+4,4);
+        impl->issueTrace.push_back({VU1.cycle,pc,lower,upper});
+    };
+}
+const std::vector<VuReferenceIssue>& Pcsx2Vu1Reference::issues() const { impl->check(); return impl->issueTrace; }
 }

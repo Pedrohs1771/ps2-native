@@ -26,6 +26,8 @@ target_include_directories(nexo_vif_capture_tests PRIVATE "${PROJECT_SOURCE_DIR}
 target_link_libraries(nexo_vif_capture_tests PRIVATE nexo_vif_replay_support nexo_vu_native_frontend)
 add_executable(nexo_vif_replay src/vif_replay_main.cpp tests/empty_ee_table.cpp)
 target_link_libraries(nexo_vif_replay PRIVATE nexo_vif_replay_support)
+add_executable(nexo_vif_issue_trace src/vif_issue_trace_main.cpp tests/empty_ee_table.cpp)
+target_link_libraries(nexo_vif_issue_trace PRIVATE nexo_vif_replay_support)
 
 add_library(nexo_vu_replay_support STATIC src/vu_replay.cpp)
 target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
@@ -179,7 +181,7 @@ target_link_libraries(nexo_vu_snapshot_tests PRIVATE nexo_vu_replay_support)
 
 foreach(nexo_target nexo_vu_replay_support nexo_vu_replay nexo_vu_snapshot_tests
         nexo_vu_native nexo_vu_native_frontend nexo_vu_runtime_binding nexo_vu_runtime_replay_support
-        nexo_vu_native_tests nexo_vu_inspect nexo_device_snapshot_tests nexo_vif_replay_support nexo_vif_capture_tests nexo_vif_replay)
+        nexo_vu_native_tests nexo_vu_inspect nexo_device_snapshot_tests nexo_vif_replay_support nexo_vif_capture_tests nexo_vif_replay nexo_vif_issue_trace)
     set_property(TARGET ${nexo_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         target_compile_options(${nexo_target} PRIVATE -O1 -fno-lto)
@@ -189,6 +191,8 @@ endforeach()
 if(BUILD_TESTING)
     add_test(NAME nexo_pcsx2_reference_source_tests COMMAND "${Python3_EXECUTABLE}"
         -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_pcsx2_reference_source.py)
+    add_test(NAME nexo_vu_timing_map_tests COMMAND "${Python3_EXECUTABLE}"
+        -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_vu_timing_map.py)
     add_test(NAME nexo_vu_snapshot_tests COMMAND nexo_vu_snapshot_tests)
     add_test(NAME nexo_device_snapshot_tests COMMAND nexo_device_snapshot_tests)
     add_test(NAME nexo_vif_capture_tests COMMAND nexo_vif_capture_tests)

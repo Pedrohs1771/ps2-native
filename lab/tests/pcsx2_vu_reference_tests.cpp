@@ -2,6 +2,8 @@
 #include "nexo/pcsx2_vu_reference.h"
 #include "nexo/vu_snapshot.h"
 #include "runtime/ps2_vu1.h"
+#include "runtime/ps2_memory.h"
+#include "runtime/gs/gs_frontend.h"
 #include <cstring>
 #include <stdexcept>
 #include <future>
@@ -19,6 +21,18 @@ struct Fixture
     std::unique_ptr<Pcsx2Vu1Reference> reference()
     { return std::make_unique<Pcsx2Vu1Reference>(seed,code,data,[&](auto bytes)
         { packets.emplace_back(bytes.begin(),bytes.end()); }); }
+    VU1State model()
+    {
+        auto memory=std::make_unique<PS2Memory>();
+        if (!memory->initialize()) throw std::runtime_error("cannot initialize model timing fixture");
+        GS gs; gs.init(memory->getGSVRAM(),PS2_GS_VRAM_SIZE,&memory->gs());
+        std::memcpy(memory->getVU1Code(),code.data(),code.size());
+        std::memcpy(memory->getVU1Data(),data.data(),data.size());
+        VU1Interpreter vu;
+        vu.execute(memory->getVU1Code(),PS2_VU1_CODE_SIZE,memory->getVU1Data(),
+            PS2_VU1_DATA_SIZE,gs,memory.get(),0,0,0,65536);
+        return vu.state();
+    }
 };
 template <typename F> bool rejects(F f)
 { try { f(); return false; } catch (const std::exception&) { return true; } }
@@ -91,6 +105,57 @@ int main()
             t.IsTrue(rejects([&] { Pcsx2Vu1Reference ref(f.seed,{unaligned.data()+1,16384},f.data,[](auto){}); }),
                 "Upstream typed loads require the identified memory alignment");
             auto replacement=f.reference(); t.IsNotNull(replacement.get(),"A failed import releases the upstream owner");
+        });
+        tc.Run("issue trace observes the delay pair without changing execution",[](TestCase& t)
+        {
+            Fixture f; f.pair(0,0x10010007,0x400002FF); f.pair(8,0x10020009,0x000002FF);
+            auto plain=f.reference(); plain->execute(true,0,0,0); const auto expected=plain->projection();
+            t.IsTrue(plain->issues().empty(),"Issue traces are disabled by default"); plain.reset();
+            auto ref=f.reference(); ref->enableIssueTrace(); ref->execute(true,0,0,0);
+            t.Equals(ref->projection().vi,expected.vi,"The logger does not alter architectural values");
+            t.Equals(ref->cycles(),expected.cycles,"The logger does not alter guest time");
+            t.Equals(ref->issues().size(),size_t(2),"Each upstream upper dispatch is observed once");
+            if (ref->issues().size()==2)
+            {
+                t.Equals(ref->issues()[0].pc,0u,"The observation relates to the dispatched byte PC");
+                t.Equals(ref->issues()[0].cycle,uint64_t(1),"The upstream leading tick is explicitly retained");
+                t.Equals(ref->issues()[1].pc,8u,"The E delay pair is also observed");
+                t.Equals(ref->issues()[1].lower,0x10020009u,"The original lower word is recorded");
+            }
+            t.IsTrue(rejects([&] { ref->enableIssueTrace(); }),"A partial trace cannot be enabled retrospectively");
+        });
+        tc.Run("isolates load to integer add timing without electing a hardware oracle",[](TestCase& t)
+        {
+            Fixture f;
+            // ILW.x VI1, 0(VI0); IADD VI2, VI1, VI0 [E]; NOP delay.
+            f.pair(0,0x09010000,0x000002FF);
+            f.pair(8,0x800008B0,0x400002FF); f.pair(16,0x8000033C,0x000002FF);
+            const uint32_t value=7; std::memcpy(f.data.data(),&value,4);
+            const auto model=f.model();
+            auto ref=f.reference(); ref->enableIssueTrace(); ref->execute(true,0,0,0);
+            t.Equals(uint16_t(model.vi[2]),uint16_t(7),"The model waits for and consumes the loaded value");
+            t.Equals(ref->projection().vi[2],uint16_t(7),"The upstream implementation obtains the same value");
+            t.Equals(ref->issues().size(),size_t(3),"The reduced case executes exactly three pairs");
+            if (ref->issues().size()==3)
+                t.Equals(ref->issues()[1].cycle,uint64_t(2),"Upstream IADD issues immediately after ILW");
+            t.IsTrue(model.cycles>ref->cycles(),"The load-consumer scheduling disagreement is retained");
+        });
+        tc.Run("isolates end of program XGKICK drain from instruction issue",[](TestCase& t)
+        {
+            Fixture plain; plain.pair(0,0x8000033C,0x400002FF); plain.pair(8,0x8000033C,0x000002FF);
+            const auto modelPlain=plain.model();
+            auto refPlain=plain.reference(); refPlain->execute(true,0,0,0);
+            const auto referencePlain=refPlain->cycles(); refPlain.reset();
+            Fixture kick; kick.pair(0,0x800006FC,0x400002FF); kick.pair(8,0x8000033C,0x000002FF);
+            // One EOP IMAGE tag and eight qwords of payload; no GS commands.
+            const uint64_t tag=0x8008ull|(2ull<<58); std::memcpy(kick.data.data(),&tag,8);
+            const auto modelKick=kick.model();
+            auto ref=kick.reference(); ref->enableIssueTrace(); ref->execute(true,0,0,0);
+            t.Equals(ref->cycles(),referencePlain,"Upstream end flush delivers the pending packet without advancing VU time");
+            t.IsTrue(modelKick.cycles>modelPlain.cycles,"The model accounts for pending XGKICK drain cycles");
+            t.Equals(ref->issues().size(),size_t(2),"XGKICK does not change the two-pair instruction sequence");
+            t.Equals(kick.packets.size(),size_t(1),"The end flush still emits its complete packet");
+            if (!kick.packets.empty()) t.Equals(kick.packets[0].size(),size_t(144),"The reduced packet is not shortened");
         });
     });
     return MiniTest::Run();
