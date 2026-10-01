@@ -22,6 +22,10 @@ add_executable(nexo_iop_capture_fixture tests/iop_capture_fixture.cpp)
 target_include_directories(nexo_iop_capture_fixture PRIVATE include ../ps2xIOP/tests ../ps2xIOP/src)
 target_link_libraries(nexo_iop_capture_fixture PRIVATE ps2_iop)
 
+add_executable(nexo_ee_aot_tests tests/ee_aot_tests.cpp tests/empty_ee_table.cpp)
+target_include_directories(nexo_ee_aot_tests PRIVATE ../ps2xTest/include ../ps2xRuntime/src/lib)
+target_link_libraries(nexo_ee_aot_tests PRIVATE ps2_runtime)
+
 add_library(nexo_vu_snapshot INTERFACE)
 target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(nexo_vu_snapshot INTERFACE ps2_runtime)
@@ -48,6 +52,11 @@ target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 if(BUILD_TESTING)
+    add_test(NAME nexo_ee_aot_tests COMMAND nexo_ee_aot_tests)
+    add_test(NAME nexo_ee_overlay_extract_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_extract_ee_overlay.py)
+    add_test(NAME nexo_ee_bank_catalog_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_bank_catalog.py $<TARGET_FILE:ps2_native_overlay>)
     add_test(NAME nexo_iop_runtime_backend_build_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_iop_runtime_backend_build.py)
     add_test(NAME nexo_iop_runtime_probe_cli_tests COMMAND "${Python3_EXECUTABLE}"

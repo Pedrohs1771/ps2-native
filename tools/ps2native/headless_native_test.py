@@ -78,7 +78,11 @@ def child(args: argparse.Namespace) -> None:
     os.environ["PS2X_HEADLESS_STATE"] = str(state)
     os.environ["PS2X_FUNCTION_TRACE"] = "0"
     os.environ["PS2X_TRACE_SIF_DMA"] = "0"
-    os.environ["PS2X_NATIVE_OVERLAY_DRIVER"] = str(Path(__file__).with_name("native_overlay_driver.py"))
+    if args.disable_overlay_driver:
+        os.environ.pop("PS2X_NATIVE_OVERLAY_DRIVER", None)
+    else:
+        os.environ["PS2X_NATIVE_OVERLAY_DRIVER"] = str(Path(__file__).with_name("native_overlay_driver.py"))
+    record["overlay_driver_disabled"] = args.disable_overlay_driver
     # Captures are requested explicitly in separate correctness runs. Reusing a
     # desktop diagnostic directory adds unnecessary work to timing runs.
     if args.capture_scene:
@@ -136,6 +140,8 @@ def launch(args: argparse.Namespace) -> None:
                "--iso", str(iso), "--state", str(state)]
     if args.runner:
         command += ["--runner", str(runner)]
+    if args.disable_overlay_driver:
+        command += ["--disable-overlay-driver"]
     if args.capture_scene:
         command += ["--capture-scene", str(args.capture_scene.resolve())]
 
@@ -200,6 +206,8 @@ def main() -> None:
                              help="Explicit laboratory runner; package game data remains local")
         command.add_argument("--capture-scene", type=Path,
                              help="Opt-in scene request directory for a laboratory runner")
+        command.add_argument("--disable-overlay-driver", action="store_true",
+                             help="Remove the diagnostic EE runtime compiler driver for AOT runs")
         if name == "launch":
             command.add_argument("--log", required=True, type=Path)
     screenshot = commands.add_parser("screenshot")

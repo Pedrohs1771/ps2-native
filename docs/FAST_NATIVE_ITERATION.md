@@ -23,6 +23,27 @@ when configuring an existing CMake cache.
 For a final optimized package, disable fast iteration and enable release IPO.
 Compilation alone does not validate game compatibility.
 
+## Offline EE overlay banks
+
+The experimental `PS2X_RUNTIME_AOT_EE_OVERLAYS=ON` backend consumes a hashed
+`NEXO_EE_BANK_MANIFEST`. Generation and compilation happen offline; the running
+game chooses existing callbacks by PC and source-byte identity and stops on
+uncovered code. Its private selection flag does not affect every common runtime
+object's compiler flags. The diagnostic overlay driver implementation is omitted
+from the AOT backend. See [the V0 contract](../schemas/nexo-ee-aot-v0.md).
+
+Monster House's 32 observed banks retained all 32 compiled bank objects during a
+catalog-index update; that build took 10.117 seconds. The actual game relink took
+12.757 seconds and reused its original EE objects. The first catalog build still
+required offline compilation. These measurements do not promise whole-ISO
+conversion times, complete dynamic-code coverage or gameplay compatibility.
+
+For an isolated AOT observation, pass `--disable-overlay-driver` to
+`tools/ps2native/headless_native_test.py launch` with an explicit laboratory
+runner. The helper removes the inherited diagnostic compiler driver in its owned
+child and records this choice. A miss must be diagnosed from full source/state
+identity; registering an already registered PC cannot repair a rejected version.
+
 ## Indirect calls
 
 The recompiler registers every decoded instruction boundary in every generated

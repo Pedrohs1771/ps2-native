@@ -43,7 +43,7 @@ namespace
 }
 #endif
 
-PS2Runtime::RecompiledFunction ps2xResolveNativeOverlay(PS2Runtime *runtime, uint8_t *ram, uint32_t address)
+PS2Runtime::RecompiledFunction ps2xResolveDiagnosticNativeOverlay(PS2Runtime *runtime, uint8_t *ram, uint32_t address)
 {
 #if defined(__linux__) && !defined(__ANDROID__)
     const char *driver = std::getenv("PS2X_NATIVE_OVERLAY_DRIVER");
@@ -154,7 +154,7 @@ PS2Runtime::RecompiledFunction ps2xResolveNativeOverlay(PS2Runtime *runtime, uin
     return nullptr;
 }
 
-void ps2xReleaseNativeOverlays(PS2Runtime *runtime)
+void ps2xReleaseDiagnosticNativeOverlays(PS2Runtime *runtime)
 {
 #if defined(__linux__) && !defined(__ANDROID__)
     std::lock_guard<std::mutex> lock(overlayMutex);

@@ -10,6 +10,8 @@ set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 32 CACHE STRING "Unity build batch size f
 option(PS2X_ENABLE_RUNNER_PCH "Precompile the heavy runtime headers for ps2EntryRunner" ON)
 option(PS2X_ENABLE_RELEASE_IPO "Enable whole-program optimization/LTO for final release packaging" OFF)
 option(PS2X_RUNTIME_NATIVE_IOP "Use an offline compiled IOP catalog in PS2Runtime (experimental)" OFF)
+option(PS2X_RUNTIME_AOT_EE_OVERLAYS "Use finite offline EE overlay banks and stop on uncovered code" OFF)
+set(NEXO_EE_BANK_MANIFEST "" CACHE FILEPATH "Offline generated EE bank catalog")
 option(PS2X_FAST_ITERATION "Use -O1 and no LTO for fast development relinks" ON)
 option(PS2X_FAST_ITERATION_OPTIMIZE_VU "Use -O2 for private VU sources during fast iteration" ON)
 option(PS2X_FAST_ITERATION_OPTIMIZE_GS_CPU "Use -O2 with FP contraction disabled for the private CPU GS backend" OFF)
@@ -399,7 +401,6 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
-    src/lib/ps2_native_overlay.cpp
     src/lib/ps2_vif1_interpreter.cpp
     src/lib/vu/ps2_vu1_core.cpp
     src/lib/vu/ps2_vu1_upper.cpp
@@ -418,6 +419,25 @@ target_compile_options(ps2_gs_cpu_backend PRIVATE
     "$<TARGET_PROPERTY:ps2_runtime,COMPILE_OPTIONS>")
 set_property(TARGET ps2_gs_cpu_backend PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
 target_sources(ps2_runtime PRIVATE $<TARGET_OBJECTS:ps2_gs_cpu_backend>)
+
+add_library(ps2_ee_aot OBJECT src/lib/ps2_ee_aot.cpp)
+target_include_directories(ps2_ee_aot PRIVATE "$<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>")
+target_compile_options(ps2_ee_aot PRIVATE "$<TARGET_PROPERTY:ps2_runtime,COMPILE_OPTIONS>")
+target_compile_features(ps2_ee_aot PRIVATE cxx_std_20)
+set_property(TARGET ps2_ee_aot PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+target_sources(ps2_runtime PRIVATE $<TARGET_OBJECTS:ps2_ee_aot>)
+
+add_library(ps2_runtime_ee_overlay_backend OBJECT src/lib/ps2_ee_overlay_backend.cpp)
+target_include_directories(ps2_runtime_ee_overlay_backend PRIVATE "$<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>")
+target_compile_options(ps2_runtime_ee_overlay_backend PRIVATE "$<TARGET_PROPERTY:ps2_runtime,COMPILE_OPTIONS>")
+target_compile_features(ps2_runtime_ee_overlay_backend PRIVATE cxx_std_20)
+target_compile_definitions(ps2_runtime_ee_overlay_backend PRIVATE
+    PS2X_RUNTIME_AOT_EE_OVERLAYS=$<BOOL:${PS2X_RUNTIME_AOT_EE_OVERLAYS}>)
+set_property(TARGET ps2_runtime_ee_overlay_backend PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+if(NOT PS2X_RUNTIME_AOT_EE_OVERLAYS)
+    target_sources(ps2_runtime_ee_overlay_backend PRIVATE src/lib/ps2_native_overlay.cpp)
+endif()
+target_sources(ps2_runtime PRIVATE $<TARGET_OBJECTS:ps2_runtime_ee_overlay_backend>)
 
 target_include_directories(ps2_runtime PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/iso_inspect/include")
@@ -634,6 +654,28 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+if(PS2X_RUNTIME_AOT_EE_OVERLAYS)
+    if(NOT NEXO_EE_BANK_MANIFEST)
+        message(FATAL_ERROR "AOT EE overlays require an offline catalog")
+    endif()
+    include(cmake/ee_native_catalog.cmake)
+    ee_catalog_sources("${NEXO_EE_BANK_MANIFEST}" ee_sources)
+    add_library(ps2_ee_compiled_catalog STATIC ${ee_sources})
+    target_include_directories(ps2_ee_compiled_catalog PRIVATE
+        "$<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib")
+    target_compile_features(ps2_ee_compiled_catalog PRIVATE cxx_std_20)
+    if(PS2X_STRICT_RETURN_DIAGNOSTICS)
+        target_compile_definitions(ps2_ee_compiled_catalog PRIVATE PS2X_STRICT_RETURN_DIAGNOSTICS=1)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(ps2_ee_compiled_catalog PRIVATE -O0 -fno-lto)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+            target_compile_options(ps2_ee_compiled_catalog PRIVATE -msse4.1)
+        endif()
+    endif()
+    set_property(TARGET ps2_ee_compiled_catalog PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    target_link_libraries(ps2_runtime PUBLIC ps2_ee_compiled_catalog)
+endif()
 include(cmake/iop_runtime_backend.cmake)
 ps2x_add_iop_runtime_backend(ps2_runtime ps2_runtime_iop_backend
     "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/ps2_iop_backend.cpp" "${PS2X_RUNTIME_NATIVE_IOP}")

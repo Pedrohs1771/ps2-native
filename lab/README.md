@@ -9,6 +9,66 @@ second-architecture validation and a qualified native game package remain
 unfinished. The identified independent VU engine and its timing differences are
 described in `PCSX2_VU_REFERENCE.md`.
 
+## Finite offline EE overlay catalog
+
+`extract_ee_overlay.py` recovers source snapshots and binding identities from
+identified diagnostic ELF artifacts without loading them. `generate_ee_bank_catalog.py`
+regenerates each bank offline, checks every recovered binding, isolates native
+symbols by bank namespace and emits a hashed static catalog. The opt-in
+`PS2X_RUNTIME_AOT_EE_OVERLAYS=ON` backend uses sparse physical-PC pages and complete
+declared instruction-footprint guards. It retains multiple precompiled versions
+and stops on uncovered code, including branches under diagnostic skip policies.
+The diagnostic driver implementation is omitted from this backend. The complete
+V0 contract and commands are in [`nexo-ee-aot-v0.md`](../schemas/nexo-ee-aot-v0.md).
+
+The original Monster House observation yielded **32 banks, 508,176 bindings**.
+Resuming validated recovery after replacing a quadratic symbol search took
+1.778 seconds. Initial C++ generation took 4.458 seconds. Regenerated bindings
+agreed exactly with the recovered tables; these measurements cover that observed
+corpus only. All snapshots/generated commercial sources remain local and ignored.
+
+The first native catalog/runtime/test build took 167.928 seconds with four workers
+and no LTO. The EE catalog and its test built successfully; the overall command
+then failed on an incorrectly named additional IOP target. The corrected
+incremental build took 11.515 seconds. Updating only the catalog index and manifest
+took 10.117 seconds and retained **all 32 bank objects' bytes and timestamps**.
+Relinking the actual game against EE and IOP catalogs took 12.757 seconds, using
+the existing original game objects with zero original EE game recompilations.
+
+The isolated Xvfb run had the EE diagnostic driver explicitly removed from its
+environment. The executable contains the AOT dispatcher/catalog and lacks the
+identified diagnostic EE resolver/release and generic IOP execution symbols.
+It displayed the Sony logo and autosave confirmation, then remained on a dark
+loading screen with a memory-card notice. Captures recorded 14 module loads and
+4,096 RPC requests. At the last captured checkpoint: 29,724,395 native IOP
+instructions, zero interpreted instructions and no captured native fault.
+The RPC capture limit was reached; these are subset observations, not total
+execution counters or service-fidelity evidence. VU remained diagnostic.
+
+The run automatically stopped with `EE:UNSEEN_CODE` at `0x1193880`, called from
+`0x119a458`. That PC already exists in the recovered catalog. Its first four
+logged instruction words agree with the old snapshot; the full declared
+40-byte dependency and entry/module context were not captured at the miss.
+The precise rejection reason is therefore unqualified. Adding the same address
+manually would not establish coverage. The next step is automatic miss-state
+capture and comparison, then version/family admission from exact observed bytes.
+No gameplay, save correctness, 60 FPS, Android or full campaign gate passed.
+
+The restored diagnostic build passed 65 CTest groups and 485 general runtime
+cases. The native EE profile passed its three C++ cases and four selected CTest
+groups before restoration; Python coverage includes five extractor cases,
+six catalog cases and six headless isolation cases. The current diagnostic IOP
+profile passed eight groups and the current native catalog profile passed four.
+Restoration retained 51 of 52 common runtime objects' bytes/timestamps; the
+runtime source rebuilt after its included overlay header was edited. This is
+not an unrelated whole-runtime rebuild from the backend selection flag.
+
+Evidence is under the ignored directory in `build/lab/latest-ee-aot-bank-job.txt`:
+recovered banks, manifests, command/timing records, source/binary copies, symbol
+audit, RPC observations, screenshots, unseen classification and regression logs.
+The root README's M3/publication/context/canonical-checkpoint requirements remain
+open. Finite observed coverage does not prove closure or independent fidelity.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

@@ -26,7 +26,8 @@ class HeadlessIsolationTests(unittest.TestCase):
         self.iso = root / "fixture.iso"
         self.iso.touch()
         self.args = SimpleNamespace(package=self.package, iso=self.iso, state=root / "state.json",
-                                    log=root / "game.log", runner=None, capture_scene=None)
+                                    log=root / "game.log", runner=None, capture_scene=None,
+                                    disable_overlay_driver=False)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -47,6 +48,19 @@ class HeadlessIsolationTests(unittest.TestCase):
         self.assertEqual(command[command.index("-n") + 1], "90")
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
+    def test_aot_launch_forwards_driver_disable_to_owned_child(self):
+        self.args.disable_overlay_driver = True
+        process = mock.Mock(pid=3456)
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        loaded = SimpleNamespace(returncode=0, stdout="123\n")
+        with mock.patch.object(HEADLESS.shutil, "which", return_value="available"), \
+             mock.patch.object(HEADLESS.subprocess, "run", return_value=loaded), \
+             mock.patch.object(HEADLESS.subprocess, "Popen", return_value=process) as popen, \
+             mock.patch.object(HEADLESS.signal, "signal"), mock.patch("builtins.print"):
+            HEADLESS.launch(self.args)
+        self.assertIn("--disable-overlay-driver", popen.call_args.args[0])
+
     def test_borrowed_virtual_server_is_rejected_before_runner_or_state(self):
         with mock.patch.dict(os.environ, {"DISPLAY": ":91", "XAUTHORITY": "/synthetic/auth"}), \
              mock.patch.object(Path, "read_text", return_value="2345"), \
@@ -66,20 +80,38 @@ class HeadlessIsolationTests(unittest.TestCase):
                 return "Xvfb\n"
             raise AssertionError(f"unexpected read: {path}")
         with mock.patch.dict(os.environ, {"DISPLAY": ":91", "XAUTHORITY": "/synthetic/auth",
-                                         "PS2X_CAPTURE_SCENE": "/inherited/capture"}), \
+                                         "PS2X_CAPTURE_SCENE": "/inherited/capture",
+                                         "PS2X_NATIVE_OVERLAY_DRIVER": "/inherited/driver"}), \
              mock.patch.object(Path, "read_text", autospec=True, side_effect=server_text), \
              mock.patch.object(HEADLESS.os, "getpgid", return_value=2), \
              mock.patch.object(HEADLESS.os, "getpgrp", return_value=2), \
              mock.patch.object(HEADLESS.os, "chdir"), \
              mock.patch.object(HEADLESS.os, "execv") as execute:
             HEADLESS.child(self.args)
-            self.assertNotIn("PS2X_CAPTURE_SCENE", os.environ)
+            self.assertFalse("PS2X_CAPTURE_SCENE" in os.environ,"Inherited scene capture is removed")
+            self.assertTrue("PS2X_NATIVE_OVERLAY_DRIVER" in os.environ,"Diagnostic driver is supplied")
         record = json.loads(self.args.state.read_text())
         self.assertEqual(record["xvfb_pid"], 2345)
         self.assertEqual(record["display"], ":91")
         self.assertNotIn("capture_scene", record)
         self.assertEqual(self.args.state.stat().st_mode & 0o777, 0o600)
         execute.assert_called_once()
+
+    def test_aot_child_removes_inherited_overlay_driver(self):
+        self.args.disable_overlay_driver = True
+        def server_text(path, *args, **kwargs):
+            if str(path) == "/tmp/.X91-lock": return "2345"
+            if str(path) == "/proc/2345/comm": return "Xvfb\n"
+            raise AssertionError(f"unexpected read: {path}")
+        with mock.patch.dict(os.environ, {"DISPLAY": ":91", "XAUTHORITY": "/synthetic/auth",
+                                         "PS2X_NATIVE_OVERLAY_DRIVER": "/inherited/driver"}), \
+             mock.patch.object(Path, "read_text", autospec=True, side_effect=server_text), \
+             mock.patch.object(HEADLESS.os, "getpgid", return_value=2), \
+             mock.patch.object(HEADLESS.os, "getpgrp", return_value=2), \
+             mock.patch.object(HEADLESS.os, "chdir"), \
+             mock.patch.object(HEADLESS.os, "execv"):
+            HEADLESS.child(self.args)
+            self.assertFalse("PS2X_NATIVE_OVERLAY_DRIVER" in os.environ,"AOT has no diagnostic driver")
 
     def test_capture_requires_explicit_laboratory_runner(self):
         self.args.capture_scene = self.args.state.parent / "capture"

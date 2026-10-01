@@ -1512,6 +1512,12 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
     if (RecompiledFunction native = ps2xResolveNativeOverlay(this, m_memory.getRDRAM(), address))
         return native;
 
+    if (ps2xUsesAotEeOverlays())
+    {
+        std::cerr << "[EE:UNSEEN_CODE] pc=0x" << std::hex << address << std::dec << '\n';
+        requestStop(); // An AOT miss never inherits a diagnostic continue/skip policy.
+    }
+
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
               << " tableBase=0x" << g_ps2RecompiledFunctionTableBase
               << " tableEnd=0x" << g_ps2RecompiledFunctionTableEnd
@@ -1541,6 +1547,8 @@ void PS2Runtime::setMissingFunctionPolicy(MissingFunctionPolicy policy)
 
 PS2Runtime::MissingFunctionPolicy PS2Runtime::missingFunctionPolicy() const
 {
+    if (ps2xUsesAotEeOverlays())
+        return MissingFunctionPolicy::Stop;
     return static_cast<MissingFunctionPolicy>(m_missingFunctionPolicy.load(std::memory_order_acquire));
 }
 
@@ -1558,6 +1566,9 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
 {
     const MissingFunctionPolicy policy = missingFunctionPolicy();
     const bool firstReport = !m_missingFunctionReported.exchange(true, std::memory_order_acq_rel);
+    if (firstReport && ps2xUsesAotEeOverlays())
+        std::cerr << "[EE:UNSEEN_CODE] pc=0x" << std::hex << targetPc
+                  << " source=0x" << sourcePc << std::dec << '\n';
 
     const uint32_t pc = ctx->pc;
     const uint32_t ra = static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0));
