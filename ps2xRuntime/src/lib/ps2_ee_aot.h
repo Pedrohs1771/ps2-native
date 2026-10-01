@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ps2_native_overlay_abi.h"
+#include "ps2_ee_aot_bank.h"
 
 #include <array>
 #include <span>
@@ -8,21 +8,26 @@
 
 namespace ps2native::ee_aot
 {
-    struct Bank
-    {
-        uint32_t base;
-        std::span<const uint8_t> image;
-        std::span<const PS2NativeOverlayBinding> bindings;
-    };
-
-    struct Program { std::span<const Bank> banks; };
-
     enum class Status { Ready, MissingEntry, CodeChanged, MisalignedPc, OutsideRam, NoRam };
     struct Lookup
     {
         PS2Runtime::RecompiledFunction function = nullptr;
         Status status = Status::MissingEntry;
         uint32_t versionsChecked = 0;
+    };
+    struct CandidateEvidence
+    {
+        uint32_t bank;
+        uint32_t sourceBegin;
+        std::span<const uint8_t> expected;
+        uint32_t mismatchBytes;
+        uint32_t firstMismatchOffset;
+    };
+    struct Diagnosis
+    {
+        Lookup lookup;
+        // Expected spans borrow the dispatcher's immutable image storage.
+        std::vector<CandidateEvidence> candidates;
     };
 
     // Finite callbacks only. Guards describe RAM at lookup; cache visibility,
@@ -32,6 +37,7 @@ namespace ps2native::ee_aot
     public:
         explicit Dispatcher(const Program &program);
         [[nodiscard]] Lookup lookup(const uint8_t *ram, uint32_t pc) const;
+        [[nodiscard]] Diagnosis diagnose(const uint8_t *ram, uint32_t pc) const;
         [[nodiscard]] size_t bindings() const noexcept { return m_entries.size(); }
         [[nodiscard]] size_t pages() const noexcept { return m_heads.size() / slotsPerPage; }
 

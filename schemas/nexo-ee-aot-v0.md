@@ -43,7 +43,9 @@ occurs in the game runtime.
 
 A complete manifest is written last. Failed generation can leave sources in a
 fresh output directory; those sources are not an admitted catalog. There is no
-automatic overwrite of previous cases/catalogs. The manifest records producer
+automatic overwrite of previous cases. Explicit `--extend` validates an existing
+catalog and preserves all unchanged source timestamps, as described in
+[`nexo-ee-miss-v1.md`](nexo-ee-miss-v1.md). The manifest records producer
 identity, not a qualified semantics/build fingerprint or a cache correctness
 proof. Runtime headers and compiler settings still require separate provenance.
 
@@ -88,8 +90,10 @@ their original precedence and are not newly qualified by this change.
 - Observations cannot prove that the finite catalog covers all future code.
   Unseen code stops; automatic family synthesis and full campaign exploration
   remain open.
-- The current miss log preserves PC/branch/register diagnostics. A complete
-  canonical reproducible EE/system miss checkpoint is not implemented here.
+- Opt-in miss capture now preserves copied RAM, optional canonical fields of the
+  identified EE context model and candidate footprint differences. Offline byte
+  preparation is implemented. A complete canonical reproducible EE/system miss
+  checkpoint and full-machine replay remain unimplemented.
 - Commercial snapshots and generated callbacks remain ignored local artifacts;
   the repository contains the tools and synthetic tests.
 - Passing the synthetic tests or displaying game logos/menus does not establish

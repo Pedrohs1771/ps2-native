@@ -7,6 +7,27 @@
 
 namespace ps2native::ee_aot
 {
+    Diagnosis Dispatcher::diagnose(const uint8_t *ram,uint32_t pc) const
+    {
+        Diagnosis result{lookup(ram,pc),{}};
+        if (!ram || (pc & 3u) || pc >= PS2_RAM_SIZE) return result;
+        const uint32_t page=m_pages[pc/pageBytes];
+        if (page==absent) return result;
+        for (uint32_t index=m_heads[page+(pc%pageBytes)/4u];index!=absent;index=m_entries[index].next)
+        {
+            const auto &entry=m_entries[index];
+            const std::span expected(m_images[entry.bank].data()+entry.offset,entry.sourceSize);
+            uint32_t count=0,first=absent;
+            for (uint32_t offset=0;offset<entry.sourceSize;++offset)
+                if (ram[entry.sourceBegin+offset]!=expected[offset])
+                {
+                    ++count;
+                    if (first==absent) first=offset;
+                }
+            result.candidates.push_back({entry.bank,entry.sourceBegin,expected,count,first});
+        }
+        return result;
+    }
     Dispatcher::Dispatcher(const Program &program)
     {
         constexpr size_t maxBanks = 512u;

@@ -69,6 +69,60 @@ audit, RPC observations, screenshots, unseen classification and regression logs.
 The root README's M3/publication/context/canonical-checkpoint requirements remain
 open. Finite observed coverage does not prove closure or independent fidelity.
 
+### Automatic EE guard diagnosis and incremental admission
+
+The laboratory now captures an AOT miss's RAM, optional canonical EE model
+context, module ownership and every declared candidate footprint. The copied
+RAM supports reproducible guard comparison; writer quiescence and a complete
+machine checkpoint remain unqualified. `prepare_ee_miss.py` converts an admitted
+byte capture into a fresh offline bank case. Catalog `--extend` validates prior
+identities and preserves unchanged sources and their timestamps. The minimal
+`ps2_ee_aot_bank.h` isolates bank declarations from dispatcher/diagnostic changes.
+The format, exact entry restrictions and commands are in
+[`nexo-ee-miss-v1.md`](../schemas/nexo-ee-miss-v1.md).
+
+In the new isolated Monster House run, the previous `0x1193880` miss was captured
+as `CodeChanged`, with no loaded-module ownership. The 40-byte candidate begins
+eight bytes before the observed entry. Only those preceding words changed:
+`0` became `0x857610` and `0x8578d0`; all 32 bytes from the entry agreed.
+Preparation used the observed target without a TOML address edit and emitted
+16,381 bindings. Its root dependency begins at `0x1193880` and spans 32 bytes.
+This refines the generated boundary while retaining complete declared guards;
+it does not qualify general interior-entry semantics or hardware fetch state.
+
+The catalog grew from 32 to 33 banks. Extension generation took **4.392 seconds**,
+the new-bank/index build **17.217 seconds**, and actual game relink **10.707
+seconds**. All **32 previous active bank objects retained their bytes and
+timestamps**, with zero original EE game compilations. The earlier header
+isolation migration required a one-time 158.240-second build of the 32 banks;
+the 5.429-second capture-fixture rebuild retained all cached bank objects.
+These are current-host laboratory measurements, not an ISO conversion SLA.
+
+Tests cover 409 model cell/lane mutations, fixed-width context bit preservation,
+malformed encodings, model inventory drift, whole RAM/context nonmutation,
+capture limits/failure paths, offline entry contracts, prepared-case consumption,
+generator identity and extension preservation. The second game run reached
+another miss at `0x1142ce0`, called from `0x114302c`. Its 44-byte dependency
+begins four bytes before the entry; only that preceding word changed from zero
+to `0x857150`. The 40 bytes from this new entry matched. Both runs exited under
+the runtime's normal stop policy, without killing another process.
+
+An isolated guard probe linked against the preserved 33-bank artifacts admits
+`0x1193880` against both saved RAM copies and rejects `0x1142ce0` against the
+second copy, reproducing the diagnosis without executing a guest callback.
+The second capture is prepared as a regression case, **not compiled into another
+address-specific workaround**. The repeated prefix-only mismatch motivates a
+general offline entry/dependency-boundary correction, with tests for normal,
+interior and delay-slot entries before any guard is refined. Adding addresses
+individually would not solve that generator issue. Full entry-context/fetch
+qualification remains separate from this correction.
+
+The restored regression profile passed **69 CTest groups and 485 general cases**.
+Restoration took 14.774 seconds and retained all 54 common runtime object bytes
+and timestamps. Gameplay, save correctness, 60 FPS, Android, VU runtime migration,
+complete checkpoint replay and universal closure remain open.
+Evidence is in the ignored directory recorded by `build/lab/latest-ee-miss-job.txt`.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

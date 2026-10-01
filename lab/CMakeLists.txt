@@ -1,12 +1,17 @@
 # The opt-in runtime capture hooks need the codec too. Compile it into the
 # runtime archive instead of creating a runtime <-> codec link dependency.
 target_sources(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/vu_snapshot.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ee_snapshot.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ee_miss_capture.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/device_snapshot.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/gs_snapshot.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vif_capture.cpp")
 target_include_directories(ps2_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(ps2_runtime PRIVATE PS2X_NEXO_LAB=1)
 target_compile_features(ps2_runtime PRIVATE cxx_std_20)
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/ee_miss_capture.cpp"
+    TARGET_DIRECTORY ps2_runtime
+    PROPERTIES INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/ps2xRuntime/src/lib")
 
 # Observation is compiled only into the opt-in laboratory build.
 target_sources(ps2_iop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/iop_capture.cpp")
@@ -25,6 +30,12 @@ target_link_libraries(nexo_iop_capture_fixture PRIVATE ps2_iop)
 add_executable(nexo_ee_aot_tests tests/ee_aot_tests.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_ee_aot_tests PRIVATE ../ps2xTest/include ../ps2xRuntime/src/lib)
 target_link_libraries(nexo_ee_aot_tests PRIVATE ps2_runtime)
+add_executable(nexo_ee_snapshot_tests tests/ee_snapshot_tests.cpp tests/empty_ee_table.cpp)
+target_include_directories(nexo_ee_snapshot_tests PRIVATE include ../ps2xTest/include)
+target_link_libraries(nexo_ee_snapshot_tests PRIVATE ps2_runtime)
+add_executable(nexo_ee_miss_capture_fixture tests/ee_miss_capture_fixture.cpp tests/empty_ee_table.cpp)
+target_include_directories(nexo_ee_miss_capture_fixture PRIVATE include ../ps2xRuntime/src/lib)
+target_link_libraries(nexo_ee_miss_capture_fixture PRIVATE ps2_runtime)
 
 add_library(nexo_vu_snapshot INTERFACE)
 target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -53,6 +64,13 @@ target_link_libraries(nexo_vu_replay_support PUBLIC nexo_vu_snapshot)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 if(BUILD_TESTING)
     add_test(NAME nexo_ee_aot_tests COMMAND nexo_ee_aot_tests)
+    add_test(NAME nexo_ee_snapshot_tests COMMAND nexo_ee_snapshot_tests)
+    add_test(NAME nexo_ee_context_inventory_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_context_inventory.py)
+    add_test(NAME nexo_ee_miss_prepare_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_prepare_ee_miss.py $<TARGET_FILE:ps2_native_overlay>)
+    add_test(NAME nexo_ee_miss_capture_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_miss_capture.py $<TARGET_FILE:nexo_ee_miss_capture_fixture>)
     add_test(NAME nexo_ee_overlay_extract_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_extract_ee_overlay.py)
     add_test(NAME nexo_ee_bank_catalog_tests COMMAND "${Python3_EXECUTABLE}"

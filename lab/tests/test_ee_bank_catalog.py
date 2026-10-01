@@ -54,6 +54,14 @@ class EeCatalogTests(unittest.TestCase):
         (case / 'bank.json').write_text(json.dumps(metadata))
         with self.assertRaises(ValueError): self.generate([case])
 
+    def test_captured_case_generator_identity_must_match(self):
+        case = self.case('one', 42)
+        metadata = json.loads((case / 'bank.json').read_text())
+        metadata['generator_sha256'] = '0' * 64
+        (case / 'bank.json').write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError): self.generate([case])
+        self.assertFalse((self.root / 'catalog').exists())
+
     def test_malformed_metadata_and_excessive_case_counts_fail_before_generation(self):
         case = self.case('one', 42)
         valid = json.loads((case / 'bank.json').read_text())
@@ -72,6 +80,41 @@ class EeCatalogTests(unittest.TestCase):
         for name in first['sources']:
             self.assertEqual((self.root / 'first' / name).read_bytes(),
                              (self.root / 'second' / name).read_bytes())
+
+    def test_extension_preserves_existing_bank_bytes_and_timestamps(self):
+        one, two = self.case('one', 42), self.case('two', 7)
+        first = self.generate([one])
+        output = self.root / 'catalog'
+        source = output / first['sources'][0]
+        before = (source.read_bytes(), source.stat().st_mtime_ns)
+        second = CODEGEN.extend_catalog([one, two], GENERATOR, output)
+        self.assertEqual(len(second['banks']), 2)
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
+        manifest_before = (output / 'catalog.json').read_bytes()
+        with self.assertRaises(ValueError): CODEGEN.extend_catalog([two], GENERATOR, output)
+        self.assertEqual((output / 'catalog.json').read_bytes(), manifest_before)
+        source.write_text('// tampered\n')
+        with self.assertRaises(ValueError): CODEGEN.extend_catalog([one, two], GENERATOR, output)
+        self.assertEqual((output / 'catalog.json').read_bytes(), manifest_before)
+
+    def test_extension_rejects_malformed_manifests_and_unrecorded_artifacts(self):
+        one, two = self.case('one', 42), self.case('two', 7)
+        first = self.generate([one])
+        output = self.root / 'catalog'
+        valid = (output / 'catalog.json').read_bytes()
+        for patch in ({'schema_version': True}, {'generator_sha256': '0' * 64},
+                      {'sources': [None, 'ee_catalog.cpp']},
+                      {'sources': first['sources'] * 2}):
+            (output / 'catalog.json').write_text(json.dumps({**first, **patch}))
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                CODEGEN.extend_catalog([one, two], GENERATOR, output)
+        (output / 'catalog.json').write_bytes(valid)
+        next_manifest = self.generate([one, two], 'other')
+        new_source = next(name for name in next_manifest['sources'] if name not in first['sources'])
+        (output / new_source).write_text('preserve unrecorded artifact')
+        with self.assertRaises(ValueError): CODEGEN.extend_catalog([one, two], GENERATOR, output)
+        self.assertEqual((output / new_source).read_text(), 'preserve unrecorded artifact')
+        self.assertEqual((output / 'catalog.json').read_bytes(), valid)
 
     def test_generated_native_functions_execute_and_reject_stale_versions(self):
         one, two = self.case('one', 42), self.case('two', 7)

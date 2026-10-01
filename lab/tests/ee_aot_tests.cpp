@@ -41,6 +41,16 @@ int main()
             test.IsTrue(dispatcher.lookup(ram.data(),0x10000).function==second,"Replacement selects existing native version");
             ram[0x10007]^=1;
             test.IsTrue(dispatcher.lookup(ram.data(),0x10000).status==Status::CodeChanged,"Tail changes reject stale code");
+            const auto diagnosis = dispatcher.diagnose(ram.data(),0x10000);
+            test.IsTrue(diagnosis.lookup.status==Status::CodeChanged,"Diagnosis retains the lookup result");
+            test.Equals(diagnosis.candidates.size(),size_t{2},"Both precompiled candidates are diagnosed");
+            if (diagnosis.candidates.empty()) return;
+            test.Equals(diagnosis.candidates.front().sourceBegin,uint32_t{0x10000},"Dependency base is explicit");
+            test.Equals(diagnosis.candidates.front().mismatchBytes,uint32_t{1},"Byte differences are counted exactly");
+            test.Equals(diagnosis.candidates.front().firstMismatchOffset,uint32_t{7},"Tail mismatch is located");
+            test.Equals(diagnosis.candidates.front().expected.size(),size_t{8},"Expected bytes are preserved");
+            test.Equals(diagnosis.candidates.front().expected[0],uint8_t{3},"Directory retains owned immutable identity");
+            test.IsTrue(dispatcher.diagnose(nullptr,0x10000).candidates.empty(),"Null RAM does not expose candidate bytes");
             test.IsTrue(dispatcher.lookup(ram.data(),0x10008).status==Status::MissingEntry,"Unregistered PC rejected");
             test.IsTrue(dispatcher.lookup(ram.data(),0x10002).status==Status::MisalignedPc,"Unaligned PC rejected");
             test.IsTrue(dispatcher.lookup(ram.data(),PS2_RAM_SIZE).status==Status::OutsideRam,"Aliases outside the declared physical domain rejected");

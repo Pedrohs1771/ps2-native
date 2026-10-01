@@ -20,6 +20,8 @@
 #include "ps2x/iop/iop_subsystem.h"
 #if PS2X_NEXO_LAB
 #include "nexo/vif_capture.h"
+#include "nexo/ee_miss_capture.h"
+#include "ps2_ee_overlay_backend.h"
 #endif
 
 #include <iostream>
@@ -1516,6 +1518,10 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
     {
         std::cerr << "[EE:UNSEEN_CODE] pc=0x" << std::hex << address << std::dec << '\n';
         requestStop(); // An AOT miss never inherits a diagnostic continue/skip policy.
+#if PS2X_NEXO_LAB
+        ps2native::nexo::captureEeMiss(m_memory.getRDRAM(),nullptr,ps2native::ee_aot::compiledDispatcher(),
+            address,0u,GuestBranchKind::IndirectJump,"lookup-no-entry",moduleOwnsAddress,moduleKey);
+#endif
     }
 
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
@@ -1567,8 +1573,17 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
     const MissingFunctionPolicy policy = missingFunctionPolicy();
     const bool firstReport = !m_missingFunctionReported.exchange(true, std::memory_order_acq_rel);
     if (firstReport && ps2xUsesAotEeOverlays())
+    {
         std::cerr << "[EE:UNSEEN_CODE] pc=0x" << std::hex << targetPc
                   << " source=0x" << sourcePc << std::dec << '\n';
+#if PS2X_NEXO_LAB
+        bool moduleOwnsAddress=false;
+        std::string moduleKey;
+        (void)resolveLoadedEeModuleFunction(targetPc,moduleOwnsAddress,&moduleKey);
+        ps2native::nexo::captureEeMiss(rdram,ctx,ps2native::ee_aot::compiledDispatcher(),targetPc,sourcePc,
+            kind,debugName ? debugName : "",moduleOwnsAddress,moduleKey);
+#endif
+    }
 
     const uint32_t pc = ctx->pc;
     const uint32_t ra = static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0));
