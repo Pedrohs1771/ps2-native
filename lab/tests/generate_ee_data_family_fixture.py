@@ -47,6 +47,13 @@ if args.candidate_json is None:
     shapes.append(([0x24420000,0x24000000,0x1440fffd,0],
                    [0xffff0000,0xffff0000,0xffffffff,0xffffffff],
                    [[0xffff,0],[0xffff,1],[0xfffe,0],[0xfffe,1]]))
+    for transfer in [0x08010000,0x0c010000]:
+        shapes.append(([transfer,0xacbf0000],[0xffffffff,0xffff0000],
+                       [[0],[0xffff],[0x8000],[0x7fff]]))
+    # These absolute destinations are inside the region at this base. The slot
+    # executes as the architectural slot and then again as a normal entry.
+    shapes.append(([0x08004001,0x24420001],[0xffffffff,0xffffffff],[[]],[0x10000]))
+    shapes.append(([0x0c004001,0x27ff0000],[0xffffffff,0xffff0000],[[1],[0xffff]],[0x10000]))
 if args.candidate_json is not None:
     if not args.shape or args.candidate_json.stat().st_size > 16 * 1024 * 1024:
         parser.error('candidate fixture needs a bounded report and exact shape')
@@ -86,7 +93,9 @@ def wrap(code, name):
 
 with tempfile.TemporaryDirectory() as temporary:
     directory = Path(temporary)
-    for shape, (words, masks, variants) in enumerate(shapes):
+    for shape, entry in enumerate(shapes):
+        words, masks, variants = entry[:3]
+        shape_bases = entry[3] if len(entry)==4 else None
         (directory / 'words.bin').write_bytes(encode(words))
         (directory / 'masks.bin').write_bytes(encode(masks))
         cpp = directory / ('family-' + str(shape) + '.cpp')
@@ -99,7 +108,8 @@ with tempfile.TemporaryDirectory() as temporary:
                 if mask == 0xFFFF0000:
                     concrete[index] |= values[position]
                     position += 1
-            bases = [observed_bases[variant_index]] if observed_bases is not None else [0x10000, 0x210000, 0x2000000 - len(words) * 4]
+            bases = [observed_bases[variant_index]] if observed_bases is not None else \
+                (shape_bases if shape_bases is not None else [0x10000,0x210000,0x2000000-len(words)*4])
             for base in bases:
                 number = len(fixtures)
                 (directory / 'words.bin').write_bytes(encode(concrete))

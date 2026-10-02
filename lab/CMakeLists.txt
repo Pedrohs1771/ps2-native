@@ -98,6 +98,8 @@ if(BUILD_TESTING)
     add_test(NAME nexo_ee_data_family_dispatch_tests COMMAND nexo_ee_data_family_dispatch_tests)
     add_test(NAME nexo_ee_family_catalog_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_family_catalog.py)
+    add_test(NAME nexo_ee_family_batch_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_prepare_ee_family_batch.py)
     add_test(NAME nexo_ee_family_backend_tests COMMAND nexo_ee_family_backend_tests)
     add_test(NAME nexo_ee_family_probe_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_family_probe.py $<TARGET_FILE:nexo_ee_family_probe>)

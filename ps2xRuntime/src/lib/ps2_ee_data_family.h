@@ -6,6 +6,7 @@
 
 namespace ps2native::ee_family
 {
+    inline constexpr size_t MaxFamilies=32768;
     using Function = void (*)(uint8_t *,R5900Context *,PS2Runtime *,uint32_t);
     struct Family
     {

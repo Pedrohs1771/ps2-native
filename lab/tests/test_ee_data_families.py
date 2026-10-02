@@ -116,6 +116,45 @@ class EeDataFamilyTests(unittest.TestCase):
         self.assertEqual(family['normal_entry_offsets'],[0])
         self.assertEqual([o['normal_entry_offsets'] for o in family['observations']],[[0],[0]])
 
+    def test_single_observation_batch_keeps_typed_constants_and_fixed_control(self):
+        case=self.case('single',[0x27bdffc0,0xffbf0030,0x14430030,0])
+        self.assertEqual(self.tool.discover([case])['families'],[])
+        report=self.tool.discover([case],minimum_variants=1,operand_policy='typed',
+                                  root_only=True,terminal_only=True)
+        self.assertEqual(report['discovery_policy'],{'minimum_variants':1,'operand_policy':'typed',
+                                                     'root_only':True,'terminal_only':True})
+        family=report['families'][0]
+        self.assertEqual(family['guard_words'],[0x27bd0000,0xffbf0000,0x14430030,0])
+        self.assertEqual(family['guard_masks'],[0xffff0000,0xffff0000,0xffffffff,0xffffffff])
+        self.assertEqual(family['normal_entry_offsets'],[0])
+        self.assertEqual(family['observations'][0]['parameters'],[-64,48])
+        self.assertFalse(report['producer_invariant_proved'])
+
+    def test_batch_filtering_records_nonterminal_and_interior_omissions(self):
+        terminal=self.case('terminal',[0x03e00008,0])
+        linear=self.case('linear',[0x24020001,0])
+        report=self.tool.discover([terminal,linear],minimum_variants=1,
+                                  root_only=True,terminal_only=True)
+        self.assertEqual(len(report['families']),1)
+        self.assertEqual(report['counts']['nonterminal_regions_skipped'],1)
+        self.assertEqual(report['counts']['nonroot_bindings_skipped'],2)
+
+    def test_single_observation_exact_policy_does_not_generalize_operands(self):
+        case=self.case('exact',[0x3c020040,0x03e00008,0])
+        family=self.tool.discover([case],minimum_variants=1)['families'][0]
+        self.assertEqual(family['guard_masks'],[0xffffffff]*3)
+        self.assertEqual(family['parameters'],[])
+
+    def test_invalid_discovery_policy_and_family_budget_fail_explicitly(self):
+        cases=self.variants()
+        for settings in [{'minimum_variants':True},{'minimum_variants':0},
+                         {'operand_policy':'anything'},{'root_only':1},{'terminal_only':'yes'}]:
+            with self.subTest(settings=settings),self.assertRaises(ValueError):
+                self.tool.discover(cases,**settings)
+        self.tool.MAX_FAMILIES=0
+        with self.assertRaises(ValueError):
+            self.tool.discover(cases,minimum_variants=1)
+
     def test_deterministic_input_order(self):
         cases = self.variants()
         self.assertEqual(self.tool.discover(cases), self.tool.discover(list(reversed(cases))))
@@ -175,6 +214,12 @@ class EeDataFamilyTests(unittest.TestCase):
         repeat = subprocess.run(command, capture_output=True, text=True)
         self.assertNotEqual(repeat.returncode, 0)
         self.assertEqual(output.read_bytes(), before)
+
+    def test_report_budget_fails_before_publication(self):
+        output=self.root/'too-large.json'
+        self.tool.MAX_REPORT_BYTES=1
+        with self.assertRaises(ValueError):self.tool.write_report(self.variants(),output)
+        self.assertFalse(output.exists())
 
     def test_invalid_input_does_not_publish_and_cli_has_no_traceback(self):
         cases = self.variants()

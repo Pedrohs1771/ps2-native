@@ -89,6 +89,26 @@ int main()
                 test.IsTrue(rejects(family),"Control/device operands cannot be made variable by this profile");
             }
         });
+        suite.Run("batched_catalog_budget_is_explicit",[](TestCase &test)
+        {
+            const std::array masks{0xffffffffu,0xffffffffu,0xffffffffu};
+            const std::array entries{0u};
+            std::vector<std::array<uint32_t,3>> words(4097);
+            std::vector<Family> families;
+            families.reserve(words.size());
+            for(size_t i=0;i<words.size();++i)
+            {
+                words[i]={0x3c020000u+static_cast<uint32_t>(i),0x03e00008u,0u};
+                families.push_back({function,words[i],masks,entries});
+            }
+            Dispatcher dispatcher(Program{families});
+            test.Equals(dispatcher.families(),words.size(),"Finite corpus above the old budget is represented");
+            std::vector<Family> tooMany(32769);
+            bool rejected=false;
+            try { Dispatcher oversized(Program{tooMany}); }
+            catch(const std::invalid_argument &) { rejected=true; }
+            test.IsTrue(rejected,"Oversized catalogs fail before descriptor traversal");
+        });
     });
     return MiniTest::Run();
 }

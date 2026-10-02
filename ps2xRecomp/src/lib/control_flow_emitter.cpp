@@ -444,10 +444,33 @@ namespace ps2recomp
     {
         if (kind == StaticBranchKind::Call)
         {
-            m_ss << fmt::format("    SET_GPR_U32(ctx, 31, 0x{:X}u);\n", fallthroughPc());
+            m_ss << fmt::format("    SET_GPR_U32(ctx, 31, {});\n", m_gen.guestPcExpression(fallthroughPc(),true));
         }
 
         emitDelaySlot("    ");
+
+        if (m_gen.m_nativeDataFamily)
+        {
+            // J/JAL retain fixed target bits. Their destination is absolute,
+            // whereas precise source/link PCs relocate with this structure.
+            // Local labels are valid only after comparison with the actual
+            // relocated region, never from the canonical address alone.
+            const auto targetExpression=fmt::format("(({} & 0xF0000000u) | 0x{:X}u)",
+                m_gen.guestPcExpression(branchPc()+4u,true),m_branchInst.target<<2);
+            m_ss << fmt::format("    switch ({} - family_base) {{\n",targetExpression);
+            for(const auto localPc:m_analysisResult.entryPoints)
+            {
+                if(localPc>=m_function.end)continue;
+                m_ss << fmt::format("        case 0x{:X}u:\n",localPc);
+                emitInternalTarget(localPc,branchPc(),"            ");
+            }
+            m_ss << "        default: break;\n    }\n";
+            m_ss << fmt::format("    ctx->pc = {};\n",targetExpression);
+            const bool call=kind==StaticBranchKind::Call;
+            emitRuntimeBranchDispatch(targetExpression,branchPc(),call ? fallthroughPc() : 0u,
+                call ? "DirectCall" : "DirectJump",call ? "JAL" : "J","    ",true);
+            return;
+        }
 
         const uint32_t target = buildAbsoluteJumpTarget(m_branchInst.address, m_branchInst.target);
         if (isInternalTarget(target))

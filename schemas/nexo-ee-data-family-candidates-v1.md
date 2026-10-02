@@ -46,11 +46,20 @@ Register selection and control instructions are never normalized.
 
 All other bits, including branches and jump targets, remain exact. Changes in
 opcode, register selection, region length or fixed control encoding split groups.
-Only fields that actually differ within a group become proposed parameters.
+By default, only fields that actually differ within a group become proposed parameters.
 Eligible immediates that remain constant retain a full `0xffffffff` guard mask.
 An identical region at several addresses alone does not become a data-family
 candidate. Repeated copies at the same address with the same bytes are deduplicated
 while retaining all source identities.
+
+The explicit batch options `--minimum-variants 1 --operand-policy typed` also
+propose singleton structures and parameterize every eligible data immediate.
+Opcode/register/control fields remain fixed. These broader domains are proposals
+without producer or independent fidelity approval. `--root-only` retains only
+bindings at their dependency start; `--terminal-only` retains regions with a
+syntactically complete terminal transfer for subsequent frontend validation.
+Skipped bindings and nonterminal regions are counted. The latter restriction
+can omit executable linear continuations and is not a closure algorithm.
 
 This is a syntactic partition, not an assertion that an immediate is causally
 unrelated to control flow. A parameter may feed an indirect destination or alter
@@ -65,12 +74,14 @@ describe submitted cases, bindings, unique per-case regions, scanned words and
 oversized skipped regions. `analyzer_sha256` identifies the exact tool source
 used for the report, without certifying its semantics. `families` is sorted by
 `shape_sha256`.
+`discovery_policy` records the minimum distinct byte variants, operand policy
+and root/terminal filters. Retained older reports omit that field.
 
 Each candidate contains:
 
 - `word_count`: length of the proposed structure, in little-endian 32-bit words.
 - `guard_words`: exact words with candidate parameter bits zeroed.
-- `guard_masks`: `0xffff0000` for a varying supported immediate; otherwise
+- `guard_masks`: `0xffff0000` for a proposed supported immediate; otherwise
   `0xffffffff`. No arbitrary masks are accepted from input.
 - `parameters`: ordered `word_index`, `kind`, and `bits: 16` records.
 - `normal_entry_offsets`: the union of actual declared binding offsets for the
@@ -99,6 +110,8 @@ regions; 4,194,304 scanned words. Regions longer than 128 words are explicitly
 skipped, counted and left unqualified. Exceeding other aggregate limits aborts
 publication. These are laboratory search budgets, not coverage limits that can
 be silently waived for strict approval.
+At most 32,768 candidate families and 64 MiB of serialized report are permitted.
+Serialization is charged before creating the publication path.
 
 Next steps are producer/write slicing, restricted native synthesis using the
 existing EE semantic emitters, context/relative-PC guards, differential checks

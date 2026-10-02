@@ -15,7 +15,7 @@ python lab/generate_ee_family_catalog.py \
   --output fresh-catalog [--shape SHAPE_SHA256] [--case prepared-ee-case]
 ```
 
-The publisher accepts 1..4096 bounded candidates (a report up to 64 MiB) and up to 16 prepared
+The publisher accepts 1..32768 bounded candidates (a report up to 64 MiB) and up to 16 prepared
 root cases. The candidate report must have integer schema 1, laboratory status
 and Boolean false approval. Words/masks must be numeric uint32 values, with
 1..128 words per structure. Normal entries are aligned byte offsets in the
@@ -31,7 +31,8 @@ body has a separate namespace, descriptor and immutable words/masks/entry
 arrays. A separate index exports `compiledEeFamilyProgram()`.
 
 Manifest schema 2 groups bodies into source units, with at most 32 families and
-1 MiB per unit. Stable hash buckets constrain insertion changes to their bucket.
+1 MiB per body unit; the separate descriptor index has an 8 MiB bound. The
+manifest has a 16 MiB publication bound. Stable hash buckets constrain insertion changes to their bucket.
 `family_count`, `source_count` and the numerical `families` ledger describe the
 result. CMake retains schema-1 support for older one-family-per-file catalogs.
 Verified copies use stable content-addressed paths under the build's
@@ -39,6 +40,10 @@ Verified copies use stable content-addressed paths under the build's
 objects. Header/compiler dependencies still apply; corrupted cache bytes fail.
 Sources are checked again before publication and the cached copy is hashed
 after copying, so a changed source cannot silently establish a new cache identity.
+CMake extracts source-name/hash indexes once, avoiding a full family-ledger JSON
+parse for every source query. `--workers 1..16` bounds concurrent converter
+processes; ordered results preserve source bytes across worker counts. Buckets
+split on both their family-count and byte budgets.
 
 `--entry-policy root-only` limits proposals to offset-zero bindings, and
 `--terminal-only` declines regions without a complete terminal transfer. These
@@ -136,3 +141,9 @@ Typed root operands covered the relocated callback and its continuation; the
 owned New Game route then stopped at another module entry, `0x1a51b70`.
 Root-only/terminal-only policy, parameter domains, module coverage and whole-game
 qualification remain open. See the dated batch evidence in `lab/README.md`.
+
+`lab/prepare_ee_family_batch.py` owns and deduplicates previous cases, prepares
+fresh captures, proposes typed singleton structures and publishes this catalog
+in one offline command. `--previous-batch` verifies the previous receipt,
+manifest and owned case hashes before reusing them. Failed jobs retain a false
+approval diagnostic receipt. The tool does not launch games or certify closure.

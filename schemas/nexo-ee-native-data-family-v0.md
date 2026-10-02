@@ -23,11 +23,17 @@ remain exact. Parameters are extracted as uint16 values; SW emission explicitly
 sign extends its value through int16/int32 before 32-bit address addition.
 
 Initially, supported regions are linear integer/ordinary memory instructions,
-optionally ending in one register JR/JALR or integer conditional branch and its
+optionally ending in one J/JAL, register JR/JALR or integer conditional branch and its
 complete architectural slot. Conditional destinations, links, internal targets
 and loop/checkpoint locations use relative PCs. Branch-likely and REGIMM link
 forms retain the existing conservative slot/link policy.
-Local indirect-target specialization, direct J/JAL, coprocessor branches, syscalls,
+Direct J/JAL preserve their fixed target bits and construct the destination from
+the actual architectural PC high nibble. A destination is mapped to a local
+label only after comparison against the actual relocated region; local
+backedges retain checkpoints. External destinations use the existing runtime
+directory. JAL links relocate before its slot. No jump target
+field is a parameter in this profile.
+Local indirect-target specialization, coprocessor branches, syscalls,
 other unsupported data/device operations and unsupported reserved fields are
 explicitly rejected. Rejection is an open synthesis obligation, not a success
 stub or a request to interpret the rejected bytes.
@@ -79,8 +85,8 @@ register restoration, JALR link-before-slot behavior and standalone slots. They
 compare all fields of the identified EE context codec and every byte of 32 MiB
 RAM. Guard tests verify rejected contexts/structural bytes have no effects.
 
-That initial fixture is now expanded to **43 structures / 360 concrete fixtures /
-1,464 normal-entry comparisons**: all 20 data classes at signed/unsigned
+That initial fixture is now expanded to **47 structures / 387 concrete fixtures /
+1,518 normal-entry comparisons**: all 20 data classes at signed/unsigned
 boundaries, both branch outcomes, branch-likely annulment, REGIMM links, external
 positive/negative targets, internal backedges, variable decrements and
 parameterized ADDIU-to-zero slots/body operations. A new slot test first failed
@@ -89,6 +95,11 @@ now retains its parameter-dependent decision. Every
 comparison checks the identified context and 32 MiB RAM against the shared
 emitter reference. This remains a model regression, not independent PS2
 equivalence or whole-machine replay.
+Direct J/JAL fixtures also compare links, ordinary slots and independently
+entered slots at three physical bases and four signed operand boundaries.
+Generation checks cover an absolute target of zero without a false local jump.
+Actual local J/JAL destinations also exercise a slot entered a second time as
+an ordinary instruction, including an observable JAL link update.
 
 The fixture generator also accepts an exact proposal from the candidate report:
 

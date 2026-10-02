@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -23,6 +24,8 @@ MAX_BINDINGS = 2 * 1024 * 1024
 MAX_REGIONS = 131072
 MAX_SCANNED_WORDS = 4 * 1024 * 1024
 MAX_REGION_WORDS = 128
+MAX_FAMILIES = 32768
+MAX_REPORT_BYTES = 64 * 1024 * 1024
 DATA_FIELDS = {0x09:'addiu-s16',0x0a:'slti-s16',0x0b:'sltiu-s16',0x0c:'andi-u16',
                0x0d:'ori-u16',0x0e:'xori-u16',0x20:'lb-s16',0x21:'lh-s16',0x23:'lw-s16',
                0x24:'lbu-s16',0x25:'lhu-s16',0x27:'lwu-s16',0x37:'ld-s16',0x1e:'lq-s16',
@@ -62,14 +65,20 @@ def words_bytes(words):
     return struct.pack('<' + 'I' * len(words), *words)
 
 
-def discover(cases):
+def discover(cases, *, minimum_variants=2, operand_policy='observed',
+             root_only=False, terminal_only=False):
+    if type(minimum_variants) is not int or minimum_variants not in (1,2) or \
+            operand_policy not in ('observed','typed') or type(root_only) is not bool or \
+            type(terminal_only) is not bool:
+        raise ValueError('invalid bounded discovery policy')
     cases = list(cases)
     if not 1 <= len(cases) <= MAX_CASES:
         raise ValueError('expected a bounded nonempty case list')
     groups = {}
     entry_groups = {}
     counts = {'cases': len(cases), 'bindings': 0, 'regions': 0,
-              'scanned_words': 0, 'oversized_regions_skipped': 0}
+              'scanned_words': 0, 'oversized_regions_skipped': 0,
+              'nonroot_bindings_skipped':0,'nonterminal_regions_skipped':0}
     metadata_bytes = 0
     for case in cases:
         case = ordinary_path(case)
@@ -107,7 +116,10 @@ def discover(cases):
                 raise ValueError('invalid binding range or order')
             previous = pc
             entry_seen |= pc == entry
-            regions.setdefault((begin, span), set()).add(pc-begin)
+            if root_only and pc != begin:
+                counts['nonroot_bindings_skipped'] += 1
+            else:
+                regions.setdefault((begin, span), set()).add(pc-begin)
         if not entry_seen:
             raise ValueError('requested entry lacks a binding')
         origin = (digest, hashlib.sha256(encoded).hexdigest(), base)
@@ -123,6 +135,13 @@ def discover(cases):
                 raise ValueError('aggregate word budget exceeded')
             raw = image[begin - base:begin - base + span]
             words = struct.unpack('<' + 'I' * (span // 4), raw)
+            if terminal_only:
+                branch = words[-2] if len(words)>=2 else 0
+                opcode = branch>>26
+                if not (opcode in (1,2,3,4,5,6,7,0x14,0x15,0x16,0x17) or
+                        (opcode==0 and branch&63 in (8,9))):
+                    counts['nonterminal_regions_skipped'] += 1
+                    continue
             normalized = words_bytes([word & 0xFFFF0000 if parameter_kind(word) else word for word in words])
             # Full bytes are the grouping key; a digest collision cannot merge shapes.
             group = groups.setdefault(normalized, {})
@@ -131,8 +150,10 @@ def discover(cases):
 
     families = []
     for normalized, group in groups.items():
-        if len({raw for _, raw in group}) < 2:
+        if len({raw for _, raw in group}) < minimum_variants:
             continue
+        if len(families) >= MAX_FAMILIES:
+            raise ValueError('candidate family budget exceeded')
         words = list(struct.unpack('<' + 'I' * (len(normalized) // 4), normalized))
         first = next(iter(group))[1]
         masks, parameters = [], []
@@ -140,7 +161,7 @@ def discover(cases):
             offset = index * 4
             differing = len({raw[offset:offset + 4] for _, raw in group}) > 1
             kind = parameter_kind(word)
-            if differing and kind:
+            if kind and (differing or operand_policy=='typed'):
                 masks.append(0xFFFF0000)
                 parameters.append({'word_index': index, 'kind': kind, 'bits': 16})
             else:
@@ -166,6 +187,8 @@ def discover(cases):
                                                          for offset in observation['normal_entry_offsets']}),
                          'parameters': parameters, 'observations': observations})
     return {'schema_version': 1, 'data_operand_profile': 2, 'status': 'CANDIDATES_LABORATORY',
+            'discovery_policy':{'minimum_variants':minimum_variants,'operand_policy':operand_policy,
+                                'root_only':root_only,'terminal_only':terminal_only},
             'analyzer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'strict_approval': False, 'closure_proved': False, 'producer_invariant_proved': False,
             'native_execution_validated': False,
@@ -173,13 +196,22 @@ def discover(cases):
             'counts': counts, 'families': sorted(families, key=lambda family: family['shape_sha256'])}
 
 
-def write_report(cases, output):
+def write_report(cases, output, **policy):
     output = ordinary_path(output)
     if output.exists():
         raise FileExistsError('output must be fresh')
-    report = discover(cases)
+    report = discover(cases,**policy)
+    # Charge serialization before creating the publication path. JSON uses
+    # escaped ASCII, so character count equals its encoded byte count.
+    encoded=io.StringIO();total=1
+    for chunk in json.JSONEncoder(indent=2).iterencode(report):
+        total+=len(chunk)
+        if total>MAX_REPORT_BYTES:
+            raise ValueError('candidate report exceeds its publication budget')
+        encoded.write(chunk)
+    encoded.write('\n')
     with output.open('x') as stream:
-        stream.write(json.dumps(report, indent=2) + '\n')
+        stream.write(encoded.getvalue())
     return report
 
 
@@ -189,6 +221,10 @@ def main():
     inputs.add_argument('--case', action='append', type=Path)
     inputs.add_argument('--catalog', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--minimum-variants',type=int,choices=[1,2],default=2)
+    parser.add_argument('--operand-policy',choices=['observed','typed'],default='observed')
+    parser.add_argument('--root-only',action='store_true')
+    parser.add_argument('--terminal-only',action='store_true')
     args = parser.parse_args()
     started = time.monotonic()
     try:
@@ -198,7 +234,9 @@ def main():
             catalog = ordinary_path(args.catalog)
             ordinary_path(catalog / 'catalog.json')
             cases = catalog_tool.owned_cases(catalog)
-        report = write_report(cases, args.output)
+        report = write_report(cases, args.output,minimum_variants=args.minimum_variants,
+                              operand_policy=args.operand_policy,root_only=args.root_only,
+                              terminal_only=args.terminal_only)
     except (ValueError, OSError, KeyError, TypeError, RecursionError) as error:
         parser.error(str(error))
     print(json.dumps({'status': report['status'], 'family_candidates': len(report['families']),

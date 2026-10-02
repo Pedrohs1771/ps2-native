@@ -383,6 +383,91 @@ build profile, the rebuilt regression suite passed **77/77 CTest groups** and
 the general C++ suite **487/487 cases**. Diagnostic-profile success does not
 approve a native game package.
 
+### Singleton structure batches and offline orchestration, 2026-10-01
+
+The detector now exposes an explicit singleton/typed policy, retaining the
+original two-variant policy by default. This avoids excluding a routine merely
+because it was observed once. All opcode/register/control bits remain fixed;
+the broader immediate domains retain false producer/fidelity approval.
+
+The bounded offline orchestrator prepares captures, owns hash-checked case
+copies, deduplicates them and publishes a catalog with a diagnostic receipt:
+
+```sh
+python lab/prepare_ee_family_batch.py \
+  --catalog /path/to/previous-concrete-catalog \
+  --capture /path/to/new-ee-miss \
+  --family-generator build/ps2xRecomp/ps2_native_data_family \
+  --overlay-generator build/ps2xRecomp/ps2_native_overlay \
+  --output /path/to/fresh-batch --workers 8
+```
+
+Additional `--case` inputs bootstrap existing laboratory cases. Subsequent jobs
+can use `--previous-batch /path/to/previous-batch` with new captures; this verifies
+the receipt, manifest, framed case identities and exact owned bytes. The source
+cases are never rewritten. The tool launches neither a game nor a compiler in
+a game's execution path, and does not change title TOMLs. It currently proposes
+root-only entries and terminal-transfer regions; those are explicit incomplete
+coverage policies. A failure leaves a false-approval receipt with its stage.
+
+The publisher supports up to 32,768 finite structures and 16 concurrent offline
+converter processes. Source bytes remain deterministic across worker counts.
+Body units are bounded by both 32 families and 1 MiB; the index is bounded by
+8 MiB and the manifest by 16 MiB. Candidate serialization has a 64 MiB bound
+checked before publication. Direct J/JAL synthesis now preserves absolute
+targets and relocated source/link PCs, including slot ordering; encoded targets
+remain fixed, and unsupported operations are still declined explicitly.
+
+The 37-case experiment found **15,272 candidate structures** in 2.356 seconds.
+With direct control support, eight offline workers admitted **8,293 structures
+in 293 source units** in 14.809 seconds; 6,979 proposals were declined with
+reasons. The full orchestrator then reproduced exactly the same numerical
+ledger and all 293 source files in 18.170 seconds. These numbers count captured
+byte structures, not games or code closure.
+
+The initial CMake configuration took 123.979 seconds. Profiling its structure
+showed that every source query reparsed the large numerical JSON ledger.
+Extracting the smaller source/hash indexes reduced the later measured
+configuration to **6.891 seconds**. The first native compilation took
+322.753 seconds; the identical catalog in the orchestrated job rebuilt in
+**0.816 seconds with zero source compilations**. The game link took 17.403
+seconds, retaining all original game objects. Measurements use the local
+development profile and uncontrolled host load, not a conversion-time guarantee.
+
+The admission-only probe queried 14,483 prepared addresses against captured
+RAM in 0.179 seconds: 3,456 Ready, 11,027 MissingEntry, zero Ambiguous, and
+5,866,982 candidate checks. These include speculative window bindings and
+constructed normal contexts; they are not an execution coverage percentage.
+
+The owned headless New Game test passed `0x1a51b70`, continued through
+`0x1a51b9c` and `0x1a51bb4`, and stopped at `0x1a51be8`. The latter's 28-word
+linear dependency was already present in the prepared case and is accepted by
+the generic synthesis frontend. It was omitted by the terminal-only policy.
+The next work must include and qualify these linear regions in batches, rather
+than adding a binding for that one address. Runtime progress is documented by
+the guest trace, not inferred from probe results alone.
+
+The route took 189.480 seconds and ended during loading. Its menu templates are
+an agent-authored finite regression fixture. Its processes exited and changed
+card files were archived, then all five original files restored by exact hash.
+Gameplay, zero-touch exploration, producer/fetch/alias/timing proofs, native VU,
+physical Android and sustained 60 FPS remain unqualified.
+
+Review subsequently added actual-region checks for J/JAL destinations that
+land inside a relocated family. The final development-profile regression passed
+**78/78 CTest groups and 487/487 general cases**; the generated differential
+fixture compared **1,518 normal entries across 387 fixtures / 47 structures**.
+These compare shared emitter semantics, not an independent PS2 reference.
+The archived game runner and its measured catalog predate this final local
+destination correction; their traces and timings identify that earlier build.
+A fresh offline batch after the correction reproduced the same 8,293-family
+numerical ledger in 20.586 seconds; 134 of its 293 source units remained
+identical. All 34 conventional overlay outputs remained byte-identical with
+the same default normal-entry generation recipe. This fresh catalog has not
+yet supplied a new game execution test.
+
+Evidence is identified by `build/lab/latest-ee-structure-batch-job.txt`.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

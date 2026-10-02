@@ -132,6 +132,31 @@ class FamilyCatalogTests(unittest.TestCase):
         self.assertEqual(len(shared),1)
         self.assertTrue(all(first['sha256'][name]==second['sha256'][name] for name in shared))
 
+    def test_parallel_generation_preserves_deterministic_source_bytes(self):
+        case,_=self.case()
+        serial=self.generate('serial',cases=[case],workers=1)
+        parallel=self.generate('parallel',cases=[case],workers=2)
+        self.assertEqual(serial['families'],parallel['families'])
+        self.assertEqual(serial['sha256'],parallel['sha256'])
+        self.assertEqual(serial['rejected'],parallel['rejected'])
+        self.assertEqual(parallel['generation_workers'],2)
+        for workers in [False,0,17]:
+            with self.subTest(workers=workers),self.assertRaises(ValueError):
+                self.generate('invalid',workers=workers)
+
+    def test_batched_index_and_body_have_separate_size_bounds(self):
+        manifest=self.generate()
+        directory=self.root/'catalog';index=directory/'ee_family_catalog.cpp'
+        index.write_text(index.read_text()+'\n//'+('x'*(1024*1024)))
+        manifest['sha256'][index.name]=hashlib.sha256(index.read_bytes()).hexdigest()
+        (directory/'catalog.json').write_text(json.dumps(manifest))
+        self.configure(directory,succeeds=True)
+        body=directory/next(name for name in manifest['sources'] if name!=index.name)
+        body.write_text(body.read_text()+'\n//'+('x'*(1024*1024)))
+        manifest['sha256'][body.name]=hashlib.sha256(body.read_bytes()).hexdigest()
+        (directory/'catalog.json').write_text(json.dumps(manifest))
+        self.configure(directory,succeeds=False)
+
     def test_malformed_candidate_types_and_budgets_fail(self):
         valid = copy.deepcopy(self.family)
         for updates in [{'word_count': True}, {'word_count': 3.0}, {'shape_sha256': []},

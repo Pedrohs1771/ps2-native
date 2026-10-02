@@ -41,6 +41,7 @@ namespace ps2recomp
                 const auto opcode=instruction.opcode;
                 const bool registerTransfer=opcode==OPCODE_SPECIAL &&
                     (instruction.function==SPECIAL_JR || instruction.function==SPECIAL_JALR);
+                const bool directTransfer=opcode==OPCODE_J || opcode==OPCODE_JAL;
                 const bool conditional=opcode==OPCODE_BEQ || opcode==OPCODE_BNE || opcode==OPCODE_BEQL ||
                     opcode==OPCODE_BNEL || opcode==OPCODE_BLEZ || opcode==OPCODE_BGTZ ||
                     opcode==OPCODE_BLEZL || opcode==OPCODE_BGTZL ||
@@ -48,7 +49,7 @@ namespace ps2recomp
                         instruction.rt==REGIMM_BLTZL || instruction.rt==REGIMM_BGEZL ||
                         instruction.rt==REGIMM_BLTZAL || instruction.rt==REGIMM_BGEZAL ||
                         instruction.rt==REGIMM_BLTZALL || instruction.rt==REGIMM_BGEZALL));
-                if (transfer || i + 2 != words.size() || !(registerTransfer || conditional))
+                if (transfer || i + 2 != words.size() || !(registerTransfer || directTransfer || conditional))
                     throw std::invalid_argument("unsupported native family control structure");
                 const uint32_t reserved = instruction.function == SPECIAL_JR ? 0x001fffc0u : 0x001f07c0u;
                 if (registerTransfer && (words[i] & reserved))

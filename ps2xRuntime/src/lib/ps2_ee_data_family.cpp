@@ -9,7 +9,7 @@ namespace ps2native::ee_family
 {
     Dispatcher::Dispatcher(const Program &program)
     {
-        if(program.families.size()>4096) throw std::invalid_argument("EE family catalog exceeds budget");
+        if(program.families.size()>MaxFamilies) throw std::invalid_argument("EE family catalog exceeds budget");
         std::set<std::vector<uint32_t>> identities;
         for(const auto &family:program.families)
         {

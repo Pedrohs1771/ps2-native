@@ -67,7 +67,7 @@ int main()
         suite.Run("unimplemented_control_is_explicitly_rejected",[](TestCase &test)
         {
             const std::array masks{0xffffffffu,0xffffffffu};
-            for(const auto word:{0x08010000u,0x0000000cu,0x45010001u,0x18010001u})
+            for(const auto word:{0x0000000cu,0x45010001u,0x49010001u,0x18010001u})
             {
                 const std::array words{word,0u};
                 test.IsTrue(rejects(words,masks),"Unsupported PC-dependent control is rejected");
@@ -85,6 +85,27 @@ int main()
             test.IsTrue(rejects(early,threeMasks),"Regions must end at their first register transfer");
             test.IsTrue(rejects({},{}),"Empty shape rejected");
             test.IsTrue(rejects(truncated,{}),"Word/mask count mismatch rejected");
+        });
+        suite.Run("direct_control_keeps_absolute_targets_and_relocated_links",[](TestCase &test)
+        {
+            const std::array masks{0xffffffffu,0xffffffffu};
+            for(const uint32_t opcode:{2u,3u})
+            for(const uint32_t encodedTarget:{0u,0x10000u})
+            {
+                const std::array words{(opcode<<26)|encodedTarget,0u};
+                const auto code=ps2recomp::generateNativeDataFamily(words,masks);
+                test.IsTrue(code.find("& 0xF0000000u")!=std::string::npos,
+                            "J destination uses the architectural PC high nibble");
+                test.IsTrue(code.find("dispatchGuestBranch")!=std::string::npos,
+                            "Absolute destinations cannot become canonical local labels");
+                test.IsTrue(code.find("- family_base) {")!=std::string::npos,
+                            "Actual local destinations compare against the relocated base");
+                if(opcode==3u)
+                    test.IsTrue(code.find("SET_GPR_U32(ctx, 31, ADD32(family_base, 0x8u));")!=std::string::npos,
+                                "JAL link relocates before its slot");
+                const std::array variableControl{0xffff0000u,0xffffffffu};
+                test.IsTrue(rejects(words,variableControl),"Encoded direct target remains fixed");
+            }
         });
         suite.Run("legacy_generation_is_unchanged",[](TestCase &test)
         {
