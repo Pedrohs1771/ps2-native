@@ -105,12 +105,13 @@ invocation, external model request or paid service use.
 ## Bounds and next stage
 
 Limits: 512 cases; 64 KiB per image; 8 MiB per metadata document; 64 MiB aggregate
-metadata; 32,768 bindings per case and 2,097,152 aggregate; 131,072 dependency
-regions; 4,194,304 scanned words. Regions longer than 128 words are explicitly
+metadata; 32,768 bindings per case and 2,097,152 aggregate; 262,144 dependency
+regions; 8,388,608 scanned words. Regions longer than 128 words are explicitly
 skipped, counted and left unqualified. Exceeding other aggregate limits aborts
 publication. These are laboratory search budgets, not coverage limits that can
 be silently waived for strict approval.
-At most 32,768 candidate families and 64 MiB of serialized report are permitted.
+At most 65,536 candidate proposals and 64 MiB of serialized summary are permitted.
+The native catalog independently admits at most 32,768 families after synthesis.
 Serialization is charged before creating the publication path.
 
 Next steps are producer/write slicing, restricted native synthesis using the
@@ -118,3 +119,51 @@ existing EE semantic emitters, context/relative-PC guards, differential checks
 and independent fidelity, then establishing admissible parameter domains and
 reachable-caller coverage. Candidate discovery alone does not prevent a game
 stop and does not satisfy M9 or any complete-game gate.
+
+## Compact publication v2 and canonical regions
+
+`--region-policy canonical-v1 --root-only --operand-policy typed` selects the
+current canonical proposal policy. A root extends through the first transfer
+and its complete architectural slot (at most 128 words), or through 127 linear
+words when no transfer occurs in that interval. Truncated windows are rejected
+and counted. This can cross a prior metadata boundary within the owned snapshot.
+Every candidate and observation exposes only normal offset zero. This policy
+cannot combine the terminal-only filter or observed-only operand policy.
+
+Canonical discovery also queues known normal successors inside the same owned
+snapshot: both conditional destinations, direct jump targets, return
+continuations of linking calls and the next 127-word linear region. The
+requested entry is seeded even when its metadata dependency starts earlier.
+Each root is visited once, so backedges terminate. Indirect destinations are
+not invented. `canonical_successor_roots` counts added roots and
+`canonical_external_successors` counts edges outside the window; external code
+still requires an admitted capture. These are syntactic discovery counts,
+not executed paths or proof of reachability/closure.
+
+Canonical output uses integer `schema_version: 2`. It preserves the laboratory
+status, false approvals, policy, classifier identity, guard words/masks and shape
+identity. Family summaries replace repeated `parameters` and `observations`
+with `observation_count`. Current compact summaries omit redundant `word_count`;
+the reader derives it from the validated, equally sized guard arrays and restores
+the decoded field. Retained summaries may declare it explicitly, but it must
+match those dimensions. An empty canonical proposal set fails before writing
+the summary or any provenance shard.
+
+`provenance.origins` is the sorted deduplicated table of image hash, metadata hash
+and base. `provenance.shards` names content-addressed
+`ee-candidate-provenance-SHA256.json` files with exact digest, byte size and record
+count. `total_bytes` and `record_count` bind the aggregate. Each shard carries
+schema 1, status `OBSERVED_LABORATORY`, false strict approval and records retaining
+PC, word hash, parameter values, offset-zero entry, family index and origin IDs.
+
+Each shard is at most 4 MiB; there are at most 64 shards and 128 MiB aggregate
+details. Counts, numeric bounds, names, hashes, sizes and references are checked
+before conversion. The 64 MiB summary is published last after all referenced
+shards. Detail reuse requires exact bytes. Publication does not overwrite an
+existing summary and does not claim crash durability without storage sync.
+
+`read_report` accepts v1/v2 and can reconstruct v1-style observations for fixture
+generation. An optional expected SHA-256 rejects a changed summary before
+parsing; the catalog publisher uses it to keep admitted input and manifest
+identity consistent. None of these hashes approve native semantics, reachable
+coverage, producer/fetch closure or gameplay.

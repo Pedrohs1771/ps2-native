@@ -4,6 +4,7 @@
 #include "ps2_runtime_macros.h"
 
 #include <cstring>
+#include <array>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -38,11 +39,16 @@ int main()
                 const auto conditional=[](uint32_t word)
                 {
                     const auto opcode=word>>26;
-                    return opcode==1u || (opcode>=4u && opcode<=7u) || (opcode>=0x14u && opcode<=0x17u);
+                    return opcode==1u || (opcode>=4u && opcode<=7u) || (opcode>=0x14u && opcode<=0x17u) ||
+                        (opcode==0x11u && ((word>>21)&31u)==8u);
                 };
-                bool branchFixture=false;
-                for(const auto word:fixture.words) branchFixture|=conditional(word);
-                const unsigned phases=branchFixture?3u:1u;
+                bool branchFixture=false,fpuFixture=false;
+                for(const auto word:fixture.words)
+                {
+                    branchFixture|=conditional(word);
+                    fpuFixture|=(word>>26)==0x11u || (word>>26)==0x31u || (word>>26)==0x39u;
+                }
+                const unsigned phases=branchFixture || fpuFixture ? 3u : 1u;
                 expectedChecks+=fixture.words.size()*phases;
                 std::memcpy(original.data()+fixture.base,fixture.words.data(),fixture.words.size_bytes());
                 const uint64_t savedFp=0x620000,savedRa=0x70000;
@@ -53,6 +59,15 @@ int main()
                 {
                     reference=original;family=original;
                     R5900Context input{};
+                    const std::array<uint32_t,8> fpBits{0x3fc00000u,0xc0200000u,0u,0x80000000u,
+                        0x00000001u,0x7f800000u,0xff800000u,0x7fc00001u};
+                    for(unsigned reg=0;reg<32;++reg)
+                    {
+                        const auto bits=fpBits[(reg+phase*3)%fpBits.size()];
+                        std::memcpy(&input.f[reg],&bits,sizeof(bits));
+                    }
+                    input.fcr31=phase&1u ? 0x800000u : 0u;
+                    input.f_acc=-0.375f;
                     for(unsigned reg=1;reg<32;++reg) input.r[reg]=_mm_set_epi64x(0x1234000000000000ull+reg,0x22000000ull+reg);
                     SET_GPR_U32(&input,1,0x100000);SET_GPR_U32(&input,2,0x12345678);
                     if(branchFixture)

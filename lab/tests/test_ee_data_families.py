@@ -122,7 +122,7 @@ class EeDataFamilyTests(unittest.TestCase):
         report=self.tool.discover([case],minimum_variants=1,operand_policy='typed',
                                   root_only=True,terminal_only=True)
         self.assertEqual(report['discovery_policy'],{'minimum_variants':1,'operand_policy':'typed',
-                                                     'root_only':True,'terminal_only':True})
+                                                     'root_only':True,'terminal_only':True,'region_policy':'metadata'})
         family=report['families'][0]
         self.assertEqual(family['guard_words'],[0x27bd0000,0xffbf0000,0x14430030,0])
         self.assertEqual(family['guard_masks'],[0xffff0000,0xffff0000,0xffffffff,0xffffffff])
@@ -151,9 +151,164 @@ class EeDataFamilyTests(unittest.TestCase):
                          {'operand_policy':'anything'},{'root_only':1},{'terminal_only':'yes'}]:
             with self.subTest(settings=settings),self.assertRaises(ValueError):
                 self.tool.discover(cases,**settings)
-        self.tool.MAX_FAMILIES=0
+        self.tool.MAX_CANDIDATES=0
         with self.assertRaises(ValueError):
             self.tool.discover(cases,minimum_variants=1)
+
+    def canonical(self,cases):
+        return self.tool.discover(cases,minimum_variants=1,operand_policy='typed',
+                                  root_only=True,region_policy='canonical-v1')
+
+    def test_canonical_regions_cross_metadata_linear_boundaries(self):
+        case=self.case('split',[0x3c020001,0x24420002,0xac820000,
+                                0x24420003,0x03e00008,0])
+        path=case/'bank.json';metadata=json.loads(path.read_text());base=metadata['base']
+        metadata['bindings']=[{'address':base,'source_begin':base,'source_bytes':12},
+                              {'address':base+12,'source_begin':base+12,'source_bytes':12}]
+        path.write_text(json.dumps(metadata))
+        report=self.canonical([case])
+        self.assertEqual(sorted(f['word_count'] for f in report['families']),[3,6])
+        self.assertEqual(report['discovery_policy']['region_policy'],'canonical-v1')
+        self.assertEqual(report['counts']['canonical_terminal_regions'],2)
+        self.assertTrue(all(f['normal_entry_offsets']==[0] for f in report['families']))
+
+    def test_canonical_discovers_return_continuation_after_indirect_call(self):
+        case=self.case('call',[0x24420001,0x0040f809,0,0x24630002,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x1000c})
+        self.assertEqual(report['counts']['canonical_successor_roots'],1)
+
+    def test_canonical_discovers_both_conditional_successors(self):
+        case=self.case('conditional',[0x10430003,0,0x03e00008,0,
+                                      0x24420001,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x10008,0x10010})
+        self.assertEqual(report['counts']['canonical_successor_roots'],2)
+
+    def test_canonical_discovers_linear_successor_without_an_extra_binding(self):
+        case=self.case('linear',[0x24420001]*127+[0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual(sorted(f['word_count'] for f in report['families']),[2,127])
+        self.assertEqual(report['counts']['canonical_successor_roots'],1)
+
+    def test_canonical_direct_jump_queues_target_without_false_fallthrough(self):
+        case=self.case('jump',[0x08004004,0,0x24420001,0,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x10010})
+
+    def test_canonical_call_records_external_target_and_internal_return(self):
+        case=self.case('external-call',[0x0c008000,0,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x10008})
+        self.assertEqual(report['counts']['canonical_external_successors'],1)
+
+    def test_canonical_requested_interior_entry_is_an_independent_root(self):
+        case=self.case('resume',[0x24420001,0x0040f809,0,0x24630002,0x03e00008,0])
+        path=case/'bank.json';metadata=json.loads(path.read_text());metadata['entry']=0x1000c
+        path.write_text(json.dumps(metadata))
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x1000c})
+
+    def test_canonical_backedge_is_deduplicated_and_keeps_fallthrough(self):
+        case=self.case('loop',[0x1043ffff,0,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual(report['counts']['regions'],2)
+        self.assertEqual(report['counts']['canonical_successor_roots'],1)
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000,0x10008})
+
+    def test_canonical_jalr_without_link_does_not_invent_a_return(self):
+        case=self.case('no-link',[0x00400009,0,0x03e00008,0])
+        report=self.canonical([case])
+        self.assertEqual({o['pc'] for f in report['families'] for o in f['observations']},
+                         {0x10000})
+        self.assertEqual(report['counts']['canonical_successor_roots'],0)
+
+    def test_canonical_linear_and_transfer_boundary_are_prefix_disjoint(self):
+        cases=[self.case('linear',[0x24420001]*130),
+               self.case('branch-at-126',[0x24420002]*126+[0x03e00008,0]),
+               self.case('branch-at-127',[0x24420003]*127+[0x03e00008,0])]
+        report=self.canonical(cases)
+        self.assertEqual(sorted(f['word_count'] for f in report['families']),[2,127,128])
+        self.assertEqual(report['counts']['canonical_linear_regions'],2)
+        self.assertEqual(report['counts']['canonical_terminal_regions'],2)
+        for index,a in enumerate(report['families']):
+            for b in report['families'][index+1:]:
+                self.assertTrue(any(((x^y)&mx&my)!=0 for x,y,mx,my in
+                    zip(a['guard_words'],b['guard_words'],a['guard_masks'],b['guard_masks'])))
+
+    def test_canonical_truncated_windows_are_explicit_obligations(self):
+        report=self.canonical([self.case('short',[0x24420001]*4),
+                               self.case('no-slot',[0x24420001,0x03e00008])])
+        self.assertEqual(report['families'],[])
+        self.assertEqual(report['counts']['truncated_linear_regions_skipped'],1)
+        self.assertEqual(report['counts']['truncated_terminal_regions_skipped'],1)
+
+    def test_canonical_reserved_and_coprocessor_control_remain_fixed(self):
+        report=self.canonical([self.case('cop',[0x24420001,0x45010003,0,0])])
+        family=report['families'][0]
+        self.assertEqual(family['word_count'],3)
+        self.assertEqual(family['guard_masks'],[0xffff0000,0xffffffff,0xffffffff])
+        self.assertFalse(report['native_execution_validated'])
+
+    def test_canonical_policy_rejects_incompatible_entry_and_operand_domains(self):
+        case=self.case('a',[0x03e00008,0])
+        for updates in [{'root_only':False},{'terminal_only':True},
+                        {'operand_policy':'observed'},{'region_policy':'unknown'}]:
+            policy={'minimum_variants':1,'operand_policy':'typed','root_only':True,
+                    'region_policy':'canonical-v1',**updates}
+            with self.subTest(updates=updates),self.assertRaises(ValueError):
+                self.tool.discover([case],**policy)
+
+    def test_compact_canonical_publication_roundtrips_owned_provenance(self):
+        cases=self.variants();output=self.root/'compact.json'
+        original=self.canonical(cases)
+        result=self.tool.write_report(cases,output,minimum_variants=1,operand_policy='typed',
+                                      root_only=True,region_policy='canonical-v1')
+        self.assertEqual(result['schema_version'],2)
+        self.assertNotIn('observations',result['families'][0])
+        self.assertEqual(result['families'][0]['observation_count'],2)
+        loaded=self.tool.read_report(output,observations=True)
+        self.assertEqual(loaded['families'],original['families'])
+        self.assertEqual(len(result['provenance']['origins']),2)
+
+    def test_compact_word_count_is_derived_from_guard_dimensions(self):
+        output=self.root/'derived.json'
+        original=self.canonical(self.variants())
+        result=self.tool.write_report([self.root/'a',self.root/'b'],output,
+            minimum_variants=1,operand_policy='typed',root_only=True,region_policy='canonical-v1')
+        self.assertNotIn('word_count',result['families'][0])
+        loaded=self.tool.read_report(output,observations=True)
+        self.assertEqual(loaded['families'],original['families'])
+        result['families'][0]['word_count']=3
+        output.write_text(json.dumps(result))
+        with self.assertRaisesRegex(ValueError,'invalid compact family dimensions'):
+            self.tool.read_report(output)
+        self.assertGreater(len(result['provenance']['shards']),0)
+        shard=self.root/result['provenance']['shards'][0]['name']
+        shard.write_bytes(shard.read_bytes()+b' ')
+        with self.assertRaises(ValueError):self.tool.read_report(output)
+
+    def test_compact_publication_splits_provenance_and_fails_without_manifest(self):
+        cases=[self.case('many-'+str(i),[0x3c010001+i,0x03e00008,0],0x10000+i*0x1000)
+               for i in range(12)]
+        self.tool.MAX_PROVENANCE_SHARD_BYTES=1024
+        result=self.tool.write_report(cases,self.root/'compact.json',minimum_variants=1,
+            operand_policy='typed',root_only=True,region_policy='canonical-v1')
+        self.assertGreater(len(result['provenance']['shards']),1)
+        self.assertTrue(all(row['bytes']<=1024 for row in result['provenance']['shards']))
+        loaded=self.tool.read_report(self.root/'compact.json',observations=True)
+        self.assertEqual(len(loaded['families'][0]['observations']),12)
+        self.tool.MAX_PROVENANCE_BYTES=1
+        with self.assertRaises(ValueError):
+            self.tool.write_report(cases,self.root/'failed.json',minimum_variants=1,
+                operand_policy='typed',root_only=True,region_policy='canonical-v1')
+        self.assertFalse((self.root/'failed.json').exists())
 
     def test_deterministic_input_order(self):
         cases = self.variants()
@@ -220,6 +375,15 @@ class EeDataFamilyTests(unittest.TestCase):
         self.tool.MAX_REPORT_BYTES=1
         with self.assertRaises(ValueError):self.tool.write_report(self.variants(),output)
         self.assertFalse(output.exists())
+
+    def test_empty_canonical_publication_is_rejected_before_writing(self):
+        case=self.case('single',[0x24420001,0x03e00008,0])
+        output=self.root/'empty.json'
+        with self.assertRaisesRegex(ValueError,'canonical publication has no candidate families'):
+            self.tool.write_report([case],output,minimum_variants=2,operand_policy='typed',
+                                   root_only=True,region_policy='canonical-v1')
+        self.assertFalse(output.exists())
+        self.assertEqual(list(self.root.glob('ee-candidate-provenance-*.json')),[])
 
     def test_invalid_input_does_not_publish_and_cli_has_no_traceback(self):
         cases = self.variants()

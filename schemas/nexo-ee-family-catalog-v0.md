@@ -15,8 +15,10 @@ python lab/generate_ee_family_catalog.py \
   --output fresh-catalog [--shape SHAPE_SHA256] [--case prepared-ee-case]
 ```
 
-The publisher accepts 1..32768 bounded candidates (a report up to 64 MiB) and up to 16 prepared
-root cases. The candidate report must have integer schema 1, laboratory status
+The publisher accepts 1..65536 bounded candidates (a report up to 64 MiB) and up to 16 prepared
+root cases. At most 32768 generated families are admitted after frontend validation;
+exceeding this separate executable budget aborts rather than dropping structures.
+The candidate report must have integer schema 1 or 2, laboratory status
 and Boolean false approval. Words/masks must be numeric uint32 values, with
 1..128 words per structure. Normal entries are aligned byte offsets in the
 complete guard. Current proposals declare their observed entry offsets; retained
@@ -32,7 +34,10 @@ arrays. A separate index exports `compiledEeFamilyProgram()`.
 
 Manifest schema 2 groups bodies into source units, with at most 32 families and
 1 MiB per body unit; the separate descriptor index has an 8 MiB bound. The
-manifest has a 16 MiB publication bound. Stable hash buckets constrain insertion changes to their bucket.
+manifest has a 16 MiB publication bound. `source_partition: hash-trie-v1` divides
+each hash bucket by fixed SHA-256 prefixes until count/byte budgets are met.
+Inserting one body changes only its existing leaf, which may split; it does not
+shift later positional chunks. Historical manifests used positional chunks.
 `family_count`, `source_count` and the numerical `families` ledger describe the
 result. CMake retains schema-1 support for older one-family-per-file catalogs.
 Verified copies use stable content-addressed paths under the build's
@@ -44,6 +49,33 @@ CMake extracts source-name/hash indexes once, avoiding a full family-ledger JSON
 parse for every source query. `--workers 1..16` bounds concurrent converter
 processes; ordered results preserve source bytes across worker counts. Buckets
 split on both their family-count and byte budgets.
+
+`--previous-catalog /path/to/catalog.json` preserves existing complete body units
+whose bytes equal the newly emitted bodies in their original order. Previous
+manifest types, false approvals, dimensions, ordinary paths, names, hashes and
+source budgets are validated first. Missing/changed bodies or a tighter current
+per-unit count make that unit ineligible for reuse; its current bodies are
+regrouped. Duplicate retained ownership is rejected. New bodies use the bounded
+hash-prefix partition. The descriptor index always comes from the current
+admitted set, rather than the previous manifest.
+
+This mode records `source_partition: preserved-units-v1`,
+`previous_catalog_sha256`, `reused_body_sources` and `reused_families`. Without
+a previous manifest, the existing `hash-trie-v1` mode remains available. Exact
+source preservation does not waive compiler/header/ABI dependency checks or
+qualify semantic cache correctness. Large additions can change every ordinary
+hash-tree leaf; preserving complete prior units avoids that regrouping cost.
+
+Compact candidate-v2 publications verify every referenced observation shard
+and its aggregate counts. The publisher binds the parsed report to the exact
+hash of its initial input bytes, rejecting replacement between identity capture
+and parsing. The old candidate schema is still accepted.
+
+`region_policy: canonical-v1` requires typed operands, exactly root offset zero,
+no terminal-only filter and the first transfer plus complete slot, or exactly
+127 linear words. It cannot mix extra prepared roots or other entry policies.
+The offline batch preparer uses this policy by default; `metadata-terminal`
+explicitly reproduces the historical policy. It still does not prove closure.
 
 `--entry-policy root-only` limits proposals to offset-zero bindings, and
 `--terminal-only` declines regions without a complete terminal transfer. These
@@ -147,3 +179,7 @@ fresh captures, proposes typed singleton structures and publishes this catalog
 in one offline command. `--previous-batch` verifies the previous receipt,
 manifest and owned case hashes before reusing them. Failed jobs retain a false
 approval diagnostic receipt. The tool does not launch games or certify closure.
+The preparer now supplies the previous batch's family catalog automatically.
+`--previous-family-catalog` can select the independently compiled prior manifest
+when the build used a different source layout. The receipt records reused
+source/family counts and the prior manifest identity. No address list is needed.

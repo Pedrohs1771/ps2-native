@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'lab'))
@@ -73,6 +74,20 @@ class FamilyCatalogTests(unittest.TestCase):
             self.assertEqual(result['sha256'][name], hashlib.sha256((self.root/'catalog'/name).read_bytes()).hexdigest())
         self.configure(self.root/'catalog', succeeds=True)
 
+    def test_changed_report_is_rejected_before_catalog_publication(self):
+        reader = publisher.read_report
+
+        def replace_before_parse(path, **kwargs):
+            changed = copy.deepcopy(self.report)
+            changed['families'][0]['guard_words'][0] = 0x3c020000
+            path.write_text(json.dumps(changed))
+            return reader(path, **kwargs)
+
+        with patch.object(publisher, 'read_report', side_effect=replace_before_parse):
+            with self.assertRaisesRegex(ValueError, 'candidate report identity differs'):
+                self.generate()
+        self.assertFalse((self.root/'catalog').exists())
+
     def test_root_provenance_and_requested_entry_are_preserved(self):
         case, metadata = self.case()
         result = self.generate(cases=[case])
@@ -132,6 +147,28 @@ class FamilyCatalogTests(unittest.TestCase):
         self.assertEqual(len(shared),1)
         self.assertTrue(all(first['sha256'][name]==second['sha256'][name] for name in shared))
 
+    def test_inserting_one_family_replaces_at_most_one_existing_body_unit(self):
+        families=[]
+        for reg in range(1,13):
+            family={**self.family,'shape_sha256':format(reg,'064x'),
+                    'guard_words':[0x3c000000|(reg<<16),0x03e00008,0]}
+            key=hashlib.sha256(b'ee-native-family-catalog-v0\0'+
+                publisher.encode(family['guard_words'])+
+                publisher.encode(family['guard_masks'])).hexdigest()
+            families.append((key,family))
+        families.sort(key=lambda row:row[0])
+        self.report['families']=[row[1] for row in families[1:9]]
+        self.write_report()
+        first=self.generate('first',families_per_source=2,source_buckets=1)
+        self.report['families'].append(families[0][1]);self.write_report()
+        second=self.generate('second',families_per_source=2,source_buckets=1)
+        before=set(first['sources'])-{'ee_family_catalog.cpp'}
+        after=set(second['sources'])-{'ee_family_catalog.cpp'}
+        self.assertLessEqual(len(before-after),1,
+                             'An insertion may split its leaf, but cannot shift unrelated units')
+        for name in before&after:self.assertEqual(first['sha256'][name],second['sha256'][name])
+        self.assertEqual(second['family_count'],first['family_count']+1)
+
     def test_parallel_generation_preserves_deterministic_source_bytes(self):
         case,_=self.case()
         serial=self.generate('serial',cases=[case],workers=1)
@@ -143,6 +180,77 @@ class FamilyCatalogTests(unittest.TestCase):
         for workers in [False,0,17]:
             with self.subTest(workers=workers),self.assertRaises(ValueError):
                 self.generate('invalid',workers=workers)
+
+    def test_previous_catalog_keeps_existing_body_units_when_families_are_added(self):
+        self.report['families']=[{**self.family,'shape_sha256':format(reg,'064x'),
+            'guard_words':[0x3c000000|(reg<<16),0x03e00008,0]} for reg in range(1,9)]
+        self.write_report()
+        first=self.generate('first',families_per_source=2,source_buckets=1)
+        before={name for name in first['sources'] if name!='ee_family_catalog.cpp'}
+        self.report['families'].append({**self.family,'shape_sha256':'9'*64,
+            'guard_words':[0x3c090000,0x03e00008,0]})
+        self.write_report()
+        second=self.generate('second',families_per_source=2,source_buckets=1,
+            previous_catalog=self.root/'first/catalog.json')
+        self.assertTrue(before.issubset(second['sources']))
+        self.assertEqual(second['reused_body_sources'],len(before))
+        self.assertEqual(second['reused_families'],8)
+        self.assertEqual(second['family_count'],9)
+        for name in before:self.assertEqual(first['sha256'][name],second['sha256'][name])
+        third=self.generate('third',families_per_source=2,source_buckets=1,
+            previous_catalog=self.root/'second/catalog.json')
+        self.assertEqual(third['sha256'],second['sha256'])
+        self.configure(self.root/'third',succeeds=True)
+
+    def test_previous_catalog_rejects_changed_or_unsafe_sources(self):
+        first=self.generate('first')
+        path=self.root/'first/catalog.json';original=path.read_bytes()
+        for updates in [{'strict_approval':True},{'source_count':True},
+                        {'sources':['../outside.cpp','ee_family_catalog.cpp']},
+                        {'sha256':{name:'0'*64 for name in first['sources']}}]:
+            path.write_text(json.dumps({**first,**updates}))
+            with self.subTest(updates=updates),self.assertRaises(ValueError):
+                self.generate('invalid',previous_catalog=path)
+            self.assertFalse((self.root/'invalid').exists())
+        path.write_bytes(original)
+        body=next(name for name in first['sources'] if name!='ee_family_catalog.cpp')
+        (self.root/'first'/body).write_text('changed')
+        with self.assertRaises(ValueError):self.generate('invalid',previous_catalog=path)
+
+    def test_previous_body_is_not_reused_when_current_entry_contract_changes(self):
+        self.family['normal_entry_offsets']=[0,8];self.write_report()
+        first=self.generate('first')
+        self.family['normal_entry_offsets']=[0];self.write_report()
+        second=self.generate('second',previous_catalog=self.root/'first/catalog.json')
+        self.assertEqual(second['reused_body_sources'],0)
+        self.assertEqual(second['reused_families'],0)
+        self.assertFalse(set(first['sources'])&set(second['sources'])-{'ee_family_catalog.cpp'})
+
+    def test_proposals_and_admitted_families_have_separate_budgets(self):
+        other={**self.family,'shape_sha256':'2'*64,'guard_words':[0x3c020000,0x03e00008,0]}
+        self.report['families'].append(other);self.write_report()
+        with patch.object(publisher,'MAX_FAMILIES',1):
+            with self.assertRaises(ValueError):self.generate()
+        self.assertFalse((self.root/'catalog').exists())
+
+    def test_canonical_policy_cannot_mix_short_prefixes_or_extra_entries(self):
+        self.report['discovery_policy']={'region_policy':'canonical-v1','operand_policy':'typed',
+            'root_only':True,'terminal_only':False}
+        self.family['normal_entry_offsets']=[0];self.write_report()
+        valid=self.generate('valid',entry_policy='root-only')
+        self.assertEqual(valid['region_policy'],'canonical-v1')
+        for updates in [{'guard_words':[0x24420000]*3},
+                        {'normal_entry_offsets':[0,4]}, {'guard_masks':[0xffffffff]*3}]:
+            original=copy.deepcopy(self.report)
+            self.family.update(updates);self.write_report()
+            with self.subTest(updates=updates),self.assertRaises(ValueError):
+                self.generate('invalid',entry_policy='root-only')
+            self.report=original;self.family=self.report['families'][0]
+        self.write_report()
+        for kwargs in [{'terminal_only':True},{'entry_policy':'observed'},
+                       {'cases':[self.case()[0]]}]:
+            with self.subTest(kwargs=list(kwargs)),self.assertRaises(ValueError):
+                self.generate('invalid',**{'entry_policy':'root-only',**kwargs})
 
     def test_batched_index_and_body_have_separate_size_bounds(self):
         manifest=self.generate()

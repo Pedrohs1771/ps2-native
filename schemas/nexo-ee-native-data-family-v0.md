@@ -1,6 +1,6 @@
 # Native EE data-family synthesis, laboratory v0
 
-This frontend implements a restricted conversion step of README §12.6. It
+This frontend implements the project's restricted offline family conversion. It
 produces C++ ahead of time using the existing EE instruction and delay-slot
 emitters. It does not approve closure, discover a producer invariant, prove
 fetch/cache/write/alias semantics. Its separate experimental catalog integration
@@ -22,8 +22,9 @@ ANDI/ORI/XORI and ordinary integer loads/stores. Opcodes, register selection and
 remain exact. Parameters are extracted as uint16 values; SW emission explicitly
 sign extends its value through int16/int32 before 32-bit address addition.
 
-Initially, supported regions are linear integer/ordinary memory instructions,
-optionally ending in one J/JAL, register JR/JALR or integer conditional branch and its
+Supported regions are linear integer/ordinary memory instructions and fixed
+FPU instructions emitted by the existing concrete translator, optionally ending
+in one J/JAL, register JR/JALR, integer conditional branch or BC1F/T/FL/TL and its
 complete architectural slot. Conditional destinations, links, internal targets
 and loop/checkpoint locations use relative PCs. Branch-likely and REGIMM link
 forms retain the existing conservative slot/link policy.
@@ -33,7 +34,13 @@ label only after comparison against the actual relocated region; local
 backedges retain checkpoints. External destinations use the existing runtime
 directory. JAL links relocate before its slot. No jump target
 field is a parameter in this profile.
-Local indirect-target specialization, coprocessor branches, syscalls,
+FPU data encodings, including LWC1/SWC1 offsets, remain fully exact: they are
+not additional parameter classes. COP1 register moves reject reserved low bits;
+CFC1 admits FCR0/FCR31 and CTC1 admits FCR31 only. Unsupported formats/functions
+are rejected by the existing translator's reserved-instruction check. A COP1
+branch not recognized as valid control cannot pass as a no-op data instruction.
+
+Local indirect-target specialization, other coprocessor branches, syscalls,
 other unsupported data/device operations and unsupported reserved fields are
 explicitly rejected. Rejection is an open synthesis obligation, not a success
 stub or a request to interpret the rejected bytes.
@@ -100,6 +107,15 @@ entered slots at three physical bases and four signed operand boundaries.
 Generation checks cover an absolute target of zero without a false local jump.
 Actual local J/JAL destinations also exercise a slot entered a second time as
 an ordinary instruction, including an observable JAL link update.
+
+The fixed FPU expansion brings the synthetic corpus to **97 structures / 537
+concrete fixtures / 2,832 normal-entry comparisons**. It covers loads/stores,
+register/control transfers, the supported single-precision operations, CVT.S.W
+and all four FPU branch conditions. Inputs include ordinary values, signed zero,
+subnormal bits, infinities and a quiet NaN; condition flags exercise both branch
+outcomes and likely annulment. These remain comparisons with a shared concrete
+emitter and the project context/RAM model, not independent PS2 FPU fidelity or
+timing qualification.
 
 The fixture generator also accepts an exact proposal from the candidate report:
 

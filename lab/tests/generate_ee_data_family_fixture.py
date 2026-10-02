@@ -6,6 +6,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from discover_ee_data_families import read_report
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('family_tool', type=Path)
@@ -54,10 +56,25 @@ if args.candidate_json is None:
     # executes as the architectural slot and then again as a normal entry.
     shapes.append(([0x08004001,0x24420001],[0xffffffff,0xffffffff],[[]],[0x10000]))
     shapes.append(([0x0c004001,0x27ff0000],[0xffffffff,0xffff0000],[[1],[0xffff]],[0x10000]))
+    # FPU operations retain exact bits and reuse the concrete frontend. Memory
+    # offsets and register/function fields are not parameters in this profile.
+    fpu_words=[0xc4a20080,0xe4a20080,0x44020800,0x44820800,0x4442f800,0x44c2f800]
+    for function in [0,1,2,3,4,5,6,7,12,13,14,15,0x16,0x18,0x19,0x1a,
+                     0x1c,0x1d,0x1e,0x1f,0x24,0x28,0x29,*range(0x30,0x40)]:
+        ft=2
+        if function in [5,6,7,12,13,14,15,0x24]:ft=0
+        fs=0 if function==4 else 1
+        fd=0 if function>=0x30 or function in [0x18,0x19,0x1a,0x1e,0x1f] else 2
+        fpu_words.append(0x46000000|(ft<<16)|(fs<<11)|(fd<<6)|function)
+    fpu_words.append(0x468008a0) # CVT.S.W
+    for word in fpu_words:
+        shapes.append(([word,0x03e00008,0],[0xffffffff]*3,[[]]))
+    for condition in range(4):
+        shapes.append(([0x45000005|(condition<<16),0xe4a20080],[0xffffffff]*2,[[]]))
 if args.candidate_json is not None:
-    if not args.shape or args.candidate_json.stat().st_size > 16 * 1024 * 1024:
+    if not args.shape:
         parser.error('candidate fixture needs a bounded report and exact shape')
-    report = json.loads(args.candidate_json.read_bytes())
+    report = read_report(args.candidate_json,observations=True)
     matches = [family for family in report['families'] if family['shape_sha256'] == args.shape]
     if len(matches) != 1:
         parser.error('candidate shape must be uniquely identified')

@@ -49,7 +49,10 @@ namespace ps2recomp
                         instruction.rt==REGIMM_BLTZL || instruction.rt==REGIMM_BGEZL ||
                         instruction.rt==REGIMM_BLTZAL || instruction.rt==REGIMM_BGEZAL ||
                         instruction.rt==REGIMM_BLTZALL || instruction.rt==REGIMM_BGEZALL));
-                if (transfer || i + 2 != words.size() || !(registerTransfer || directTransfer || conditional))
+                const bool fpuConditional=opcode==OPCODE_COP1 && instruction.rs==COP1_BC &&
+                    instruction.rt<=COP1_BC_BCTL;
+                if (transfer || i + 2 != words.size() ||
+                    !(registerTransfer || directTransfer || conditional || fpuConditional))
                     throw std::invalid_argument("unsupported native family control structure");
                 const uint32_t reserved = instruction.function == SPECIAL_JR ? 0x001fffc0u : 0x001f07c0u;
                 if (registerTransfer && (words[i] & reserved))
@@ -61,13 +64,24 @@ namespace ps2recomp
             else
             {
                 const auto opcode = instruction.opcode;
+                if (opcode==OPCODE_COP1)
+                {
+                    const auto format=instruction.rs;
+                    const bool registerMove=format==COP1_MF || format==COP1_MT ||
+                        format==COP1_CF || format==COP1_CT;
+                    if (format==COP1_BC || (registerMove && (words[i]&0x7ffu)) ||
+                        (format==COP1_CF && instruction.rd!=0u && instruction.rd!=31u) ||
+                        (format==COP1_CT && instruction.rd!=31u))
+                        throw std::invalid_argument("unsupported native family FPU register encoding");
+                }
                 const bool dataOpcode = opcode == OPCODE_SPECIAL || opcode == OPCODE_ADDIU ||
                     opcode == OPCODE_DADDIU || opcode == OPCODE_LUI || opcode == OPCODE_ORI ||
                     opcode == OPCODE_ANDI || opcode == OPCODE_XORI || opcode == OPCODE_SLTI || opcode == OPCODE_SLTIU || opcode == OPCODE_LB ||
                     opcode == OPCODE_LBU || opcode == OPCODE_LH || opcode == OPCODE_LHU ||
                     opcode == OPCODE_LW || opcode == OPCODE_LWU || opcode == OPCODE_LD ||
                     opcode == OPCODE_LQ || opcode == OPCODE_SB || opcode == OPCODE_SH ||
-                    opcode == OPCODE_SW || opcode == OPCODE_SD || opcode == OPCODE_SQ;
+                    opcode == OPCODE_SW || opcode == OPCODE_SD || opcode == OPCODE_SQ ||
+                    opcode == OPCODE_LWC1 || opcode == OPCODE_SWC1 || opcode == OPCODE_COP1;
                 if (!dataOpcode || (opcode == OPCODE_SPECIAL &&
                     (instruction.function == SPECIAL_SYSCALL || instruction.function == SPECIAL_BREAK)) ||
                     generator.translateInstruction(instruction).find("EXCEPTION_RESERVED_INSTRUCTION") != std::string::npos)

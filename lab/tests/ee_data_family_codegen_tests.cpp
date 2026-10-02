@@ -67,7 +67,7 @@ int main()
         suite.Run("unimplemented_control_is_explicitly_rejected",[](TestCase &test)
         {
             const std::array masks{0xffffffffu,0xffffffffu};
-            for(const auto word:{0x0000000cu,0x45010001u,0x49010001u,0x18010001u})
+            for(const auto word:{0x0000000cu,0x45040001u,0x49010001u,0x18010001u})
             {
                 const std::array words{word,0u};
                 test.IsTrue(rejects(words,masks),"Unsupported PC-dependent control is rejected");
@@ -85,6 +85,42 @@ int main()
             test.IsTrue(rejects(early,threeMasks),"Regions must end at their first register transfer");
             test.IsTrue(rejects({},{}),"Empty shape rejected");
             test.IsTrue(rejects(truncated,{}),"Word/mask count mismatch rejected");
+        });
+        suite.Run("fixed_fpu_data_reuses_the_existing_translator",[](TestCase &test)
+        {
+            const std::array masks{0xffffffffu,0xffffffffu,0xffffffffu};
+            const std::array operations{0xc4a20080u,0xe4a20080u,0x44020800u,0x44820800u,
+                                        0x4442f800u,0x44c2f800u,0x46000806u,0x46020880u,
+                                        0x46020832u,0x468008a0u};
+            for(const auto operation:operations)
+            {
+                const std::array words{operation,0x03e00008u,0u};
+                const auto code=ps2recomp::generateNativeDataFamily(words,masks);
+                test.IsTrue(code.find("EXCEPTION_RESERVED_INSTRUCTION")==std::string::npos,
+                            "Fixed supported FPU operation retains its translated semantics");
+                const std::array variable{0xffff0000u,0xffffffffu,0xffffffffu};
+                test.IsTrue(rejects(words,variable),"FPU fields remain exact in this profile");
+            }
+            for(const auto operation:{0x44421000u,0x44c21000u,0x44020801u,0x46200806u})
+            {
+                const std::array words{operation,0x03e00008u,0u};
+                test.IsTrue(rejects(words,masks),"Unsupported control-register or reserved FPU encoding rejected");
+            }
+        });
+        suite.Run("fixed_fpu_branches_keep_condition_and_relative_pc",[](TestCase &test)
+        {
+            const std::array masks{0xffffffffu,0xffffffffu};
+            for(uint32_t condition=0;condition<4;++condition)
+            {
+                const std::array words{0x45000005u|(condition<<16),0xacbf0000u};
+                const auto code=ps2recomp::generateNativeDataFamily(words,masks);
+                test.IsTrue(code.find("ctx->fcr31 & 0x800000")!=std::string::npos,
+                            "FPU control reads the fixed condition flag");
+                test.IsTrue(code.find("ADD32(family_base, 0x18u)")!=std::string::npos,
+                            "FPU branch destination relocates with its base");
+                const std::array variable{0xffff0000u,0xffffffffu};
+                test.IsTrue(rejects(words,variable),"Branch condition and destination cannot be parameters");
+            }
         });
         suite.Run("direct_control_keeps_absolute_targets_and_relocated_links",[](TestCase &test)
         {

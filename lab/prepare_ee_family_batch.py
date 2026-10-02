@@ -62,13 +62,15 @@ def owned_batch_cases(directory):
 
 def prepare_batch(output,family_generator,*,cases=(),captures=(),catalog=None,
                   previous_batch=None,overlay_generator=None,workers=1,
-                  families_per_source=32,source_buckets=64):
+                  families_per_source=32,source_buckets=64,region_policy='canonical-v1',
+                  previous_family_catalog=None):
     output=ordinary_path(output);family_generator=ordinary_path(family_generator)
     cases=list(cases);captures=list(captures)
     input_roots=[]
     if type(workers) is not int or not 1<=workers<=16 or len(captures)>16 or \
             type(families_per_source) is not int or not 1<=families_per_source<=32 or \
-            type(source_buckets) is not int or not 1<=source_buckets<=256:
+            type(source_buckets) is not int or not 1<=source_buckets<=256 or \
+            region_policy not in ('canonical-v1','metadata-terminal'):
         raise ValueError('invalid offline batch budgets')
     if catalog is not None:
         catalog=ordinary_path(catalog);input_roots.append(catalog)
@@ -76,6 +78,11 @@ def prepare_batch(output,family_generator,*,cases=(),captures=(),catalog=None,
     if previous_batch is not None:
         previous_batch=ordinary_path(previous_batch);input_roots.append(previous_batch)
         cases+=owned_batch_cases(previous_batch)
+        if previous_family_catalog is None:
+            previous_family_catalog=previous_batch/'catalog/catalog.json'
+    if previous_family_catalog is not None:
+        previous_family_catalog=ordinary_path(previous_family_catalog)
+        input_roots.append(previous_family_catalog.parent)
     cases=[ordinary_path(case) for case in cases]
     captures=[ordinary_path(capture) for capture in captures]
     if not cases and not captures or len(cases)+len(captures)>MAX_CASES:
@@ -127,21 +134,27 @@ def prepare_batch(output,family_generator,*,cases=(),captures=(),catalog=None,
                 'metadata_sha256':digest(metadata),'image_sha256':digest(image)})
         report['owned_cases']=len(unique)
         stage='structure-discovery'
+        terminal_only=region_policy=='metadata-terminal'
         proposals=write_report(unique.values(),output/'candidates.json',minimum_variants=1,
-                               operand_policy='typed',root_only=True,terminal_only=True)
+                               operand_policy='typed',root_only=True,terminal_only=terminal_only,
+                               region_policy='metadata' if terminal_only else 'canonical-v1')
         report['candidate_count']=len(proposals['families'])
         report['discovery_policy']=proposals['discovery_policy']
         report['discovery_counts']=proposals['counts']
         stage='catalog-generation'
         manifest=generate(output/'candidates.json',family_generator,output/'catalog',
-            entry_policy='root-only',terminal_only=True,workers=workers,
-            families_per_source=families_per_source,source_buckets=source_buckets)
+            entry_policy='root-only',terminal_only=terminal_only,workers=workers,
+            families_per_source=families_per_source,source_buckets=source_buckets,
+            previous_catalog=previous_family_catalog)
         if digest(bounded_bytes(family_generator,64*1024*1024))!=family_hash or \
                 (overlay_hash is not None and
                  digest(bounded_bytes(overlay_generator,64*1024*1024))!=overlay_hash):
             raise ValueError('offline frontend changed during the batch')
         report['family_count']=manifest['family_count'];report['source_count']=manifest['source_count']
         report['declined_structures']=len(manifest['rejected'])
+        report['reused_body_sources']=manifest['reused_body_sources']
+        report['reused_families']=manifest['reused_families']
+        report['previous_family_catalog_sha256']=manifest['previous_catalog_sha256']
         report['family_catalog_sha256']=digest((output/'catalog/catalog.json').read_bytes())
         report['manifest_published']=True;report['status']='PUBLISHED_LABORATORY'
         return report
@@ -161,17 +174,21 @@ def main():
     parser.add_argument('--capture',type=Path,action='append',default=[])
     parser.add_argument('--catalog',type=Path)
     parser.add_argument('--previous-batch',type=Path)
+    parser.add_argument('--previous-family-catalog',type=Path,
+                        help='Reuse exact current bodies from this prior manifest; defaults to the previous batch catalog')
     parser.add_argument('--family-generator',type=Path,required=True)
     parser.add_argument('--overlay-generator',type=Path)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--workers',type=int,default=1)
     parser.add_argument('--families-per-source',type=int,default=32)
     parser.add_argument('--source-buckets',type=int,default=64)
+    parser.add_argument('--region-policy',choices=['canonical-v1','metadata-terminal'],default='canonical-v1')
     args=parser.parse_args()
     try:
         report=prepare_batch(args.output,args.family_generator,cases=args.case,captures=args.capture,
             catalog=args.catalog,previous_batch=args.previous_batch,overlay_generator=args.overlay_generator,
-            workers=args.workers,families_per_source=args.families_per_source,source_buckets=args.source_buckets)
+            workers=args.workers,families_per_source=args.families_per_source,source_buckets=args.source_buckets,
+            region_policy=args.region_policy,previous_family_catalog=args.previous_family_catalog)
         print(json.dumps({key:report[key] for key in ['status','owned_cases','candidate_count',
             'family_count','declined_structures','seconds']}))
     except (ValueError,OSError,KeyError,TypeError,RecursionError,subprocess.TimeoutExpired) as error:

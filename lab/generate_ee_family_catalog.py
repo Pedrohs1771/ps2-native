@@ -10,7 +10,8 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-from discover_ee_data_families import MAX_FAMILIES, bounded_bytes, ordinary_path, parameter_kind
+from discover_ee_data_families import (MAX_FAMILIES, MAX_CANDIDATES, bounded_bytes,
+    ordinary_path, parameter_kind, canonical_region, read_report)
 
 
 def uint(value):
@@ -19,6 +20,44 @@ def uint(value):
 
 def encode(words):
     return struct.pack('<' + 'I' * len(words), *words)
+
+
+def reusable_body_sources(path,bodies,families_per_source):
+    """Reuse complete units only when their current emitted bytes are exact."""
+    path=ordinary_path(path);raw=bounded_bytes(path,16*1024*1024);previous=json.loads(raw)
+    if not isinstance(previous,dict) or type(previous.get('schema_version')) is not int or \
+            previous['schema_version']!=2 or previous.get('symbol')!='compiledEeFamilyProgram' or \
+            previous.get('strict_approval') is not False or previous.get('closure_proved') is not False:
+        raise ValueError('invalid previous family catalog')
+    names=previous.get('sources');hashes=previous.get('sha256');count=previous.get('source_count')
+    families=previous.get('family_count');records=previous.get('families')
+    if type(families) is not int or not 1<=families<=MAX_FAMILIES or \
+            not isinstance(records,list) or len(records)!=families or \
+            type(count) is not int or not 2<=count<=families+1 or not isinstance(names,list) or \
+            len(names)!=count or any(not isinstance(name,str) for name in names) or \
+            len(set(names))!=count or names.count('ee_family_catalog.cpp')!=1 or \
+            not isinstance(hashes,dict) or set(hashes)!=set(names):
+        raise ValueError('invalid previous family source dimensions')
+    available=dict(bodies);sources={};retained=set()
+    for name in names:
+        index=name=='ee_family_catalog.cpp'
+        if not index and not re.fullmatch(r'ee_family_[0-9a-f]{64}\.cpp',name):
+            raise ValueError('invalid previous family source name')
+        data=bounded_bytes(path.parent/name,8*1024*1024 if index else 1024*1024)
+        digest=hashlib.sha256(data).hexdigest()
+        if hashes[name]!=digest or (not index and name!='ee_family_'+digest+'.cpp'):
+            raise ValueError('previous family source identity differs')
+        if index:continue
+        code=data.decode();keys=re.findall(r'^namespace ee_family_([0-9a-f]{64}) \{$',code,re.M)
+        if not keys or len(keys)>32 or len(set(keys))!=len(keys):
+            raise ValueError('invalid previous family body structure')
+        if len(keys)>families_per_source:continue
+        if any(key not in available for key in keys):continue
+        if code!='\n'.join(available[key] for key in keys):continue
+        if retained.intersection(keys):
+            raise ValueError('duplicate previous family body ownership')
+        sources[name]=code;retained.update(keys)
+    return sources,retained,hashlib.sha256(raw).hexdigest()
 
 
 def root_shape(case, *, typed_data=False):
@@ -57,19 +96,19 @@ def root_shape(case, *, typed_data=False):
 
 def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_policy='observed',
              terminal_only=False, families_per_source=16, root_data_parameters=False,
-             source_buckets=128, workers=1):
+             source_buckets=128, workers=1, previous_catalog=None):
     output = ordinary_path(output)
     if output.exists():
         raise ValueError('family catalog output must be fresh')
     generator = ordinary_path(generator)
     report_bytes = bounded_bytes(report_path, 64 * 1024 * 1024)
-    report = json.loads(report_bytes)
-    if not isinstance(report, dict) or report.get('schema_version') != 1 or \
+    report = read_report(report_path,expected_sha256=hashlib.sha256(report_bytes).hexdigest())
+    if not isinstance(report, dict) or report.get('schema_version') not in (1,2) or \
             type(report['schema_version']) is not int or report.get('status') != 'CANDIDATES_LABORATORY' or \
             report.get('strict_approval') is not False:
         raise ValueError('expected a laboratory candidate report')
     families = report.get('families')
-    if not isinstance(families, list) or not 1 <= len(families) <= MAX_FAMILIES or len(cases) > 16 or \
+    if not isinstance(families, list) or not 1 <= len(families) <= MAX_CANDIDATES or len(cases) > 16 or \
             type(families_per_source) is not int or not 1 <= families_per_source <= 32 or type(terminal_only) is not bool or \
             type(root_data_parameters) is not bool or type(source_buckets) is not int or not 1 <= source_buckets <= 256 or \
             type(workers) is not int or not 1 <= workers <= 16:
@@ -77,6 +116,14 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
     selected = set(only_shapes)
     if entry_policy not in ('observed','root-only'):
         raise ValueError('invalid family entry policy')
+    policy=report.get('discovery_policy',{})
+    if not isinstance(policy,dict):raise ValueError('invalid discovery policy')
+    region_policy=policy.get('region_policy','metadata')
+    canonical=region_policy=='canonical-v1'
+    if region_policy not in ('metadata','canonical-v1') or (canonical and
+        (entry_policy!='root-only' or terminal_only or cases or policy.get('root_only') is not True or
+         policy.get('terminal_only') is not False or policy.get('operand_policy')!='typed')):
+        raise ValueError('canonical root regions cannot mix other entry or operand policies')
     if any(not isinstance(key, str) or not re.fullmatch('[0-9a-f]{64}', key) for key in selected):
         raise ValueError('invalid requested shape identity')
     shapes = {}
@@ -90,6 +137,9 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
                 len(set(offsets)) != len(offsets):
             raise ValueError('invalid bounded candidate structure')
         words = [word & mask for word, mask in zip(words, masks)]
+        if canonical and (offsets!=[0] or canonical_region(words)[0]!=len(words) or
+                masks!=[0xffff0000 if parameter_kind(word) else 0xffffffff for word in words]):
+            raise ValueError('candidate does not satisfy the canonical region contract')
         key = hashlib.sha256(b'ee-native-family-catalog-v0\0' + encode(words) + encode(masks)).hexdigest()
         if key in shapes:
             shapes[key][2].update(offsets)
@@ -116,6 +166,8 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
                 len(set(offsets))!=len(offsets):
             raise ValueError('invalid declared family normal entries')
         if entry_policy == 'root-only':
+            if canonical and offsets!=[0]:
+                raise ValueError('canonical regions require exactly the root normal entry')
             if not isinstance(offsets,list) or 0 not in offsets:
                 continue
             offsets = [0]
@@ -127,7 +179,7 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
         words, masks, offsets, ledger = root_shape(case,typed_data=root_data_parameters)
         add(words, masks, offsets)
         root_cases.append(ledger)
-    if not shapes or len(shapes) > MAX_FAMILIES:
+    if not shapes or len(shapes) > MAX_CANDIDATES:
         raise ValueError('combined family budget exceeded')
     generator_hash = hashlib.sha256(bounded_bytes(generator, 64 * 1024 * 1024)).hexdigest()
     sources, descriptors, rejected, bodies, admitted = {}, [], [], [], []
@@ -173,33 +225,43 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
                         rejected.append(failure)
                         continue
                     words, masks, offsets = shapes[key]
+                    if len(descriptors)>=MAX_FAMILIES:
+                        raise ValueError('admitted family budget exceeded; no structures were discarded')
                     bodies.append((key,source))
                     descriptors.append('ee_family_' + key + '_descriptor')
                     admitted.append({'key':key,'words':words,'masks':masks,'normal_entry_offsets':sorted(offsets)})
     if hashlib.sha256(bounded_bytes(generator, 64 * 1024 * 1024)).hexdigest() != generator_hash or not descriptors:
         raise ValueError('family generator changed or produced no supported structure')
+    retained=set();previous_digest=None
+    if previous_catalog is not None:
+        sources,retained,previous_digest=reusable_body_sources(previous_catalog,bodies,families_per_source)
+    reused_source_count=len(sources)
     buckets={}
     for key,body in bodies:
-        buckets.setdefault(int(key[:8],16)%source_buckets,[]).append(body)
+        if key in retained:continue
+        size=len(body.encode())
+        if size>1024*1024:
+            raise ValueError('single family source exceeds its bound')
+        buckets.setdefault(int(key[:8],16)%source_buckets,[]).append((key,body,size))
     def publish_rows(rows):
         if rows:
             code='\n'.join(rows)
             name='ee_family_'+hashlib.sha256(code.encode()).hexdigest()+'.cpp'
             sources[name]=code
-    for bucket in sorted(buckets):
-        rows=[]
-        size=0
-        for body in buckets[bucket]:
-            body_bytes=len(body.encode())
-            if body_bytes>1024*1024:
-                raise ValueError('single family source exceeds its bound')
-            if rows and (len(rows)>=families_per_source or size+1+body_bytes>1024*1024):
-                publish_rows(rows)
-                rows=[]
-                size=0
-            size+=body_bytes+(1 if rows else 0)
-            rows.append(body)
-        publish_rows(rows)
+    def publish_leaf(rows,depth=0):
+        if not rows:return
+        size=sum(row[2] for row in rows)+len(rows)-1
+        if len(rows)<=families_per_source and size<=1024*1024:
+            publish_rows([row[1] for row in rows])
+            return
+        if depth>=256:
+            raise ValueError('distinct family identities cannot share an oversized leaf')
+        # Fixed hash prefixes preserve every unrelated leaf when a new body is
+        # inserted. Positional chunks shifted all later bodies in a bucket.
+        children=[[],[]]
+        for row in rows:children[(int(row[0],16)>>(255-depth))&1].append(row)
+        for child in children:publish_leaf(child,depth+1)
+    for bucket in sorted(buckets):publish_leaf(buckets[bucket])
     index = '#include "ps2_ee_data_family.h"\n#include <array>\n'
     index += ''.join('ps2native::ee_family::Family ' + name + '();\n' for name in descriptors)
     index += 'const ps2native::ee_family::Program &compiledEeFamilyProgram(){\nstatic const std::array<ps2native::ee_family::Family,' + str(len(descriptors)) + '> families{{\n'
@@ -212,15 +274,20 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
                 'family_count': len(descriptors), 'generator_sha256': generator_hash,
                 'source_count':len(sources),'families_per_source':families_per_source,'families':admitted,
                 'source_buckets':source_buckets,'root_data_parameters':root_data_parameters,
+                'source_partition':'preserved-units-v1' if previous_catalog is not None else 'hash-trie-v1',
+                'previous_catalog_sha256':previous_digest,
+                'reused_body_sources':reused_source_count,'reused_families':len(retained),
                 'generation_workers':workers,
                 'publisher_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'candidate_report_sha256': hashlib.sha256(report_bytes).hexdigest(), 'rejected': rejected,
                 'selected_shapes': sorted(selected), 'root_cases': root_cases,
                 'entry_policy': entry_policy,
+                'region_policy':region_policy,
                 'terminal_only':terminal_only,'data_operand_profile':2,
                 'strict_approval': False, 'closure_proved': False,
                 'scope': 'finite experimental precompiled EE structures; no producer/fetch/fidelity/game qualification'}
-    encoded_manifest=json.dumps(manifest,indent=2)+'\n'
+    encoded_manifest=(json.dumps(manifest,separators=(',',':')) if canonical else
+                      json.dumps(manifest,indent=2))+'\n'
     if len(encoded_manifest.encode())>16*1024*1024:
         raise ValueError('family manifest exceeds its bound')
     output.mkdir()
@@ -243,13 +310,15 @@ def main():
     parser.add_argument('--source-buckets',type=int,default=128)
     parser.add_argument('--root-data-parameters',action='store_true')
     parser.add_argument('--workers',type=int,default=1)
+    parser.add_argument('--previous-catalog',type=Path,
+                        help='Preserve prior source units with exactly matching current emitted bodies')
     args = parser.parse_args()
     try:
         result = generate(args.candidates, args.generator, args.output, cases=args.case,
                           only_shapes=args.shape,entry_policy=args.entry_policy,
                           terminal_only=args.terminal_only,families_per_source=args.families_per_source,
                           root_data_parameters=args.root_data_parameters,source_buckets=args.source_buckets,
-                          workers=args.workers)
+                          workers=args.workers,previous_catalog=args.previous_catalog)
         print(json.dumps({'families': result['family_count'], 'rejected': len(result['rejected']), 'strict_approval': False}))
     except (ValueError, OSError, KeyError, TypeError, RecursionError, subprocess.TimeoutExpired) as error:
         parser.error(str(error))

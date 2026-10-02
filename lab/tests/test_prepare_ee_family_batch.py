@@ -131,5 +131,33 @@ class FamilyBatchTests(unittest.TestCase):
     def test_case_identity_frames_metadata_and_image_lengths(self):
         self.assertNotEqual(batch.case_identity(b'ab',b'c'),batch.case_identity(b'a',b'bc'))
 
+    def test_expansion_reuses_previous_catalog_units_automatically(self):
+        self.run_batch(cases=[self.case('first')])
+        previous=self.root/'output'
+        case=self.case('second')
+        image=struct.pack('<III',0x3c030001,0x03e00008,0)
+        (case/'snapshot.bin').write_bytes(image)
+        path=case/'bank.json';metadata=json.loads(path.read_text())
+        metadata['image_sha256']=hashlib.sha256(image).hexdigest();path.write_text(json.dumps(metadata))
+        result=batch.prepare_batch(self.root/'next',self.family,previous_batch=previous,cases=[case])
+        self.assertEqual(result['owned_cases'],2)
+        catalog=json.loads((self.root/'next/catalog/catalog.json').read_text())
+        self.assertEqual(catalog['reused_families'],1)
+        self.assertEqual(catalog['reused_body_sources'],1)
+
+    def test_default_batch_includes_linear_continuations_without_manual_roots(self):
+        case=self.case('split');words=[0x3c020001,0x24420002,0xac820000,0x24420003,0x03e00008,0]
+        image=struct.pack('<6I',*words);(case/'snapshot.bin').write_bytes(image)
+        metadata=json.loads((case/'bank.json').read_text());base=metadata['base']
+        metadata.update(image_bytes=len(image),image_sha256=hashlib.sha256(image).hexdigest(),
+            bindings=[{'address':base,'source_begin':base,'source_bytes':12},
+                      {'address':base+12,'source_begin':base+12,'source_bytes':12}])
+        (case/'bank.json').write_text(json.dumps(metadata))
+        result=self.run_batch(cases=[case])
+        catalog=json.loads((self.root/'output/catalog/catalog.json').read_text())
+        self.assertEqual(sorted(len(row['words']) for row in catalog['families']),[3,6])
+        self.assertEqual(result['discovery_policy']['region_policy'],'canonical-v1')
+        self.assertFalse(catalog['terminal_only'])
+
 
 if __name__=='__main__':unittest.main()
