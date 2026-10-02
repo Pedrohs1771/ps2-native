@@ -3,6 +3,7 @@
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/r5900_decoder.h"
 #include "ps2recomp/types.h"
+#include "ps2_native_data_operands.h"
 
 #include <sstream>
 #include <stdexcept>
@@ -31,18 +32,29 @@ namespace ps2recomp
             if (masks[i] != 0xffffffffu)
             {
                 if (masks[i] != 0xffff0000u ||
-                    !((instruction.opcode == OPCODE_LUI && instruction.rs == 0u) || instruction.opcode == OPCODE_SW))
-                    throw std::invalid_argument("family masks may vary only typed LUI/SW data fields");
+                    ps2native::nativeDataOperand(words[i]) == ps2native::DataOperand::None)
+                    throw std::invalid_argument("family masks may vary only supported typed data fields");
                 generator.m_nativeDataSlots.emplace(pc,generator.m_nativeDataSlots.size());
             }
             if (instruction.hasDelaySlot)
             {
-                if (transfer || i + 2 != words.size() || instruction.opcode != OPCODE_SPECIAL ||
-                    (instruction.function != SPECIAL_JR && instruction.function != SPECIAL_JALR))
+                const auto opcode=instruction.opcode;
+                const bool registerTransfer=opcode==OPCODE_SPECIAL &&
+                    (instruction.function==SPECIAL_JR || instruction.function==SPECIAL_JALR);
+                const bool conditional=opcode==OPCODE_BEQ || opcode==OPCODE_BNE || opcode==OPCODE_BEQL ||
+                    opcode==OPCODE_BNEL || opcode==OPCODE_BLEZ || opcode==OPCODE_BGTZ ||
+                    opcode==OPCODE_BLEZL || opcode==OPCODE_BGTZL ||
+                    (opcode==OPCODE_REGIMM && (instruction.rt==REGIMM_BLTZ || instruction.rt==REGIMM_BGEZ ||
+                        instruction.rt==REGIMM_BLTZL || instruction.rt==REGIMM_BGEZL ||
+                        instruction.rt==REGIMM_BLTZAL || instruction.rt==REGIMM_BGEZAL ||
+                        instruction.rt==REGIMM_BLTZALL || instruction.rt==REGIMM_BGEZALL));
+                if (transfer || i + 2 != words.size() || !(registerTransfer || conditional))
                     throw std::invalid_argument("unsupported native family control structure");
                 const uint32_t reserved = instruction.function == SPECIAL_JR ? 0x001fffc0u : 0x001f07c0u;
-                if (words[i] & reserved)
+                if (registerTransfer && (words[i] & reserved))
                     throw std::invalid_argument("unsupported register-transfer reserved fields");
+                if ((opcode==OPCODE_BLEZ || opcode==OPCODE_BGTZ || opcode==OPCODE_BLEZL || opcode==OPCODE_BGTZL) && instruction.rt)
+                    throw std::invalid_argument("unsupported conditional reserved fields");
                 transfer = true;
             }
             else
@@ -50,7 +62,7 @@ namespace ps2recomp
                 const auto opcode = instruction.opcode;
                 const bool dataOpcode = opcode == OPCODE_SPECIAL || opcode == OPCODE_ADDIU ||
                     opcode == OPCODE_DADDIU || opcode == OPCODE_LUI || opcode == OPCODE_ORI ||
-                    opcode == OPCODE_ANDI || opcode == OPCODE_XORI || opcode == OPCODE_LB ||
+                    opcode == OPCODE_ANDI || opcode == OPCODE_XORI || opcode == OPCODE_SLTI || opcode == OPCODE_SLTIU || opcode == OPCODE_LB ||
                     opcode == OPCODE_LBU || opcode == OPCODE_LH || opcode == OPCODE_LHU ||
                     opcode == OPCODE_LW || opcode == OPCODE_LWU || opcode == OPCODE_LD ||
                     opcode == OPCODE_LQ || opcode == OPCODE_SB || opcode == OPCODE_SH ||

@@ -17,6 +17,7 @@
 #include "ps2recomp/recompiler_reporter.h"
 #include "ps2recomp/types.h"
 #include "ps2_runtime_calls.h"
+#include "ps2_native_data_operands.h"
 
 #include <fmt/format.h>
 #include <sstream>
@@ -259,13 +260,16 @@ namespace ps2recomp
     std::string CodeGenerator::dataImmediateExpression(const Instruction &instruction) const
     {
         const auto slot = m_nativeDataSlots.find(instruction.address);
+        const auto kind = ps2native::nativeDataOperand(instruction.raw);
         if (!m_nativeDataFamily || slot == m_nativeDataSlots.end())
-            return std::to_string(instruction.opcode == OPCODE_LUI ? instruction.immediate : instruction.simmediate);
+            return std::to_string(instruction.opcode == OPCODE_LUI || instruction.opcode == OPCODE_ANDI ||
+                instruction.opcode == OPCODE_ORI || instruction.opcode == OPCODE_XORI
+                ? instruction.immediate : instruction.simmediate);
         const auto value = fmt::format("family_parameters[{}]",slot->second);
-        if (instruction.opcode == OPCODE_LUI && instruction.rs == 0u)
+        if (kind == ps2native::DataOperand::Unsigned16)
             return value;
-        if (instruction.opcode == OPCODE_SW)
-            return "(uint32_t)(int32_t)(int16_t)" + value;
+        if (kind == ps2native::DataOperand::Signed16)
+            return "(int32_t)(int16_t)" + value;
         throw std::invalid_argument("unsupported native data operand");
     }
 

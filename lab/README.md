@@ -311,6 +311,78 @@ passed. Coverage of loaded code, control-flow
 family synthesis, producer/fetch proofs, native VU, Android and 60 FPS remain
 open. Evidence is under `build/lab/latest-ee-family-admission-job.txt`.
 
+### Batched typed families and stable source cache, 2026-10-01
+
+The synthesis frontend and runtime descriptor validation now share a classifier
+for 20 low-16 integer data operand classes. Integer conditional branches,
+branch-likely and REGIMM link forms use relocated precise PCs and preserve the
+existing conservative slot policy. Opcode/register/control bits stay fixed.
+Direct J/JAL, coprocessor branches and unsupported operations remain explicit
+synthesis failures. This is restricted ahead-of-time synthesis, not universal
+guest execution support.
+
+The publisher groups compiled structures into bounded hash buckets and records
+the numerical family ledger in manifest schema 2. CMake verifies source hashes
+and uses immutable content-addressed copies, retaining object paths across
+fresh job directories. A changed header or compiler flag still invalidates its
+normal dependencies. Corrupt cached bytes are rejected.
+
+The current capture corpus proposed 1,956 families from 36 cases. Offline
+publication admitted **1,622 structures in 69 source files**, using root-only
+entries, terminal-transfer filtering and typed operands in one prepared root.
+These restrictions and the once-observed root parameter proposal are recorded
+in provenance. Counts measure this corpus, not supported games or an ISO
+compatibility percentage. Unsupported/filtered proposals remain in the ledger.
+
+Measured under the local development profile, with no LTO:
+
+- The typed catalog's cold cache build took **55.421 seconds**; its game link
+  took **11.823 seconds**, compiling zero original game source units.
+- Moving an identical catalog into a fresh job directory took **0.227 seconds**
+  to rebuild its family target, with zero compilations.
+- Republishing after the final emitter regression fix took **4.980 seconds**;
+  all 69 source files and the numerical family ledger remained unchanged.
+- All 34 concrete bank sources remained byte-identical to the archived
+  converter after the final changes. This checks default emission stability,
+  not independent semantic correctness.
+
+The generated differential fixture passes **1,464 normal-entry comparisons**
+across 43 structures and 360 concrete fixtures, checking the identified EE
+context and all 32 MiB RAM. The parameterized ADDIU-to-zero slot test first
+failed because the canonical zero elided delay metadata, then passed with its
+live-parameter emission guard. Comparisons share semantic emitters; they do
+not cover the complete machine, independent hardware or campaign fidelity.
+
+`nexo_ee_family_probe` diagnoses admission against immutable captured RAM and
+constructed normal-entry contexts without invoking guest callbacks. Its JSON
+records lookup status, candidate checks and false approval/execution flags.
+For the relocated callback and its continuation, both queries returned Ready;
+the result qualified a guard lookup only.
+
+The subsequent owned Xvfb/silent-audio game test passed that relocated callback
+and advanced into another loaded module. It stopped at an uncovered normal
+entry `0x1a51b70`, reached through the loader's indirect call. Its eleven-word
+prefix ends in BNE plus a complete slot and is supported by the current generic
+frontend; the current catalog does not provide coverage there. No new concrete
+bank or address-specific TOML was added in this increment. Capture, prefix
+diagnosis and module coverage remain separate steps; the latter still needs an
+automated batch expansion policy.
+
+This menu regression used finite image templates prepared by the agent, ran
+174.015 seconds and ended during loading. It is not a zero-shot campaign
+validator. Its owned processes exited; changed memory-card files were archived
+and the five original files restored with identical hashes. VU remains
+diagnostic in this game experiment. Full gameplay, graphics/audio/save fidelity,
+native VU closure, physical Android and sustained 60 FPS are still unqualified.
+
+Evidence and frozen native artifacts are identified by
+`build/lab/latest-ee-family-batch-job.txt`; generated game assets stay ignored.
+Final native-profile admission/catalog/probe checks passed all five selected
+CTest groups. After freezing those artifacts and restoring the diagnostic
+build profile, the rebuilt regression suite passed **77/77 CTest groups** and
+the general C++ suite **487/487 cases**. Diagnostic-profile success does not
+approve a native game package.
+
 ## Initial IOP AOT path
 
 The IOP now also has an instruction-specialized V0 bridge integrated with IRX

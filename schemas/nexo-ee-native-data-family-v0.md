@@ -16,14 +16,18 @@ std::string ps2recomp::generateNativeDataFamily(
 
 Each input has 1..128 numeric words and the counts must match. Word values
 represent a fixed candidate structure, not a program interpreted at runtime.
-Masks may be `0xffffffff` or `0xffff0000`. The latter is allowed only for a LUI
-with zero source field or a SW. Opcodes, register selection and control encodings
+Masks may be `0xffffffff` or `0xffff0000`. The latter is allowed only for one of
+the 20 data classes in `ps2_native_data_operands.h`: LUI(rs=0), ADDIU, SLTI/SLTIU,
+ANDI/ORI/XORI and ordinary integer loads/stores. Opcodes, register selection and control encodings
 remain exact. Parameters are extracted as uint16 values; SW emission explicitly
 sign extends its value through int16/int32 before 32-bit address addition.
 
 Initially, supported regions are linear integer/ordinary memory instructions,
-optionally ending in one register JR/JALR and its complete architectural slot.
-Local indirect-target specialization, conditional/direct branches, syscalls,
+optionally ending in one register JR/JALR or integer conditional branch and its
+complete architectural slot. Conditional destinations, links, internal targets
+and loop/checkpoint locations use relative PCs. Branch-likely and REGIMM link
+forms retain the existing conservative slot/link policy.
+Local indirect-target specialization, direct J/JAL, coprocessor branches, syscalls,
 other unsupported data/device operations and unsupported reserved fields are
 explicitly rejected. Rejection is an open synthesis obligation, not a success
 stub or a request to interpret the rejected bytes.
@@ -74,6 +78,17 @@ entries**, including signed-immediate boundaries, relocated PCs, saved-frame
 register restoration, JALR link-before-slot behavior and standalone slots. They
 compare all fields of the identified EE context codec and every byte of 32 MiB
 RAM. Guard tests verify rejected contexts/structural bytes have no effects.
+
+That initial fixture is now expanded to **43 structures / 360 concrete fixtures /
+1,464 normal-entry comparisons**: all 20 data classes at signed/unsigned
+boundaries, both branch outcomes, branch-likely annulment, REGIMM links, external
+positive/negative targets, internal backedges, variable decrements and
+parameterized ADDIU-to-zero slots/body operations. A new slot test first failed
+because canonical zero erased the concrete emitter's delay metadata; emission
+now retains its parameter-dependent decision. Every
+comparison checks the identified context and 32 MiB RAM against the shared
+emitter reference. This remains a model regression, not independent PS2
+equivalence or whole-machine replay.
 
 The fixture generator also accepts an exact proposal from the candidate report:
 

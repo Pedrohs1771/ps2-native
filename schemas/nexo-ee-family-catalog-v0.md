@@ -15,11 +15,12 @@ python lab/generate_ee_family_catalog.py \
   --output fresh-catalog [--shape SHAPE_SHA256] [--case prepared-ee-case]
 ```
 
-The publisher accepts 1..512 bounded candidate records and up to 16 prepared
+The publisher accepts 1..4096 bounded candidates (a report up to 64 MiB) and up to 16 prepared
 root cases. The candidate report must have integer schema 1, laboratory status
 and Boolean false approval. Words/masks must be numeric uint32 values, with
 1..128 words per structure. Normal entries are aligned byte offsets in the
-complete guard. Candidate structures expose all normal resume labels; prepared
+complete guard. Current proposals declare their observed entry offsets; retained
+older reports keep the all-resume-label convention. Prepared
 cases expose only their captured requested entry. The synthesis frontend still
 rejects unsupported control, operations, masks and reserved fields.
 
@@ -28,6 +29,27 @@ publisher derives its own filename digest from these numeric inputs; proposed
 shape identifiers cannot supply source expressions or paths. Each generated
 body has a separate namespace, descriptor and immutable words/masks/entry
 arrays. A separate index exports `compiledEeFamilyProgram()`.
+
+Manifest schema 2 groups bodies into source units, with at most 32 families and
+1 MiB per unit. Stable hash buckets constrain insertion changes to their bucket.
+`family_count`, `source_count` and the numerical `families` ledger describe the
+result. CMake retains schema-1 support for older one-family-per-file catalogs.
+Verified copies use stable content-addressed paths under the build's
+`ee-family-source-cache`, so fresh job directories do not invalidate unchanged
+objects. Header/compiler dependencies still apply; corrupted cache bytes fail.
+Sources are checked again before publication and the cached copy is hashed
+after copying, so a changed source cannot silently establish a new cache identity.
+
+`--entry-policy root-only` limits proposals to offset-zero bindings, and
+`--terminal-only` declines regions without a complete terminal transfer. These
+are explicit laboratory coverage limits, not closure proofs. All normal labels
+remain supported by the generated body.
+
+`--root-data-parameters` proposes eligible data fields in a prepared root even
+when seen only once. It keeps opcode/register/branch bits fixed and records this
+policy in provenance. A captured data address is then a live typed operand.
+The broader parameter domains still need producer, alias/fetch and independent
+fidelity evidence before release approval.
 
 The manifest records all generated source hashes, the converter before/after
 identity, publisher identity, input report hash, selected shapes and exact
@@ -55,7 +77,7 @@ struct Program { std::span<const Family> families; };
 The dispatcher validates the budgets, callback, sizes, masks and unique entry
 offsets, then owns copies of the identity arrays and its entry index. Duplicate
 complete structures are rejected rather than allowing competing callbacks.
-Only full-word masks or low-16 data masks on LUI(rs=0)/SW are accepted. The
+Only full-word masks or low-16 data masks on the 20 supported operand classes are accepted. The
 frontend independently checks support for the complete native body.
 
 Lookup reads the word at an aligned physical PC and uses exact/upper-16 indexes
@@ -108,3 +130,9 @@ remains diagnostic, and game fidelity, full gameplay, Android and sustained
 60 FPS are unqualified. The next discovery work must cover whole loaded code
 structures and unsupported control flow in batches, with model regressions,
 producer-domain evidence and independent validation before release approval.
+
+The later batch experiment admitted 1,622 structures in 69 stable source units.
+Typed root operands covered the relocated callback and its continuation; the
+owned New Game route then stopped at another module entry, `0x1a51b70`.
+Root-only/terminal-only policy, parameter domains, module coverage and whole-game
+qualification remain open. See the dated batch evidence in `lab/README.md`.

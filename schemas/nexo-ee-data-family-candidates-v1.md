@@ -31,12 +31,18 @@ are never modified. Catalog mode validates the owned input ledger before analysi
 ## Restricted discovery
 
 The grouping key is the complete region's normalized bytes, not just a digest.
-Only two eligible operand types can be normalized:
+The original classifier had two operand types. Current reports declare
+`data_operand_profile: 2`, which additionally supports the ordinary fields below.
+Register selection and control instructions are never normalized.
 
 | Kind | Fixed fields | Candidate field | Reported value |
 |---|---|---|---|
 | `lui-u16` | LUI opcode, zero reserved source register, destination register | Low 16 bits | Unsigned integer 0..65535 |
 | `sw-s16` | SW opcode, source/base and value registers | Low 16 bits | Signed integer -32768..32767 |
+| `addiu-s16`, `slti-s16`, `sltiu-s16` | Exact opcode and registers | Low 16 bits | Signed integer |
+| `andi-u16`, `ori-u16`, `xori-u16` | Exact opcode and registers | Low 16 bits | Unsigned integer |
+| `lb/lh/lw/lbu/lhu/lwu/ld/lq-s16` | Exact load opcode and registers | Low 16 bits | Signed displacement |
+| `sb/sh/sd/sq-s16` | Exact store opcode and registers | Low 16 bits | Signed displacement |
 
 All other bits, including branches and jump targets, remain exact. Changes in
 opcode, register selection, region length or fixed control encoding split groups.
@@ -67,11 +73,16 @@ Each candidate contains:
 - `guard_masks`: `0xffff0000` for a varying supported immediate; otherwise
   `0xffffffff`. No arbitrary masks are accepted from input.
 - `parameters`: ordered `word_index`, `kind`, and `bits: 16` records.
+- `normal_entry_offsets`: the union of actual declared binding offsets for the
+  observed regions; it is not inferred from every instruction. Each observation
+  also retains its own offsets. These are proposals, not entry-ownership proofs.
 - `observations`: physical `pc`, exact `word_sha256`, ordered extracted
   `parameters`, and sorted `origins`. Each origin gives exact image and metadata
   SHA-256 identities and the image base.
 - `shape_sha256`: hash of the versioned classifier tag followed by little-endian
   guard words and guard masks. It identifies a candidate, never a semantic proof.
+  Profile 2 uses `ee-data-shape-typed-v2`; retained profile-1 artifacts keep their
+  older classifier tag and exact analyzer identity.
 
 For an observed region, replacing each parameter word's low 16 bits with
 `parameter & 0xffff` reconstructs its exact bytes. This round trip is a data

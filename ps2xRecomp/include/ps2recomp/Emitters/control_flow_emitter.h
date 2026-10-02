@@ -50,6 +50,7 @@ namespace ps2recomp
         uint32_t branchPc() const;
         uint32_t delayPc() const;
         uint32_t fallthroughPc() const;
+        std::string parameterizedNopCondition(const Instruction &instruction) const;
         bool hasRealDelaySlot() const;
         bool isLikelyBranch() const;
         bool isCallLikeEdge() const;

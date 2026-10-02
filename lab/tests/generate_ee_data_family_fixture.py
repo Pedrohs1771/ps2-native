@@ -24,6 +24,29 @@ shapes = [([0x3C010000, 0xACA20000, 0x03E00008, 0], [0xFFFF0000, 0xFFFF0000, 0xF
           ([0x0080F809, 0xACBF0000], [0xFFFFFFFF, 0xFFFF0000],
            [[0], [0xFFFF], [0x8000], [0x7FFF]])]
 observed_bases = None
+if args.candidate_json is None:
+    # Exhaustive supported data-opcode classes, with signed/unsigned boundaries.
+    for opcode in [0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x20,0x21,0x23,0x24,0x25,
+                   0x27,0x37,0x1e,0x28,0x29,0x2b,0x3f,0x1f]:
+        word=(opcode<<26)|((0 if opcode==0x0f else 5)<<21)|(2<<16)
+        shapes.append(([word,0x03e00008,0],[0xffff0000,0xffffffff,0xffffffff],
+                       [[0],[0xffff],[0x8000],[0x7fff]]))
+    # Fixed branch encodings; both outcomes, branch-likely slots and link slots
+    # are exercised by the execution harness at every normal resume label.
+    branches=[(opcode<<26)|(2<<21)|5 for opcode in [4,5,6,7,0x14,0x15,0x16,0x17]]
+    branches += [(1<<26)|(2<<21)|(kind<<16)|0xfff9 for kind in [0,1,2,3,16,17,18,19]]
+    for word in branches:
+        slot=0xacbf0000 if word>>26==1 else 0x24630001
+        shapes.append(([word,slot],[0xffffffff,0xffffffff],[[]]))
+    shapes.append(([0x1440ffff,0x2442ffff],[0xffffffff,0xffffffff],[[]]))
+    # Canonical zero operands must not erase the concrete emitter's slot
+    # metadata or accidentally enable/disable its guarded countdown shortcut.
+    shapes.append(([0x0080f809,0x24000000],[0xffffffff,0xffff0000],[[0],[1],[0xffff]]))
+    shapes.append(([0x24420000,0x1440fffe,0x24000000],[0xffff0000,0xffffffff,0xffff0000],
+                   [[0xffff,0],[0xffff,1],[0xfffe,0],[0xfffe,1]]))
+    shapes.append(([0x24420000,0x24000000,0x1440fffd,0],
+                   [0xffff0000,0xffff0000,0xffffffff,0xffffffff],
+                   [[0xffff,0],[0xffff,1],[0xfffe,0],[0xfffe,1]]))
 if args.candidate_json is not None:
     if not args.shape or args.candidate_json.stat().st_size > 16 * 1024 * 1024:
         parser.error('candidate fixture needs a bounded report and exact shape')

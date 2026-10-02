@@ -91,6 +91,31 @@ class EeDataFamilyTests(unittest.TestCase):
         self.assertEqual([o['parameters'] for o in family['observations']],
                          [[0, 0], [65535, -32768], [32767, 32767]])
 
+    def test_all_supported_data_fields_preserve_instruction_and_register_bits(self):
+        opcodes=[0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x20,0x21,0x23,0x24,0x25,
+                 0x27,0x37,0x1e,0x28,0x29,0x2b,0x3f,0x1f]
+        for opcode in opcodes:
+            word=(opcode<<26)|((0 if opcode==0x0f else 5)<<21)|(2<<16)
+            cases=[self.case(f'{opcode}-a',[word,0x03e00008,0]),
+                   self.case(f'{opcode}-b',[word|0x8000,0x03e00008,0],0x20000)]
+            family=self.tool.discover(cases)['families'][0]
+            with self.subTest(opcode=opcode):
+                self.assertEqual(family['guard_masks'],[0xffff0000,0xffffffff,0xffffffff])
+                self.assertEqual(family['normal_entry_offsets'],[0,4,8])
+                self.assertEqual(family['observations'][1]['parameters'],
+                                 [0x8000 if opcode in [0x0c,0x0d,0x0e,0x0f] else -32768])
+        for opcode in [1,4,5,6,7,0x14,0x15,0x16,0x17,0x10,0x11,0x12,0x18,0x19]:
+            self.assertIsNone(self.tool.parameter_kind(opcode<<26))
+
+    def test_entry_ownership_comes_from_binding_metadata(self):
+        cases=self.variants()
+        for case in cases:
+            path=case/'bank.json';metadata=json.loads(path.read_text());metadata['bindings']=metadata['bindings'][:1]
+            path.write_text(json.dumps(metadata))
+        family=self.tool.discover(cases)['families'][0]
+        self.assertEqual(family['normal_entry_offsets'],[0])
+        self.assertEqual([o['normal_entry_offsets'] for o in family['observations']],[[0],[0]])
+
     def test_deterministic_input_order(self):
         cases = self.variants()
         self.assertEqual(self.tool.discover(cases), self.tool.discover(list(reversed(cases))))

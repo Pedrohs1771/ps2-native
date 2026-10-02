@@ -3,7 +3,8 @@
 
 Equal guarded bytes suggest a structure. They do not prove its producer,
 relocation/control semantics, fetch identity, entry context or hardware fidelity.
-Only LUI unsigned immediates and SW signed offsets are candidate parameters.
+Only fixed ordinary operations may expose typed low-16 data fields. Branch
+encodings and instruction/register selection remain fixed.
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ MAX_BINDINGS = 2 * 1024 * 1024
 MAX_REGIONS = 131072
 MAX_SCANNED_WORDS = 4 * 1024 * 1024
 MAX_REGION_WORDS = 128
+DATA_FIELDS = {0x09:'addiu-s16',0x0a:'slti-s16',0x0b:'sltiu-s16',0x0c:'andi-u16',
+               0x0d:'ori-u16',0x0e:'xori-u16',0x20:'lb-s16',0x21:'lh-s16',0x23:'lw-s16',
+               0x24:'lbu-s16',0x25:'lhu-s16',0x27:'lwu-s16',0x37:'ld-s16',0x1e:'lq-s16',
+               0x28:'sb-s16',0x29:'sh-s16',0x2b:'sw-s16',0x3f:'sd-s16',0x1f:'sq-s16'}
 
 
 def ordinary_path(path):
@@ -50,9 +55,7 @@ def parameter_kind(word):
     opcode = word >> 26
     if opcode == 0x0F and (word >> 21) & 31 == 0:
         return 'lui-u16'
-    if opcode == 0x2B:
-        return 'sw-s16'
-    return None
+    return DATA_FIELDS.get(opcode)
 
 
 def words_bytes(words):
@@ -64,6 +67,7 @@ def discover(cases):
     if not 1 <= len(cases) <= MAX_CASES:
         raise ValueError('expected a bounded nonempty case list')
     groups = {}
+    entry_groups = {}
     counts = {'cases': len(cases), 'bindings': 0, 'regions': 0,
               'scanned_words': 0, 'oversized_regions_skipped': 0}
     metadata_bytes = 0
@@ -93,7 +97,7 @@ def discover(cases):
         counts['bindings'] += len(bindings)
         if counts['bindings'] > MAX_BINDINGS:
             raise ValueError('aggregate binding budget exceeded')
-        regions, previous, entry_seen = set(), -1, False
+        regions, previous, entry_seen = {}, -1, False
         for row in bindings:
             if not isinstance(row, dict):
                 raise ValueError('invalid binding')
@@ -103,7 +107,7 @@ def discover(cases):
                 raise ValueError('invalid binding range or order')
             previous = pc
             entry_seen |= pc == entry
-            regions.add((begin, span))
+            regions.setdefault((begin, span), set()).add(pc-begin)
         if not entry_seen:
             raise ValueError('requested entry lacks a binding')
         origin = (digest, hashlib.sha256(encoded).hexdigest(), base)
@@ -123,6 +127,7 @@ def discover(cases):
             # Full bytes are the grouping key; a digest collision cannot merge shapes.
             group = groups.setdefault(normalized, {})
             group.setdefault((begin, raw), set()).add(origin)
+            entry_groups.setdefault((normalized,begin,raw),set()).update(regions[(begin,span)])
 
     families = []
     for normalized, group in groups.items():
@@ -146,18 +151,21 @@ def discover(cases):
             values = []
             for parameter in parameters:
                 value = struct.unpack_from('<H', raw, parameter['word_index'] * 4)[0]
-                if parameter['kind'] == 'sw-s16' and value >= 0x8000:
+                if parameter['kind'].endswith('-s16') and value >= 0x8000:
                     value -= 0x10000
                 values.append(value)
             observations.append({'pc': pc, 'word_sha256': hashlib.sha256(raw).hexdigest(),
                                  'parameters': values,
+                                 'normal_entry_offsets': sorted(entry_groups[(normalized,pc,raw)]),
                                  'origins': [{'image_sha256': image_hash, 'metadata_sha256': metadata_hash,
                                               'base': base} for image_hash, metadata_hash, base in sorted(origins)]})
-        identity = b'ee-data-shape-lui-sw-v1\0' + words_bytes(words) + words_bytes(masks)
+        identity = b'ee-data-shape-typed-v2\0' + words_bytes(words) + words_bytes(masks)
         families.append({'shape_sha256': hashlib.sha256(identity).hexdigest(),
                          'word_count': len(words), 'guard_words': words, 'guard_masks': masks,
+                         'normal_entry_offsets': sorted({offset for observation in observations
+                                                         for offset in observation['normal_entry_offsets']}),
                          'parameters': parameters, 'observations': observations})
-    return {'schema_version': 1, 'status': 'CANDIDATES_LABORATORY',
+    return {'schema_version': 1, 'data_operand_profile': 2, 'status': 'CANDIDATES_LABORATORY',
             'analyzer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'strict_approval': False, 'closure_proved': False, 'producer_invariant_proved': False,
             'native_execution_validated': False,

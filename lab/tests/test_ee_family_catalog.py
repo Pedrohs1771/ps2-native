@@ -92,6 +92,46 @@ class FamilyCatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.generate()
 
+    def test_declared_entries_and_batching_are_explicit(self):
+        self.family['normal_entry_offsets']=[0,8]
+        self.write_report()
+        one=self.generate('observed',families_per_source=1)
+        roots=self.generate('roots',entry_policy='root-only')
+        self.assertEqual(one['schema_version'],2)
+        self.assertEqual(one['families'][0]['normal_entry_offsets'],[0,8])
+        self.assertEqual(roots['families'][0]['normal_entry_offsets'],[0])
+        self.assertEqual(roots['source_count'],len(roots['sources']))
+        case,_=self.case()
+        merged=self.generate('merged',cases=[case],source_buckets=1)
+        separate=self.generate('separate',cases=[case],families_per_source=1,source_buckets=1)
+        self.assertEqual(merged['family_count'],separate['family_count'])
+        self.assertEqual(merged['families'],separate['families'])
+        self.assertEqual(merged['source_count'],2)
+        self.assertEqual(separate['source_count'],3)
+        self.configure(self.root/'merged',succeeds=True)
+        for offsets in [[],[False],[2],[0,0],[{}]]:
+            self.family['normal_entry_offsets']=offsets;self.write_report()
+            with self.subTest(offsets=offsets),self.assertRaises(ValueError):
+                self.generate('invalid',entry_policy='root-only')
+
+    def test_root_data_parameters_keep_opcodes_registers_and_control_fixed(self):
+        case,metadata=self.case()
+        result=self.generate(cases=[case],root_data_parameters=True)
+        root=[row for row in result['families'] if row['words'][0]>>26==9][0]
+        self.assertEqual(root['masks'],[0xffff0000,0xffffffff,0xffffffff])
+        self.assertEqual(root['words'],[0x24020000,0x03e00008,0])
+        self.assertEqual(root['normal_entry_offsets'],[4])
+        self.assertEqual(result['root_cases'][0]['operand_policy'],'typed-data')
+        self.assertFalse(result['closure_proved'])
+
+    def test_hash_buckets_keep_unrelated_source_units_unchanged(self):
+        first=self.generate('first',families_per_source=1)
+        case,_=self.case()
+        second=self.generate('second',cases=[case],families_per_source=1)
+        shared=set(first['sha256'])&set(second['sha256'])-{'ee_family_catalog.cpp'}
+        self.assertEqual(len(shared),1)
+        self.assertTrue(all(first['sha256'][name]==second['sha256'][name] for name in shared))
+
     def test_malformed_candidate_types_and_budgets_fail(self):
         valid = copy.deepcopy(self.family)
         for updates in [{'word_count': True}, {'word_count': 3.0}, {'shape_sha256': []},
@@ -129,7 +169,8 @@ class FamilyCatalogTests(unittest.TestCase):
         variants = [{'schema_version':'1'}, {'family_count':'1'}, {'family_count':1.5},
                     {'strict_approval':0}, {'strict_approval':'false'}, {'strict_approval':True},
                     {'closure_proved':True}, {'closure_proved':0}, {'sources':{}},
-                    {'sources':[42, valid['sources'][1]]}, {'family_count':2},
+                    {'sources':[42, valid['sources'][1]]}, {'family_count':2}, {'source_count':True},
+                    {'source_count':'2'}, {'source_count':3}, {'families':{}},
                     {'sources':['../escape.cpp', 'ee_family_catalog.cpp']},
                     {'sha256':{name:'0'*64 for name in valid['sources']}}]
         for change in variants:
@@ -145,6 +186,17 @@ class FamilyCatalogTests(unittest.TestCase):
         linked = self.root/'linked'
         linked.symlink_to(self.root/'catalog', target_is_directory=True)
         self.configure(linked, succeeds=False)
+
+    def test_cmake_cache_reuses_bytes_and_rejects_corruption(self):
+        manifest=self.generate()
+        self.configure(self.root/'catalog',succeeds=True)
+        cache=self.root/'cmake-build/ee-family-source-cache'
+        cached=cache/('ee_family_'+manifest['sha256']['ee_family_catalog.cpp']+'.cpp')
+        before=cached.stat().st_mtime_ns
+        self.configure(self.root/'catalog',succeeds=True)
+        self.assertEqual(cached.stat().st_mtime_ns,before)
+        cached.write_text('corrupted')
+        self.configure(self.root/'catalog',succeeds=False)
 
 
 if __name__ == '__main__':

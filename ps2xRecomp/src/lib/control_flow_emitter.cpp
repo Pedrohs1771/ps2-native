@@ -44,9 +44,21 @@ namespace ps2recomp
         return m_branchInst.address + 8u;
     }
 
+    std::string ControlFlowEmitter::parameterizedNopCondition(const Instruction &instruction) const
+    {
+        const auto slot = m_gen.m_nativeDataSlots.find(instruction.address);
+        if (m_gen.m_nativeDataFamily && slot != m_gen.m_nativeDataSlots.end() &&
+            instruction.opcode == OPCODE_ADDIU && instruction.rs == 0u && instruction.rt == 0u)
+        {
+            return fmt::format("family_parameters[{}] != 0u", slot->second);
+        }
+        return {};
+    }
+
     bool ControlFlowEmitter::hasRealDelaySlot() const
     {
-        return !m_delaySlotOverride.empty() || !isGuestNop(m_delaySlot);
+        return !m_delaySlotOverride.empty() || !isGuestNop(m_delaySlot) ||
+               !parameterizedNopCondition(m_delaySlot).empty();
     }
 
     bool ControlFlowEmitter::isCallLikeEdge() const
@@ -93,7 +105,8 @@ namespace ps2recomp
             decrement->opcode != OPCODE_ADDIU ||
             decrement->rt != m_branchInst.rs ||
             decrement->rs != m_branchInst.rs ||
-            static_cast<int32_t>(decrement->simmediate) != -1)
+            (static_cast<int32_t>(decrement->simmediate) != -1 &&
+             !(m_gen.m_nativeDataFamily && m_gen.m_nativeDataSlots.contains(decrement->address))))
         {
             return false;
         }
@@ -185,6 +198,17 @@ namespace ps2recomp
             return;
         }
 
+        // The fixed translator elides ADDIU $zero,$zero,0, including its
+        // delay metadata. Preserve that decision for each live operand.
+        const auto condition = m_delaySlotOverride.empty() ? parameterizedNopCondition(m_delaySlot) : std::string{};
+        const std::string originalIndent(indent);
+        std::string nestedIndent;
+        if (!condition.empty())
+        {
+            m_ss << fmt::format("{}if ({}) {{\n", indent, condition);
+            nestedIndent = originalIndent + "    ";
+            indent = nestedIndent;
+        }
         m_ss << fmt::format("{}ctx->pc = {};\n", indent, m_gen.guestPcExpression(delayPc(),true));
         m_ss << fmt::format("{}ctx->in_delay_slot = true;\n", indent);
         m_ss << fmt::format("{}ctx->branch_pc = {};\n", indent, m_gen.guestPcExpression(branchPc(),true));
@@ -201,6 +225,10 @@ namespace ps2recomp
         }
 
         m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
+        if (!condition.empty())
+        {
+            m_ss << fmt::format("{}}}\n", originalIndent);
+        }
     }
 
     void ControlFlowEmitter::emitResumeFromDelaySlotEntry()
@@ -228,24 +256,42 @@ namespace ps2recomp
 
     void ControlFlowEmitter::emitInternalTarget(uint32_t target, uint32_t sourcePc, std::string_view indent)
     {
-        m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, target);
+        m_ss << fmt::format("{}ctx->pc = {};\n", indent, m_gen.guestPcExpression(target,true));
         if (target <= sourcePc && !isCallLikeEdge())
         {
             uint32_t counterReg = 0u;
             uint32_t sentinelReg = 0u;
             if (isPureCountdownLoop(target, counterReg, sentinelReg))
             {
+                std::string parameterGuard;
+                if (m_gen.m_nativeDataFamily)
+                {
+                    for (const auto &instruction : m_functionInstructions)
+                    {
+                        if (instruction.address < target || instruction.address > delayPc() ||
+                            instruction.address == branchPc())
+                            continue;
+                        const auto slot = m_gen.m_nativeDataSlots.find(instruction.address);
+                        if (slot == m_gen.m_nativeDataSlots.end())
+                            continue;
+                        if (instruction.address == target)
+                            parameterGuard += fmt::format("family_parameters[{}] == 0xffffu && ", slot->second);
+                        else if (!parameterizedNopCondition(instruction).empty())
+                            parameterGuard += fmt::format("family_parameters[{}] == 0u && ", slot->second);
+                    }
+                }
                 m_ss << fmt::format(
                     "{}extern bool ps2xFastForwardGuestCountdownLoop(PS2Runtime*, R5900Context*, uint32_t, uint32_t, uint32_t, uint32_t) noexcept;\n",
                     indent);
                 m_ss << fmt::format(
-                    "{}if (ps2xFastForwardGuestCountdownLoop(runtime, ctx, {}u, {}u, 0x{:X}u, 0x{:X}u)) {{\n",
+                    "{}if ({}ps2xFastForwardGuestCountdownLoop(runtime, ctx, {}u, {}u, {}, {})) {{\n",
                     indent,
+                    parameterGuard,
                     counterReg,
                     sentinelReg,
-                    target,
-                    fallthroughPc());
-                m_ss << fmt::format("{}    if (ctx->pc == 0x{:X}u) {{\n", indent, fallthroughPc());
+                    m_gen.guestPcExpression(target,true),
+                    m_gen.guestPcExpression(fallthroughPc(),true));
+                m_ss << fmt::format("{}    if (ctx->pc == {}) {{\n", indent, m_gen.guestPcExpression(fallthroughPc(),true));
                 m_ss << fmt::format("{}        goto label_{:x};\n", indent, fallthroughPc());
                 m_ss << fmt::format("{}    }}\n", indent);
                 m_ss << fmt::format("{}    return;\n", indent);
@@ -527,7 +573,7 @@ namespace ps2recomp
 
     uint32_t ControlFlowEmitter::conditionalBranchTarget() const
     {
-        const int32_t offsetBytes = static_cast<int32_t>(static_cast<int16_t>(m_branchInst.simmediate)) << 2;
+        const int32_t offsetBytes = static_cast<int32_t>(static_cast<int16_t>(m_branchInst.simmediate)) * 4;
         return static_cast<uint32_t>(static_cast<int64_t>(m_branchInst.address + 4u) +
                                      static_cast<int64_t>(offsetBytes));
     }
@@ -544,11 +590,11 @@ namespace ps2recomp
         {
             if (m_branchInst.rt == REGIMM_BLTZAL || m_branchInst.rt == REGIMM_BGEZAL)
             {
-                unconditionalLinkCode = fmt::format("SET_GPR_U32(ctx, 31, 0x{:X}u);", fallthroughPc());
+                unconditionalLinkCode = fmt::format("SET_GPR_U32(ctx, 31, {});", m_gen.guestPcExpression(fallthroughPc(),true));
             }
             else if (m_branchInst.rt == REGIMM_BLTZALL || m_branchInst.rt == REGIMM_BGEZALL)
             {
-                conditionalLinkCode = fmt::format("SET_GPR_U32(ctx, 31, 0x{:X}u);", fallthroughPc());
+                conditionalLinkCode = fmt::format("SET_GPR_U32(ctx, 31, {});", m_gen.guestPcExpression(fallthroughPc(),true));
             }
         }
 
@@ -575,7 +621,7 @@ namespace ps2recomp
             }
             else
             {
-                m_ss << fmt::format("            ctx->pc = 0x{:X}u;\n", target);
+                m_ss << fmt::format("            ctx->pc = {};\n", m_gen.guestPcExpression(target,true));
                 m_ss << "            return;\n";
             }
             m_ss << "        }\n";
@@ -596,7 +642,7 @@ namespace ps2recomp
             }
             else
             {
-                m_ss << fmt::format("            ctx->pc = 0x{:X}u;\n", target);
+                m_ss << fmt::format("            ctx->pc = {};\n", m_gen.guestPcExpression(target,true));
                 m_ss << "            return;\n";
             }
             m_ss << "        }\n";

@@ -45,10 +45,29 @@ int main()
             const std::array masks{0xffff0000u,0xffff0000u,0xffffffffu,0xffffffffu};
             test.IsTrue(rejects(badWords,masks),"Reserved LUI source field cannot be wildcarded");
         });
+        suite.Run("relative_conditional_control_and_typed_operands",[](TestCase &test)
+        {
+            const std::array branch{0x144000d8u,0x2442ffffu};
+            const std::array full{0xffffffffu,0xffffffffu};
+            const auto conditional=ps2recomp::generateNativeDataFamily(branch,full);
+            test.IsTrue(conditional.find("ctx->pc = ADD32(family_base, 0x364u);")!=std::string::npos,
+                        "Taken external branch publishes a relocated PC");
+            for(const uint32_t opcode:{0x09u,0x0au,0x0bu,0x0cu,0x0du,0x0eu,0x0fu,
+                                      0x20u,0x21u,0x23u,0x24u,0x25u,0x27u,0x37u,0x1eu,
+                                      0x28u,0x29u,0x2bu,0x3fu,0x1fu})
+            {
+                const uint32_t word=(opcode<<26)|((opcode==0x0fu?0u:5u)<<21)|(2u<<16)|0x8000u;
+                const std::array words{word,0x03e00008u,0u};
+                const std::array masks{0xffff0000u,0xffffffffu,0xffffffffu};
+                const auto code=ps2recomp::generateNativeDataFamily(words,masks);
+                test.IsTrue(code.find("family_parameters[0]")!=std::string::npos,
+                            "Supported ordinary data field uses its live typed operand");
+            }
+        });
         suite.Run("unimplemented_control_is_explicitly_rejected",[](TestCase &test)
         {
             const std::array masks{0xffffffffu,0xffffffffu};
-            for(const auto word:{0x1000ffffu,0x08010000u,0x0000000cu})
+            for(const auto word:{0x08010000u,0x0000000cu,0x45010001u,0x18010001u})
             {
                 const std::array words{word,0u};
                 test.IsTrue(rejects(words,masks),"Unsupported PC-dependent control is rejected");

@@ -35,17 +35,31 @@ int main()
             for(size_t i=0;i<fixtures.size();++i)
             {
                 const auto &fixture=fixtures[i];
-                expectedChecks+=fixture.words.size();
+                const auto conditional=[](uint32_t word)
+                {
+                    const auto opcode=word>>26;
+                    return opcode==1u || (opcode>=4u && opcode<=7u) || (opcode>=0x14u && opcode<=0x17u);
+                };
+                bool branchFixture=false;
+                for(const auto word:fixture.words) branchFixture|=conditional(word);
+                const unsigned phases=branchFixture?3u:1u;
+                expectedChecks+=fixture.words.size()*phases;
                 std::memcpy(original.data()+fixture.base,fixture.words.data(),fixture.words.size_bytes());
                 const uint64_t savedFp=0x620000,savedRa=0x70000;
                 std::memcpy(original.data()+0x600010,&savedFp,8);
                 std::memcpy(original.data()+0x600020,&savedRa,8);
+                for(unsigned phase=0;phase<phases;++phase)
                 for(uint32_t offset=0;offset<fixture.words.size_bytes();offset+=4)
                 {
                     reference=original;family=original;
                     R5900Context input{};
                     for(unsigned reg=1;reg<32;++reg) input.r[reg]=_mm_set_epi64x(0x1234000000000000ull+reg,0x22000000ull+reg);
                     SET_GPR_U32(&input,1,0x100000);SET_GPR_U32(&input,2,0x12345678);
+                    if(branchFixture)
+                        SET_GPR_S32(&input,2,phase==2 ? (fixture.words.front()==0x1440ffffu?2:-1) : static_cast<int32_t>(phase));
+                    if((fixture.words.size()==3 && fixture.words[1]==0x1440fffeu) ||
+                       (fixture.words.size()==4 && fixture.words[2]==0x1440fffdu))
+                        SET_GPR_S32(&input,2,4+2*phase);
                     SET_GPR_U32(&input,4,0x40000);SET_GPR_U32(&input,5,0x180000);
                     SET_GPR_U32(&input,29,0x5fffd0);SET_GPR_U32(&input,30,0x600000);SET_GPR_U32(&input,31,0x70000);
                     input.pc=fixture.base+offset;input.branch_pc=0x76540;
@@ -54,7 +68,7 @@ int main()
                     runEeDataFamily(fixture.shape,family.data(),&actual,&familyRuntime,fixture.base);
                     if(ps2native::nexo::EeSnapshotCodec::encode(expected)!=ps2native::nexo::EeSnapshotCodec::encode(actual) || reference!=family)
                     {
-                        test.Fail("Native family differs at fixture "+std::to_string(i)+" offset "+std::to_string(offset));
+                        test.Fail("Native family differs at fixture "+std::to_string(i)+" offset "+std::to_string(offset)+" phase "+std::to_string(phase));
                         return;
                     }
                     ++checks;

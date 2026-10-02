@@ -1,4 +1,5 @@
 #include "ps2_ee_data_family.h"
+#include "ps2_native_data_operands.h"
 #include <cstring>
 #include <set>
 #include <stdexcept>
@@ -8,7 +9,7 @@ namespace ps2native::ee_family
 {
     Dispatcher::Dispatcher(const Program &program)
     {
-        if(program.families.size()>512) throw std::invalid_argument("EE family catalog exceeds budget");
+        if(program.families.size()>4096) throw std::invalid_argument("EE family catalog exceeds budget");
         std::set<std::vector<uint32_t>> identities;
         for(const auto &family:program.families)
         {
@@ -22,7 +23,7 @@ namespace ps2native::ee_family
             {
                 const uint32_t word=family.words[i],mask=family.masks[i];
                 if(mask!=0xffffffffu && (mask!=0xffff0000u ||
-                   !((word>>26)==0x2bu || ((word>>26)==0x0fu && ((word>>21)&31u)==0u))))
+                   ps2native::nativeDataOperand(word)==ps2native::DataOperand::None))
                     throw std::invalid_argument("EE family mask changes instruction structure");
                 owned.words.push_back(word&mask);identity.push_back(word&mask);identity.push_back(mask);
             }

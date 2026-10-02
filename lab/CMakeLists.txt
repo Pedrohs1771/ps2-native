@@ -22,6 +22,10 @@ add_executable(nexo_iop_runtime_probe src/iop_runtime_probe_main.cpp tests/empty
 target_include_directories(nexo_iop_runtime_probe PRIVATE include ../ps2xRuntime/src/lib)
 target_compile_definitions(nexo_iop_runtime_probe PRIVATE NEXO_IOP_RUNTIME_PROBE_NATIVE=$<BOOL:${PS2X_RUNTIME_NATIVE_IOP}>)
 target_link_libraries(nexo_iop_runtime_probe PRIVATE ps2_runtime)
+add_executable(nexo_ee_family_probe src/ee_family_probe_main.cpp tests/empty_ee_table.cpp)
+target_include_directories(nexo_ee_family_probe PRIVATE ../ps2xRuntime/src/lib)
+target_link_libraries(nexo_ee_family_probe PRIVATE ps2_runtime)
+set_property(TARGET nexo_ee_family_probe PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
 
 add_executable(nexo_iop_capture_fixture tests/iop_capture_fixture.cpp)
 target_include_directories(nexo_iop_capture_fixture PRIVATE include ../ps2xIOP/tests ../ps2xIOP/src)
@@ -95,6 +99,8 @@ if(BUILD_TESTING)
     add_test(NAME nexo_ee_family_catalog_tests COMMAND "${Python3_EXECUTABLE}"
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_family_catalog.py)
     add_test(NAME nexo_ee_family_backend_tests COMMAND nexo_ee_family_backend_tests)
+    add_test(NAME nexo_ee_family_probe_tests COMMAND "${Python3_EXECUTABLE}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ee_family_probe.py $<TARGET_FILE:nexo_ee_family_probe>)
     add_test(NAME nexo_ee_data_family_execution_tests COMMAND nexo_ee_data_family_execution_tests)
     add_test(NAME nexo_ee_snapshot_tests COMMAND nexo_ee_snapshot_tests)
     add_test(NAME nexo_ee_context_inventory_tests COMMAND "${Python3_EXECUTABLE}"

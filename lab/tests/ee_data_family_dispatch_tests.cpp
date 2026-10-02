@@ -70,6 +70,25 @@ int main()
             bool rejected=false;try{Dispatcher dispatcher(Program{duplicate});}catch(const std::invalid_argument &){rejected=true;}
             test.IsTrue(rejected,"Duplicate structures cannot hide ambiguous callbacks");
         });
+        suite.Run("typed_data_classifier_is_shared_with_native_synthesis",[](TestCase &test)
+        {
+            const std::array masks{0xffff0000u,0xffffffffu,0xffffffffu};
+            const std::array entries{0u};
+            for(const uint32_t opcode:{0x09u,0x0au,0x0bu,0x0cu,0x0du,0x0eu,0x0fu,
+                                      0x20u,0x21u,0x23u,0x24u,0x25u,0x27u,0x37u,0x1eu,
+                                      0x28u,0x29u,0x2bu,0x3fu,0x1fu})
+            {
+                const std::array words{(opcode<<26)|((opcode==0x0fu?0u:5u)<<21)|(2u<<16),0x03e00008u,0u};
+                const Family family{function,words,masks,entries};
+                test.IsTrue(!rejects(family),"Supported data mask admitted");
+            }
+            for(const uint32_t opcode:{1u,2u,3u,4u,5u,6u,7u,0x14u,0x15u,0x16u,0x17u,0x10u,0x11u,0x12u})
+            {
+                const std::array words{opcode<<26,0x03e00008u,0u};
+                const Family family{function,words,masks,entries};
+                test.IsTrue(rejects(family),"Control/device operands cannot be made variable by this profile");
+            }
+        });
     });
     return MiniTest::Run();
 }
