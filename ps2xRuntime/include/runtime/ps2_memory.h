@@ -271,6 +271,9 @@ public:
 
     // Initialize memory
     bool initialize(size_t ramSize = PS2_RAM_SIZE);
+    // Host binding: a streaming GIF receiver retains tags across VIF DIRECT.
+    // Must be selected before transferring data; does not alter guest clocks.
+    void setGifStreamTransport(bool enabled);
 
     // Memory access methods
     uint8_t *getRDRAM() { return m_rdram; }

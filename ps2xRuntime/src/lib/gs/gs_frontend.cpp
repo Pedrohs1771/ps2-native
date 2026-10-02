@@ -1,5 +1,9 @@
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/ps2_gif_arbiter.h"
+#if PS2X_RUNTIME_PARALLEL_GS
+#include "runtime/gs/gs_parallel_backend.h"
+#endif
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
 #include <atomic>
@@ -7,11 +11,20 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <stdexcept>
 #include <iostream>
 #include <sstream>
 
 namespace
 {
+    thread_local const GS *rawGifOwner = nullptr;
+    struct RawGifScope
+    {
+        const GS *previous = rawGifOwner;
+        explicit RawGifScope(const GS *owner) { rawGifOwner = owner; }
+        ~RawGifScope() { rawGifOwner = previous; }
+    };
     static constexpr uint32_t kHostFrameWidth = 640u;
 
     GSPrimReg decodePrimRegister(uint64_t value)
@@ -116,6 +129,15 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
     m_localMemoryStorage = vram;
     m_localMemorySize = vramSize;
     m_privRegs = privRegs;
+    const char *selected = std::getenv("PS2X_GS_BACKEND");
+    if (selected && std::strcmp(selected, "parallel-vulkan") == 0)
+    {
+#if PS2X_RUNTIME_PARALLEL_GS
+        m_backend = std::make_unique<GSParallelBackend>();
+#else
+        throw std::runtime_error("parallel-vulkan requires a build with PS2X_RUNTIME_PARALLEL_GS enabled");
+#endif
+    }
     if (!m_backend)
         m_backend = std::make_unique<GSCpuBackend>();
     m_backend->Initialize(vram, vramSize);
@@ -644,6 +666,16 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     if (!data || sizeBytes < 16 || !m_backend)
         return;
 
+    const uint32_t path = static_cast<uint32_t>(GifArbiter::currentDeliveryPath());
+    if (auto *stream = m_backend->GifStreamState(path))
+    {
+        // Transport validates the chunk before frontend state is changed.
+        m_backend->SubmitGifStream(data, sizeBytes, path);
+        RawGifScope scope(this);
+        processRawGifStream(data, sizeBytes, *stream);
+        return;
+    }
+
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
 
@@ -744,6 +776,15 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
     if (!validatePackedGifPacket(data, sizeBytes))
         return false;
+
+    const uint32_t path = static_cast<uint32_t>(GifArbiter::currentDeliveryPath());
+    if (auto *stream = m_backend->GifStreamState(path))
+    {
+        if (stream->loopsRemaining != 0) return false;
+        processGIFPacket(data, sizeBytes);
+        ++m_nativePackedGIFPacketCount;
+        return true;
+    }
 
     const bool processed = visitPackedGifPacket(data, sizeBytes, [&](const PackedGifPacketTag &tag)
                                                 {
@@ -1067,6 +1108,8 @@ void GS::writeRegister(uint8_t regAddr, uint64_t value)
 
 void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
 {
+    if (m_backend && rawGifOwner != this)
+        m_backend->WriteRegister(regAddr, value);
     const bool interestingReg =
         regAddr == GS_REG_PRIM ||
         regAddr == GS_REG_RGBAQ ||
@@ -1576,7 +1619,7 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
-        m_backend->Submit(batch);
+        if (!m_backend->ConsumesRawRegisters()) m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
     }
 
@@ -1610,7 +1653,55 @@ void GS::vertexKick(bool drawing)
 void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 {
     if (m_backend)
-        m_backend->UploadImage(data, sizeBytes);
+    {
+        if (rawGifOwner == this) m_backend->ObserveImageData(data, sizeBytes);
+        else m_backend->UploadImage(data, sizeBytes);
+    }
+}
+
+void GS::processRawGifStream(const uint8_t *data, uint32_t sizeBytes, GSGifStreamState &s)
+{
+    for (uint32_t offset = 0; offset < sizeBytes; offset += 16)
+    {
+        const uint64_t lo = loadLE64(data + offset);
+        const uint64_t hi = loadLE64(data + offset + 8);
+        if (s.loopsRemaining == 0)
+        {
+            s.loopsRemaining = lo & 0x7fffu;
+            s.format = (lo >> 58) & 3u;
+            s.registerCount = (lo >> 60) ? (lo >> 60) : 16u;
+            s.registerIndex = 0;
+            s.registers = hi;
+            recordGifTagDebugEventUnlocked(sizeBytes, s.loopsRemaining, s.format, s.registerCount);
+            if (s.loopsRemaining)
+            {
+                m_curQ = 1.0f;
+                if (s.format == GIF_FMT_PACKED && ((lo >> 46) & 1u))
+                    writeRegisterUnlocked(GS_REG_PRIM, (lo >> 47) & 0x7ffu);
+            }
+            continue;
+        }
+        if (s.format == GIF_FMT_PACKED || s.format == GIF_FMT_REGLIST)
+        {
+            const unsigned count = s.format == GIF_FMT_PACKED ? 1u : 2u;
+            for (unsigned word = 0; word < count && s.loopsRemaining; ++word)
+            {
+                const uint8_t reg = (s.registers >> (4u * s.registerIndex)) & 0xfu;
+                if (s.format == GIF_FMT_PACKED) writeRegisterPacked(reg, lo, hi);
+                else if (reg != 0xeu && reg != 0xfu) writeRegisterUnlocked(reg, word ? hi : lo);
+                if (++s.registerIndex == s.registerCount)
+                {
+                    s.registerIndex = 0;
+                    --s.loopsRemaining;
+                }
+            }
+        }
+        else
+        {
+            processImageData(data + offset, 16);
+            --s.loopsRemaining;
+        }
+    }
 }
 
 
@@ -1659,6 +1750,12 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
 
     m_backend = std::move(backend);
     m_backend->Initialize(m_localMemoryStorage, m_localMemorySize);
+}
+
+bool GS::usesRawGifTransport() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    return m_backend && m_backend->ConsumesRawRegisters();
 }
 
 uint32_t GS::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const

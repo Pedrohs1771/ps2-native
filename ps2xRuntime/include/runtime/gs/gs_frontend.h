@@ -107,6 +107,7 @@ public:
     void init(uint8_t *vram, uint32_t vramSize, struct GSRegisters *privRegs = nullptr);
     void reset();
     void setRasterBackend(std::unique_ptr<GSRasterBackend> backend);
+    bool usesRawGifTransport() const;
 
     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
     bool processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes);
@@ -172,6 +173,7 @@ private:
     void recordPresentDebugEventUnlocked(uint32_t displayFbp, uint32_t sourceFbp, uint32_t width, uint32_t height, bool usedPreferred);
 
     void processImageData(const uint8_t *data, uint32_t sizeBytes);
+    void processRawGifStream(const uint8_t *data, uint32_t sizeBytes, GSGifStreamState &state);
     bool tryProcessNativeImageUploadPacket(const uint8_t *data, uint32_t sizeBytes);
     GSPrimitiveBatch buildDrawBatch(int vertexCount) const;
     void updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch);

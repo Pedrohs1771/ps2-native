@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #if PS2X_NEXO_LAB
 #include "nexo/vif_parser_checkpoint.h"
 #include "nexo/vif_capture.h"
@@ -40,6 +41,7 @@ namespace
     {
         uint32_t remainingBytes = 0u;
         bool directHl = false;
+        bool rawGifStream = false; // Host receiver binding, not guest state.
         std::vector<uint8_t> payload;
         // Headers and non-DIRECT payloads can span FIFO writes or DMA transfers.
         // Maximum retained non-DIRECT command is UNPACK's 4096 bytes + header.
@@ -130,6 +132,25 @@ void ps2xResetVif1DirectState(PS2Memory *memory)
 {
     std::lock_guard<std::mutex> lock(directStateMutex);
     directStates.erase(memory);
+}
+
+void ps2xResetVif1ParserState(PS2Memory *memory)
+{
+    std::lock_guard<std::mutex> lock(directStateMutex);
+    const auto it = directStates.find(memory);
+    if (it == directStates.end()) return;
+    auto reset = std::make_shared<Vif1DirectState>();
+    reset->rawGifStream = it->second->rawGifStream;
+    it->second = std::move(reset);
+}
+
+void PS2Memory::setGifStreamTransport(bool enabled)
+{
+    const auto direct = directStateFor(this);
+    if (direct->rawGifStream != enabled &&
+        (direct->remainingBytes || m_vif1PendingPath2ImageQwc))
+        throw std::invalid_argument("Cannot change GIF receiver during an active VIF transfer");
+    direct->rawGifStream = enabled;
 }
 
 #if PS2X_NEXO_LAB
@@ -391,6 +412,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
     const auto forwardDirect = [&](const uint8_t *payload, uint32_t bytes, bool directHl)
     {
+        if (direct->rawGifStream)
+        {
+            // The receiver owns the in-flight tag. Re-tagging IMAGE here would
+            // inject a header into its payload and desynchronize later draws.
+            submitGifPacket(GifPathId::Path2, payload, bytes, true, directHl);
+            return;
+        }
         if (m_vif1PendingPath2ImageQwc != 0u)
         {
             const uint32_t chunkQw = std::min({m_vif1PendingPath2ImageQwc, bytes / 16u, 32767u});

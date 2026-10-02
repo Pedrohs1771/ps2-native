@@ -2,6 +2,19 @@
 #include <algorithm>
 #include <cstring>
 
+namespace
+{
+thread_local GifPathId deliveryPath = GifPathId::Path3;
+struct DeliveryScope
+{
+    GifPathId previous = deliveryPath;
+    explicit DeliveryScope(GifPathId path) { deliveryPath = path; }
+    ~DeliveryScope() { deliveryPath = previous; }
+};
+}
+
+GifPathId GifArbiter::currentDeliveryPath() { return deliveryPath; }
+
 GifArbiter::GifArbiter(ProcessPacketFn processFn)
     : m_processFn(std::move(processFn))
 {
@@ -56,6 +69,7 @@ void GifArbiter::drain()
         auto &pkt = m_queue[i];
         if (!pkt.data.empty())
         {
+            DeliveryScope scope(pkt.pathId);
             m_processFn(pkt.data.data(), static_cast<uint32_t>(pkt.data.size()));
         }
     }

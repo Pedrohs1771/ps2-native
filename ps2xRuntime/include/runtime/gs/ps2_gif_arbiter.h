@@ -35,6 +35,9 @@ public:
     void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
 
     void drain();
+    // Valid only during a delivery callback; direct callers use PATH3.
+    // Preserves the callback signature and the arbiter/runtime object layout.
+    static GifPathId currentDeliveryPath();
     bool empty() const { return m_queue.empty(); }
 
 private:

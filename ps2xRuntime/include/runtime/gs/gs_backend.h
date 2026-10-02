@@ -5,6 +5,17 @@
 #include <cstdint>
 #include <vector>
 
+// State belongs to the backend which consumes raw GIF. Keeping it there leaves
+// the GS/runtime object layout intact and preserves independent GIF paths.
+struct GSGifStreamState
+{
+    uint64_t registers = 0;
+    uint32_t loopsRemaining = 0;
+    uint8_t registerCount = 0;
+    uint8_t registerIndex = 0;
+    uint8_t format = 0;
+};
+
 class GSRasterBackend
 {
 public:
@@ -31,4 +42,13 @@ public:
     virtual void WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value) = 0;
     virtual void SnapshotVram(std::vector<uint8_t> &out) const = 0;
     virtual GSTransferSnapshot GetTransferSnapshot() const = 0;
+
+    // Optional raw transport. CPU backends retain the existing batch contract.
+    virtual GSGifStreamState *GifStreamState(uint32_t) { return nullptr; }
+    virtual void SubmitGifStream(const uint8_t *, uint32_t, uint32_t) {}
+    virtual void WriteRegister(uint8_t, uint64_t) {}
+    virtual void ObserveImageData(const uint8_t *, uint32_t) {}
+    // Raw backends lower vertex register writes themselves; Submit is the
+    // alternative batch API, not an additional copy of the same primitive.
+    virtual bool ConsumesRawRegisters() const { return false; }
 };
