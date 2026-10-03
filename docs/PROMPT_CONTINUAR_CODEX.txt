@@ -1,4 +1,8 @@
-Continue no checkout /home/pedrohs/Downloads/ps2-native-recompiler.
+Continue na raiz do checkout atual. No PC original ela fica em
+/home/pedrohs/Downloads/ps2-native-recompiler; no Cloud/VPS use o caminho do clone.
+Para os insumos do corpus, leia docs/CODEX_CLOUD.md e
+test-data/corpus-manifest.json. O manifesto contém somente metadados: as ISOs
+privadas não acompanham o clone. Confira a disponibilidade real antes de testar.
 Trabalhe sozinho: o usuário revogou workers, Luna, Hyper e sessões auxiliares.
 Não altere o modelo ou esforço da sessão atual. Preserve o diff e os insumos.
 

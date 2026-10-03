@@ -36,6 +36,10 @@ ps2_log.txt
 *.cso
 *.zso
 
+# Private test inputs, including payloads with arbitrary extensions
+/test-data/isos/*
+!/test-data/isos/README.md
+
 # Local credentials and Android signing keys
 .env
 .env.*
