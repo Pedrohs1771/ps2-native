@@ -3,6 +3,7 @@
   "status": "METADATA_ONLY",
   "bytes_included": false,
   "fixtures_included": true,
+  "release_tag": "test-corpus-v1.0",
   "iso_directory": "test-data/isos",
   "unique_images": 5,
   "total_iso_bytes": 3089043456,
