@@ -2,16 +2,15 @@
 
 O corpus local tem cinco imagens comerciais. Seus nomes originais, tamanhos e
 SHA-256 estão em [`../test-data/corpus-manifest.json`](../test-data/corpus-manifest.json).
-Os caminhos são relativos à raiz do checkout. Esse manifesto é **somente
-metadados**: os bytes das ISOs não foram enviados ao GitHub ou ao Cloud.
+Os caminhos são relativos à raiz do checkout. Esse manifesto registra os metadados
+das imagens completas. Para permitir que o agente no Cloud trabalhe sem depender de
+downloads externos ou montagem de ISOs de gigabytes, os pacotes leves de teste contendo
+apenas os ELFs e módulos de sistema estão disponíveis diretamente no repositório em
+`fixtures/` (ex.: `fixtures/metal_slug_4/`), totalizando menos de 20 MB e servindo
+como fixtures de validação do compilador e do kernel.
 
-Para a análise direta por ELF já executada localmente e a continuação com
-fixtures próprias, veja [ELF_CONTINUACAO_CLOUD.md](ELF_CONTINUACAO_CLOUD.md).
-
-O diretório `test-data/isos/` separa insumos privados de fontes e builds. Os
-arquivos reais precisam ser fornecidos legalmente ao ambiente onde os testes
-rodam. Não presumir que caminhos `/home/pedrohs/...` ou recibos em `build/`
-existem no Cloud. Não usar o manifesto como prova de disponibilidade das imagens.
+Para a análise direta por ELF já configurada e o workflow de execução, veja
+[ELF_CONTINUACAO_CLOUD.md](ELF_CONTINUACAO_CLOUD.md) e [fixtures/README.md](../fixtures/README.md).
 
 As cinco imagens somam 3.089.043.456 bytes, aproximadamente 2,88 GiB, antes de
 extração e compilação. Todas excedem o limite de 100 MiB por arquivo do GitHub

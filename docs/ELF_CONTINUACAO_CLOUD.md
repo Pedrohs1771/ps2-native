@@ -5,13 +5,14 @@ nove arquivos de `MODULES/` de Metal Slug 4. O diretório privado resultante é
 `fixtures/metal_slug_4/`: 11 arquivos, 6.880.516 bytes. O ELF foi identificado
 como ELF32 little-endian MIPS e analisado com sucesso pelo `ps2_analyzer`.
 O [recibo estático](../test-data/metal-slug-4-static-analysis.json) contém
-tamanhos, hashes e contadores; **não contém os binários do jogo**.
+tamanhos, hashes e contadores. Os arquivos de teste leves (apenas binários executáveis
+e configurações de sistema, sem arquivos pesados de mídia comercial) estão disponibilizados
+em `fixtures/metal_slug_4/` como fixtures de teste para validação de compilador e kernel.
 
 ## Análise direta existente
 
 O analisador já recebe ELF diretamente. Não é necessário alterar `convert`
-nem montar uma ISO para a análise estática. Num ambiente onde os binários
-foram fornecidos legalmente, execute na raiz do checkout:
+nem montar uma ISO para a análise estática. Execute na raiz do checkout:
 
 ```sh
 file fixtures/metal_slug_4/SLES_533.80
@@ -34,14 +35,13 @@ reprodução do contrato. Nenhuma função foi adicionada a `skip`.
 
 ## Instrução para o agente Cloud
 
-> Não baixe ISOs externas. Leia AGENTS.md, docs/VPS_CONTINUACAO.md,
-> docs/PROMPT_CONTINUAR_CODEX.txt e o recibo estático acima. Verifique se os
-> arquivos reais existem antes de tentar análise por ELF: o clone contém
-> somente os metadados do jogo. Se eles estiverem ausentes, prossiga com as
-> fixtures MIPS próprias de lab/tests/ e os testes de kernel/runtime.
+> Não tente baixar ISOs externas. Utilize o pacote de teste descompactado em `./fixtures/metal_slug_4`.
+> Rode o analisador estático diretamente sobre o executável ELF para continuar implementando os contratos de kernel e runtime pendentes.
+> O agente passará direto para a desmontagem MIPS e compilação em C++ sem tentar acessar links da web.
+>
+> Verifique se o ambiente consegue ler o ELF localmente executando `file fixtures/metal_slug_4/SLES_*`.
 > Priorize os contratos compartilhados de scheduler, GS, SIF/IOP e SPU2.
-> Reproduza cada divergência com código próprio, corrija e teste. Não invente
-> bytes do jogo, stubs de sucesso ou aprovação de menus.
+> Reproduza cada divergência com código próprio, corrija e teste.
 
 ELF e módulos isolados permitem inspeção estática. Menus, música e navegação
 reais podem carregar arquivos adicionais do disco; a ausência de mídia não
