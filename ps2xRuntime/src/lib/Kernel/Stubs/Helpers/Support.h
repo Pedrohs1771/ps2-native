@@ -1641,18 +1641,22 @@ namespace
         GsClearMem clear1;
     };
 
-    struct GsImageMem
+    // libgraph's sceGsSetDefLoadImage returns a six-QWORD GIF header. The
+    // corresponding store-image definition is the five-QWORD A+D header.
+    // Keep these as wire layouts so setdef and exec stubs interoperate with
+    // guest code that reads or reuses the SDK descriptor directly.
+    struct GsLoadImageDescriptorMem
     {
-        uint16_t x;
-        uint16_t y;
-        uint16_t width;
-        uint16_t height;
-        uint16_t vram_addr;
-        uint8_t vram_width;
-        uint8_t psm;
+        uint64_t qword[12];
     };
 
-    static_assert(sizeof(GsImageMem) == 12, "GsImageMem size mismatch");
+    struct GsStoreImageDescriptorMem
+    {
+        uint64_t qword[10];
+    };
+
+    static_assert(sizeof(GsLoadImageDescriptorMem) == 96, "GS load-image descriptor size mismatch");
+    static_assert(sizeof(GsStoreImageDescriptorMem) == 80, "GS store-image descriptor size mismatch");
     static_assert(sizeof(GsDispEnvMem) == 40, "GsDispEnvMem size mismatch");
     static_assert(sizeof(GsGiftagMem) == 16, "GsGiftagMem size mismatch");
     static_assert(sizeof(GsRegPairMem) == 16, "GsRegPairMem size mismatch");
@@ -1857,7 +1861,7 @@ namespace
         return decoded;
     }
 
-    static bool readGsImage(uint8_t *rdram, uint32_t addr, GsImageMem &out)
+    static bool readGsLoadImageDescriptor(uint8_t *rdram, uint32_t addr, GsLoadImageDescriptorMem &out)
     {
         const uint8_t *ptr = getConstMemPtr(rdram, addr);
         if (!ptr)
@@ -1866,7 +1870,25 @@ namespace
         return true;
     }
 
-    static bool writeGsImage(uint8_t *rdram, uint32_t addr, const GsImageMem &img)
+    static bool writeGsLoadImageDescriptor(uint8_t *rdram, uint32_t addr, const GsLoadImageDescriptorMem &img)
+    {
+        uint8_t *ptr = getMemPtr(rdram, addr);
+        if (!ptr)
+            return false;
+        std::memcpy(ptr, &img, sizeof(img));
+        return true;
+    }
+
+    static bool readGsStoreImageDescriptor(uint8_t *rdram, uint32_t addr, GsStoreImageDescriptorMem &out)
+    {
+        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        if (!ptr)
+            return false;
+        std::memcpy(&out, ptr, sizeof(out));
+        return true;
+    }
+
+    static bool writeGsStoreImageDescriptor(uint8_t *rdram, uint32_t addr, const GsStoreImageDescriptorMem &img)
     {
         uint8_t *ptr = getMemPtr(rdram, addr);
         if (!ptr)

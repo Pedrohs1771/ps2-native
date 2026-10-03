@@ -1,4 +1,5 @@
 #include "iop_memory.h"
+#include "ps2x/iop/iop_host.h"
 
 #include <algorithm>
 #include <cstring>
@@ -19,8 +20,8 @@ namespace ps2x::iop::detail
         }
     }
 
-    IopMemory::IopMemory()
-        : m_ram(RamSize), m_owned(RamSize), m_scratch(ScratchSize)
+    IopMemory::IopMemory(IopHost *host)
+        : m_ram(RamSize), m_owned(RamSize), m_scratch(ScratchSize), m_host(host)
     {
         reset();
     }
@@ -36,6 +37,9 @@ namespace ps2x::iop::detail
         m_interruptMask = 0;
         m_interruptControl = 1;
         m_dmaStart.reset();
+        m_spuDmaDiagnostics = 0u;
+        if (m_host)
+            m_host->resetSpu2();
     }
 
     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
@@ -99,6 +103,15 @@ namespace ps2x::iop::detail
             markOwned(phys, sizeof(value));
             return;
         }
+        if (phys >= Spu2Base && phys < Spu2End)
+        {
+            const uint32_t halfword = phys & ~1u;
+            const uint32_t shift = (phys & 1u) * 8u;
+            const uint16_t current = read16(halfword);
+            writeSpu2Halfword(halfword, static_cast<uint16_t>((current & ~(0xFFu << shift)) |
+                                                           (static_cast<uint32_t>(value) << shift)));
+            return;
+        }
         if (phys >= ScratchBase && phys < ScratchBase + ScratchSize)
         {
             m_scratch[phys - ScratchBase] = value;
@@ -118,6 +131,11 @@ namespace ps2x::iop::detail
         {
             std::memcpy(m_ram.data() + phys, &value, sizeof(value));
             markOwned(phys, sizeof(value));
+            return;
+        }
+        if ((phys & 1u) == 0u && phys >= Spu2Base && phys + 1u < Spu2End)
+        {
+            writeSpu2Halfword(phys, value);
             return;
         }
         write8(address, static_cast<uint8_t>(value));
@@ -230,6 +248,12 @@ namespace ps2x::iop::detail
 
     void IopMemory::writeHardware32(uint32_t address, uint32_t value)
     {
+        if (address >= Spu2Base && address + 3u < Spu2End)
+        {
+            writeSpu2Halfword(address, static_cast<uint16_t>(value));
+            writeSpu2Halfword(address + 2u, static_cast<uint16_t>(value >> 16u));
+            return;
+        }
         switch (address)
         {
         case 0x1F801070u:
@@ -272,6 +296,20 @@ namespace ps2x::iop::detail
         const uint32_t autoDmaBit = secondCore ? 2u : 1u;
         const bool autoDma = (value & 1u) != 0u &&
                              (readHardware32(autoDmaAddress) & autoDmaBit) != 0u;
+        if (m_host && (value & 1u) != 0u)
+        {
+            const uint32_t source = physicalAddress(readHardware32(address - 8u));
+            const uint64_t bytes = transferWords * sizeof(uint32_t);
+            const bool rangeValid = source < RamSize && bytes <= RamSize - source;
+            const bool accepted = rangeValid && m_host->writeSpu2Dma(
+                secondCore ? 1u : 0u, source,
+                std::span<const uint8_t>(m_ram.data() + source, static_cast<size_t>(bytes)), autoDma);
+            if (!accepted && m_spuDmaDiagnostics++ < 8u)
+                m_host->log(LogLevel::Warning, rangeValid ?
+                    (autoDma ? "[spu2:dma] AutoDMA payload has no accepting audio consumer" :
+                               "[spu2:dma] SPU RAM voice transfer is not implemented by the audio consumer") :
+                    "[spu2:dma] source lies outside physical IOP RAM");
+        }
         // AutoDMA feeds 16-bit stereo PCM at 48 kHz: one 32-bit word per
         // sample frame, 36.864 MHz / 48 kHz = 768 IOP clocks. Treating it
         // as a RAM copy floods the EE with audio buffer refill callbacks.
@@ -279,6 +317,16 @@ namespace ps2x::iop::detail
             secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
             std::max<uint64_t>(transferWords * (autoDma ? 768u : 2u), 64u),
         };
+    }
+
+    void IopMemory::writeSpu2Halfword(uint32_t address, uint16_t value)
+    {
+        const uint32_t aligned = address & ~3u;
+        const uint32_t shift = (address & 2u) * 8u;
+        uint32_t &stored = m_hardware[aligned];
+        stored = (stored & ~(0xFFFFu << shift)) | (static_cast<uint32_t>(value) << shift);
+        if (m_host)
+            m_host->writeSpu2Register(address, value);
     }
 
     std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept

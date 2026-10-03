@@ -24,6 +24,7 @@ option(PS2X_BUILD_TEST "Build ps2xTest" ON)
 option(PS2X_BUILD_STUDIO "Build ps2xStudio" ON)
 option(PS2X_BUILD_ISO_INSPECTOR "Build the standalone PS2 ISO intake tool" ON)
 option(PS2X_BUILD_NEXO_LAB "Build NEXO replay and validation tools for the host" OFF)
+option(PS2X_NEXO_CAPTURE_ONLY "Attach runtime capture hooks without offline laboratory executables" OFF)
 option(PS2X_FAST_ITERATION "Use -O1 and no LTO for fast development relinks" ON)
 option(PS2X_ENABLE_RELEASE_IPO "Enable whole-program optimization/LTO for final release packaging" OFF)
 

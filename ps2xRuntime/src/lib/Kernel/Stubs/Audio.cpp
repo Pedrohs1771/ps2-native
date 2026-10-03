@@ -11,7 +11,6 @@ namespace ps2_stubs
         constexpr uint32_t kLibSdCmdVoiceTransStatus = 0x80F0u;
         constexpr uint32_t kLibSdCmdBlockTransStatus = 0x8100u;
         constexpr uint32_t kAudioPositionMask = 0x00FFFFFFu;
-        constexpr uint32_t kAudioTransferUnit = 1024u;
         constexpr uint32_t kLibSdCoreCount = 2u;
         constexpr uint32_t kLibSdTransModeIo = 0x08u;
         constexpr uint32_t kLibSdTransDirectionMask = 0x03u;
@@ -34,9 +33,12 @@ namespace ps2_stubs
             uint32_t pauseBase = 0u;
             uint32_t offset = 0u;
             uint32_t statusTraceCount = 0u;
+            uint32_t pcmStatusSampleCount = 0u;
+            uint32_t lastPcmNonzeroBytes = 0u;
             uint16_t mode = 0u;
             bool active = false;
             bool loop = false;
+            std::vector<uint8_t> snapshot;
         };
 
         struct AudioStubState
@@ -44,6 +46,9 @@ namespace ps2_stubs
             bool initialized = false;
             std::array<VoiceTransferState, kLibSdCoreCount> voiceTransfers{};
             std::array<BlockTransferState, kLibSdCoreCount> blockTransfers{};
+            uint32_t paramTraceCount = 0u;
+            uint32_t transToIopTraceCount = 0u;
+            uint32_t pcmTraceCount = 0u;
         };
 
         std::mutex g_audio_stub_mutex;
@@ -76,21 +81,14 @@ namespace ps2_stubs
 
     void sceSdRemote(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)runtime;
-
         const uint32_t cmd = getRegU32(ctx, 5);
         const uint32_t cmdArg0 = getRegU32(ctx, 6);
         const uint32_t cmdArg1 = getRegU32(ctx, 7);
-        const uint32_t sp = getRegU32(ctx, 29);
-        const uint32_t arg4Reg = getRegU32(ctx, 8);
-        const uint32_t arg5Reg = getRegU32(ctx, 9);
-        const uint32_t arg6Reg = getRegU32(ctx, 10);
-        const uint32_t arg4Stk = FAST_READ32(sp + 0x10u);
-        const uint32_t arg5Stk = FAST_READ32(sp + 0x14u);
-        const uint32_t arg6Stk = FAST_READ32(sp + 0x18u);
-        const uint32_t arg4 = (arg4Reg != 0u) ? arg4Reg : arg4Stk;
-        const uint32_t arg5 = (arg5Reg != 0u) ? arg5Reg : arg5Stk;
-        const uint32_t arg6 = (arg6Reg != 0u) ? arg6Reg : arg6Stk;
+        // The EE n32 ABI carries these variadic arguments in a4-a6. Zero is
+        // a valid argument, not permission to substitute unrelated stack data.
+        const uint32_t arg4 = getRegU32(ctx, 8);
+        const uint32_t arg5 = getRegU32(ctx, 9);
+        const uint32_t arg6 = getRegU32(ctx, 10);
 
         std::lock_guard<std::mutex> lock(g_audio_stub_mutex);
         g_audio_stub_state.initialized = true;
@@ -127,7 +125,9 @@ namespace ps2_stubs
             const uint32_t direction = cmdArg1 & kLibSdTransDirectionMask;
             if (direction == kLibSdTransStop)
             {
-                returnValue = currentBlockStatus(blockTransfer);
+                returnValue = runtime ? runtime->audioBackend().blockTransferStatus(core) : currentBlockStatus(blockTransfer);
+                if (runtime)
+                    runtime->audioBackend().stopBlockTransfer(core);
                 blockTransfer = {};
             }
             else if (arg4 != 0u && arg5 != 0u)
@@ -145,6 +145,28 @@ namespace ps2_stubs
                 blockTransfer.statusTraceCount = 0u;
                 blockTransfer.active = true;
                 returnValue = 0u;
+                if (runtime)
+                {
+                    // Block DMA reads the IOP address space, not EE RDRAM.
+                    if (direction == 1u || !runtime->isIopMemoryRange(blockTransfer.base, blockTransfer.size))
+                    {
+                        blockTransfer = {};
+                        returnValue = std::numeric_limits<uint32_t>::max();
+                    }
+                    else
+                    {
+                        blockTransfer.snapshot.resize(blockTransfer.size);
+                        const bool copied = runtime->readIopMemory(blockTransfer.base, blockTransfer.snapshot.data(), blockTransfer.size);
+                        const bool started = copied && runtime->audioBackend().startBlockTransfer(
+                            core, blockTransfer.snapshot.data(), blockTransfer.size,
+                            blockTransfer.base, blockTransfer.offset, blockTransfer.loop);
+                        if (!started)
+                        {
+                            blockTransfer = {};
+                            returnValue = std::numeric_limits<uint32_t>::max();
+                        }
+                    }
+                }
             }
             else
             {
@@ -169,7 +191,55 @@ namespace ps2_stubs
         {
             if (blockTransfer.active && blockTransfer.size != 0u)
             {
-                blockTransfer.offset = (blockTransfer.offset + kAudioTransferUnit) % blockTransfer.size;
+                if (runtime && runtime->readIopMemory(blockTransfer.base, blockTransfer.snapshot.data(), blockTransfer.size))
+                {
+                    runtime->audioBackend().refreshBlockTransfer(core, blockTransfer.snapshot.data(), blockTransfer.size);
+                    const uint32_t sampleIndex = blockTransfer.pcmStatusSampleCount++;
+                    static const bool traceEveryPcmPoll = []
+                    {
+                        const char *value = std::getenv("PS2X_TRACE_AUDIO_PCM");
+                        return value != nullptr && std::strcmp(value, "0") != 0;
+                    }();
+                    if (traceEveryPcmPoll || sampleIndex < 4u || (sampleIndex % 120u) == 0u)
+                    {
+                        PS2_IF_AGRESSIVE_LOGS({
+                            uint32_t nonzero = 0u;
+                            uint32_t nonzeroSamples = 0u;
+                            uint32_t peak = 0u;
+                            for (size_t byteIndex = 0u; byteIndex + 1u < blockTransfer.snapshot.size(); byteIndex += 2u)
+                            {
+                                const uint8_t lo = blockTransfer.snapshot[byteIndex];
+                                const uint8_t hi = blockTransfer.snapshot[byteIndex + 1u];
+                                nonzero += (lo != 0u) + (hi != 0u);
+                                int16_t sample = 0;
+                                std::memcpy(&sample, blockTransfer.snapshot.data() + byteIndex, sizeof(sample));
+                                if (sample != 0)
+                                {
+                                    ++nonzeroSamples;
+                                    peak = std::max(peak, static_cast<uint32_t>(std::abs(static_cast<int32_t>(sample))));
+                                }
+                            }
+                            const uint32_t status = runtime->audioBackend().blockTransferStatus(core);
+                            const bool transitioned = (blockTransfer.lastPcmNonzeroBytes == 0u) != (nonzero == 0u);
+                            if (g_audio_stub_state.pcmTraceCount < 128u &&
+                                (sampleIndex < 4u || (sampleIndex % 120u) == 0u || transitioned))
+                            {
+                                std::cerr << "[Audio:IOPPCM] poll=" << sampleIndex
+                                          << " core=" << core
+                                          << " base=0x" << std::hex << blockTransfer.base
+                                          << " status=0x" << status
+                                          << " bytes=0x" << blockTransfer.size
+                                          << std::dec << " nonzeroBytes=" << nonzero
+                                          << " nonzeroSamples=" << nonzeroSamples
+                                          << " peak=" << peak << std::endl;
+                                ++g_audio_stub_state.pcmTraceCount;
+                            }
+                            blockTransfer.lastPcmNonzeroBytes = nonzero;
+                        });
+                    }
+                    returnValue = runtime->audioBackend().blockTransferStatus(core);
+                    blockTransfer.offset = ((returnValue & kAudioPositionMask) - blockTransfer.base) & kAudioPositionMask;
+                }
                 if (blockTransfer.statusTraceCount < 32u)
                 {
                     PS2_IF_AGRESSIVE_LOGS({
@@ -182,13 +252,25 @@ namespace ps2_stubs
                     ++blockTransfer.statusTraceCount;
                 }
             }
-            returnValue = currentBlockStatus(blockTransfer);
+            returnValue = runtime ? runtime->audioBackend().blockTransferStatus(core) : currentBlockStatus(blockTransfer);
         }
         else if (cmd == kLibSdCmdSetParam)
         {
-            (void)cmdArg0;
-            (void)cmdArg1;
+            if (runtime)
+                runtime->audioBackend().setSpu2Param(static_cast<uint16_t>(cmdArg0), static_cast<uint16_t>(cmdArg1));
+            if (g_audio_stub_state.paramTraceCount < 64u)
+            {
+                PS2_IF_AGRESSIVE_LOGS({
+                    std::cerr << "[Audio:SetParam] entry=0x" << std::hex << cmdArg0
+                              << " value=0x" << cmdArg1 << std::dec << std::endl;
+                });
+                ++g_audio_stub_state.paramTraceCount;
+            }
             returnValue = 0u;
+        }
+        else if (cmd == 0x8020u && runtime)
+        {
+            returnValue = runtime->audioBackend().getSpu2Param(static_cast<uint16_t>(cmdArg0));
         }
 
         setReturnU32(ctx, returnValue);
@@ -197,7 +279,11 @@ namespace ps2_stubs
     void sceSdRemoteInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)rdram;
-        (void)runtime;
+        if (runtime)
+        {
+            runtime->audioBackend().stopBlockTransfer(0u);
+            runtime->audioBackend().stopBlockTransfer(1u);
+        }
 
         std::lock_guard<std::mutex> lock(g_audio_stub_mutex);
         resetAudioStubStateUnlocked();
@@ -207,7 +293,42 @@ namespace ps2_stubs
 
     void sceSdTransToIOP(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceSdTransToIOP", rdram, ctx, runtime);
+        const uint32_t source = getRegU32(ctx, 4) & PS2_RAM_MASK;
+        const uint32_t destination = getRegU32(ctx, 5);
+        const uint32_t size = getRegU32(ctx, 6);
+        const uint32_t blocking = getRegU32(ctx, 7);
+        const bool sourceValid = rdram && size <= PS2_RAM_SIZE - source;
+        const bool copied = runtime && sourceValid && blocking != 0u &&
+                            runtime->writeIopMemory(destination, rdram + source, size);
+        bool trace = false;
+        {
+            std::lock_guard<std::mutex> lock(g_audio_stub_mutex);
+            trace = g_audio_stub_state.transToIopTraceCount < 16u;
+            if (trace)
+                ++g_audio_stub_state.transToIopTraceCount;
+        }
+        if (trace)
+        {
+            PS2_IF_AGRESSIVE_LOGS({
+                uint32_t nonzeroSourceBytes = 0u;
+                if (sourceValid)
+                {
+                    for (uint32_t index = 0u; index < size; ++index)
+                        nonzeroSourceBytes += rdram[source + index] != 0u;
+                }
+                std::cerr << "[Audio:TransToIOP] src=0x" << std::hex << source
+                          << " dst=0x" << destination << " size=0x" << size
+                          << " blocking=" << std::dec << blocking
+                          << " copied=" << copied
+                          << " nonzeroSourceBytes=" << nonzeroSourceBytes << std::endl;
+            });
+        }
+        if (!copied)
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        setReturnS32(ctx, 0);
     }
 
     void sceSSyn_BreakAtick(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

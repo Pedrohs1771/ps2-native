@@ -22,6 +22,16 @@ KEYS = {"x", "space", "Return", "Up", "Down", "Left", "Right", "w", "a", "s", "d
         "q", "e", "r", "f", "z", "c", "v", "Escape"}
 
 
+def free_display_number(lock_dir: Path = Path("/tmp"),
+                        socket_dir: Path = Path("/tmp/.X11-unix")) -> int:
+    for number in range(90, 346):
+        lock = lock_dir / f".X{number}-lock"
+        socket = socket_dir / f"X{number}"
+        if not lock.exists() and not lock.is_symlink() and not socket.exists() and not socket.is_symlink():
+            return number
+    raise RuntimeError("no free private virtual display in 90..345")
+
+
 def environment(state_path: Path) -> tuple[dict, dict]:
     state = json.loads(state_path.read_text())
     if not isinstance(state, dict):
@@ -71,10 +81,18 @@ def child(args: argparse.Namespace) -> None:
     state = args.state.resolve()
     package, iso = args.package.resolve(), args.iso.resolve()
     runner = args.runner.resolve() if args.runner else package / "bin/ps2EntryRunner"
+    # A null sink still inherits per-application mute/volume restoration. Give
+    # this owned probe a fresh identity rather than altering desktop settings.
+    audio_identity = f"ps2native_headless_{os.getpid()}_{time.time_ns()}"
+    for name in tuple(os.environ):
+        if name == "PULSE_PROP" or name.startswith("PULSE_PROP_"):
+            del os.environ[name]
+    os.environ["PULSE_PROP_OVERRIDE"] = (
+        f"module-stream-restore.id={audio_identity} application.name={audio_identity}")
     record = {"version": 1, "display": display, "xauthority": os.environ["XAUTHORITY"],
               "runner_pid": os.getpid(), "package": str(package),
               "iso": str(iso), "runner": str(runner), "xvfb_pid": server_pid,
-              "created_unix": time.time()}
+              "created_unix": time.time(), "audio_restore_id": audio_identity}
     os.environ["PS2X_HEADLESS_STATE"] = str(state)
     os.environ["PS2X_FUNCTION_TRACE"] = "0"
     os.environ["PS2X_TRACE_SIF_DMA"] = "0"
@@ -95,10 +113,16 @@ def child(args: argparse.Namespace) -> None:
     temporary.chmod(0o600)
     temporary.replace(state)
     os.chdir(package.parent)
-    os.execv(str(runner), [str(runner), str(package / "game/boot.elf"), str(iso)])
+    os.execv(str(runner), [str(runner), str(package / "game/boot.elf"), str(iso),
+                         *getattr(args, "guest_arg", [])])
 
 
-def launch(args: argparse.Namespace) -> None:
+def launch(args: argparse.Namespace) -> dict:
+    duration = getattr(args, "duration", None)
+    if duration is not None and (isinstance(duration, bool) or
+            not isinstance(duration, (int, float)) or not math.isfinite(duration) or
+            not 0 < duration <= 3600):
+        raise RuntimeError("duration must be finite and within 0..3600 seconds")
     for executable in ("xvfb-run", "Xvfb", "xdotool", "import"):
         if not shutil.which(executable):
             raise RuntimeError(f"required executable is unavailable: {executable}")
@@ -119,10 +143,13 @@ def launch(args: argparse.Namespace) -> None:
             raise RuntimeError("a runner already owns this session; use a new state path")
     state.parent.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
+    display_number = free_display_number()
     env = os.environ.copy()
     module = None
     process = None
     stopped = False
+    stop_reason = None
+    ready = False
     sink = f"ps2native_headless_{os.getpid()}"
     if shutil.which("pactl"):
         result = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={sink}"],
@@ -132,9 +159,10 @@ def launch(args: argparse.Namespace) -> None:
             env["PULSE_SINK"] = sink
     if module is None:
         raise RuntimeError("cannot create the isolated silent audio sink")
-    # The installed T2/Debian wrapper computes a free number when it parses -a;
-    # -n must precede it. Save server errors and verify ownership in the child.
-    command = ["xvfb-run", "-n", "90", "-a", "-e", str(log.with_suffix(".xvfb.log")), "-s",
+    # New wrappers implement -a using Xvfb -displayfd, ignoring the -n minimum.
+    # Select a high free display explicitly across wrapper versions. A race with
+    # another X server still fails the child's process-group ownership check.
+    command = ["xvfb-run", "-n", str(display_number), "-e", str(log.with_suffix(".xvfb.log")), "-s",
                "-screen 0 1024x768x24 -nolisten tcp +extension GLX",
                sys.executable, str(Path(__file__).resolve()), "_child", "--package", str(package),
                "--iso", str(iso), "--state", str(state)]
@@ -144,10 +172,13 @@ def launch(args: argparse.Namespace) -> None:
         command += ["--disable-overlay-driver"]
     if args.capture_scene:
         command += ["--capture-scene", str(args.capture_scene.resolve())]
+    command += ["--guest-arg="+argument for argument in getattr(args, "guest_arg", [])]
 
     def stop(_signum, _frame):
-        nonlocal stopped
+        nonlocal stopped, stop_reason
         stopped = True
+        if stop_reason is None:
+            stop_reason = "interrupted"
         if process is not None and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -158,23 +189,51 @@ def launch(args: argparse.Namespace) -> None:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         with log.open("w") as output:
+            started = time.monotonic()
+            end_time = started + duration if duration is not None else None
             process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
                                        start_new_session=True)
             print(json.dumps({"status": "starting", "state": str(state), "log": str(log),
                               "launcher_pid": os.getpid()}), flush=True)
             deadline = time.monotonic() + 30
             while not stopped and process.poll() is None:
+                if end_time is not None and time.monotonic() >= end_time:
+                    stop_reason = "duration_reached"
+                    stop(0, None)
+                    break
                 try:
                     record, test_env = environment(state)
                     game = window(test_env)
                     print(json.dumps({"status": "ready", "display": record["display"],
                                       "runner_pid": record["runner_pid"], "window": game}), flush=True)
+                    ready = True
                     break
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                     if time.monotonic() >= deadline:
                         raise RuntimeError(f"virtual game window was not ready after 30 seconds; see {log}")
                     time.sleep(0.1)
-            code = process.wait()
+            try:
+                remaining = (max(0.001, end_time - time.monotonic())
+                             if end_time is not None and not stopped else None)
+                code = process.wait(timeout=remaining if not stopped else 10)
+            except subprocess.TimeoutExpired:
+                if not stopped:
+                    stop_reason = "duration_reached"
+                    stop(0, None)
+                    try:
+                        code = process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        code = process.wait(timeout=10)
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    code = process.wait(timeout=10)
+            result = {"status": stop_reason or ("exited" if code == 0 else "runner_failed"),
+                      "exit_code": code, "window_ready": ready,
+                      "seconds": time.monotonic() - started,
+                      "duration_limit_seconds": duration, "menu_approved": False,
+                      "gameplay_approved": False, "state": str(state), "log": str(log)}
+            print(json.dumps(result), flush=True)
         if code and not stopped:
             raise RuntimeError(f"headless runner exited with status {code}; see {log}")
     finally:
@@ -192,6 +251,7 @@ def launch(args: argparse.Namespace) -> None:
         finally:
             subprocess.run(["pactl", "unload-module", module], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
+    return result
 
 
 def main() -> None:
@@ -208,8 +268,12 @@ def main() -> None:
                              help="Opt-in scene request directory for a laboratory runner")
         command.add_argument("--disable-overlay-driver", action="store_true",
                              help="Remove the diagnostic EE runtime compiler driver for AOT runs")
+        command.add_argument("--guest-arg", action="append", default=[],
+                             help="guest startup argument; use --guest-arg=-option for leading dashes")
         if name == "launch":
             command.add_argument("--log", required=True, type=Path)
+            command.add_argument("--duration", type=float,
+                                 help="Stop the owned session after at most 3600 seconds; does not approve a menu")
     screenshot = commands.add_parser("screenshot")
     screenshot.add_argument("--state", required=True, type=Path)
     screenshot.add_argument("--output", required=True, type=Path)

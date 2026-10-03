@@ -12,6 +12,9 @@ namespace ps2_stubs
         constexpr uint32_t kDvdSectorsPerSecondX4 = kDvdSectorsPerSecondX1 * 4u;
         constexpr uint64_t kNtScFieldsPerSecondNumerator = 60000u;
         constexpr uint64_t kNtScFieldsPerSecondDenominator = 1001u;
+        constexpr int32_t kCdComplete = 2;
+        constexpr int32_t kCdNotReady = 6;
+        constexpr int32_t kCdReadyRawStatus = 0x40;
 
         struct CdStreamTimingState
         {
@@ -204,6 +207,35 @@ namespace ps2_stubs
         return snapshot;
     }
 
+    int32_t queryCdDiskReady(uint32_t mode)
+    {
+        const PS2Runtime::IoPaths &paths = PS2Runtime::getIoPaths();
+        bool mediaMounted = false;
+        std::error_code error;
+        if (!paths.cdImage.empty())
+        {
+            const bool regularImage = std::filesystem::is_regular_file(paths.cdImage, error) && !error;
+            if (regularImage)
+            {
+                error.clear();
+                const uint64_t imageBytes = std::filesystem::file_size(paths.cdImage, error);
+                mediaMounted = !error && imageBytes >= kCdSectorSize;
+            }
+        }
+        else
+        {
+            const std::filesystem::path &cdRoot = !paths.cdRoot.empty() ? paths.cdRoot : paths.elfDirectory;
+            mediaMounted = !cdRoot.empty() && std::filesystem::is_directory(cdRoot, error) && !error;
+        }
+
+        // The host reader has no asynchronous drive command in flight, so mode 0
+        // completes with the current state. Mode 8 returns the CDVD ready bit;
+        // other modes poll and use the documented interrupt result codes.
+        if (mode == 8u)
+            return mediaMounted ? kCdReadyRawStatus : 0;
+        return mediaMounted ? kCdComplete : kCdNotReady;
+    }
+
     void sceCdRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t a0 = getRegU32(ctx, 4); // usually lbn
@@ -370,7 +402,7 @@ namespace ps2_stubs
 
     void sceCdDiskReady(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        setReturnS32(ctx, 2);
+        setReturnS32(ctx, queryCdDiskReady(getRegU32(ctx, 4)));
     }
 
     void sceCdGetDiskType(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

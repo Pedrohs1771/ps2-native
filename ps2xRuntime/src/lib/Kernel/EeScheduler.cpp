@@ -216,6 +216,7 @@ void EeScheduler::run()
                 continue;
             }
         }
+        const int dispatchedThreadId = running->id;
         R5900Context &context = running->activeContext();
         // Count belongs to the CPU, including while threads wait. Saved
         // thread/callback contexts must not restore an older hardware clock.
@@ -274,18 +275,22 @@ void EeScheduler::run()
 
         if (!m_runtime.hasFunction(context.pc))
         {
-            if (!running->invocations.empty())
+            // Callbacks carry executable guest code just like a base thread.
+            // Report before unwinding so an AOT conversion can recover the
+            // missing entry with its invocation registers and stack intact.
+            m_runtime.reportMissingFunction(m_rdram,
+                                            &context,
+                                            context.pc,
+                                            context.pc,
+                                            PS2Runtime::GuestBranchKind::DirectJump,
+                                            running->invocations.empty() ? "EE scheduler" : "EE callback");
+            if (!running->invocations.empty() &&
+                m_runtime.missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop)
             {
                 context.pc = 0u;
             }
-            else
+            else if (running->invocations.empty())
             {
-                m_runtime.reportMissingFunction(m_rdram,
-                                                &context,
-                                                context.pc,
-                                                context.pc,
-                                                PS2Runtime::GuestBranchKind::DirectJump,
-                                                "EE scheduler");
                 makeDormant(*running);
                 m_currentThreadId = 0;
             }
@@ -321,7 +326,11 @@ void EeScheduler::run()
 
         // MTC0 writes are currently emitted directly into the active context.
         // Retain them even when the instruction immediately exits or blocks.
-        m_cop0Count = context.cop0_count;
+        const GuestThread *savedThread = thread(dispatchedThreadId);
+        if (savedThread == running && &savedThread->activeContext() == &context)
+        {
+            m_cop0Count = context.cop0_count;
+        }
         processPendingEvents();
         if (m_rescheduleRequested && m_currentThreadId != 0)
         {
@@ -599,6 +608,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
     GuestThread *exiting = currentThread();
     assert(exiting != nullptr);
     const int id = exiting->id;
+    m_cop0Count = exiting->activeContext().cop0_count;
     const uint32_t ownedStack = deleteThreadRecord && exiting->ownsStack ? exiting->stack : 0u;
     makeDormant(*exiting);
     m_currentThreadId = 0;
@@ -842,6 +852,14 @@ int EeScheduler::rotateReadyQueue(int priority, bool interruptSafe)
     GuestThread *self = currentThread();
     if (self && self->currentPriority == priority)
     {
+        // The executor is not in its ready queue. With no FIFO peer the
+        // rotation selects this same context, so keep it running instead of
+        // unwinding the generated call chain only to dispatch it again.
+        // Preserve an existing preemption request for a higher-priority thread.
+        if (m_readyQueues[priority].empty())
+        {
+            return KE_OK;
+        }
         enqueueReady(*self);
         m_currentThreadId = 0;
         m_rescheduleRequested = true;
@@ -1149,7 +1167,9 @@ int EeScheduler::setAlarm(uint16_t ticks,
                           uint32_t sp)
 {
     assertExecutor();
-    if (handler == 0u || !m_runtime.hasFunction(handler))
+    if (handler == 0u ||
+        (m_runtime.missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop &&
+         !m_runtime.hasFunction(handler)))
     {
         return KE_ERROR;
     }
@@ -1201,6 +1221,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
         SET_GPR_U32(&invocation.context, 29, invocationStackTop());
     }
     invocation.sequence = ++m_invocationSequence;
+    m_cop0Count = owner->activeContext().cop0_count;
     owner->invocations.push_back(std::move(invocation));
     publishSnapshot();
     throw EeDispatcherTransfer{};
@@ -1212,6 +1233,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
     GuestThread *owner = currentThread();
     assert(owner != nullptr);
     assert(!invocations.empty());
+    m_cop0Count = owner->activeContext().cop0_count;
     for (auto it = invocations.rbegin(); it != invocations.rend(); ++it)
     {
         if (getRegU32(&it->context, 29) == 0u)
@@ -1351,7 +1373,8 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     {
         (void)id;
         if (handler.enabled && handler.cause == cause && handler.handler != 0u &&
-            m_runtime.hasFunction(handler.handler))
+            (m_runtime.missingFunctionPolicy() == PS2Runtime::MissingFunctionPolicy::Stop ||
+             m_runtime.hasFunction(handler.handler)))
         {
             matching.push_back(handler);
         }
@@ -1974,7 +1997,9 @@ void EeScheduler::processEvent(const EeEvent &event)
         m_vsyncFlagAddress = 0u;
         m_vsyncTickAddress = 0u;
         completeVSync(m_vsyncTick);
-        if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
+        if (m_gsVSyncCallback != 0u &&
+            (m_runtime.missingFunctionPolicy() == PS2Runtime::MissingFunctionPolicy::Stop ||
+             m_runtime.hasFunction(m_gsVSyncCallback)))
         {
             GuestInvocation invocation{};
             invocation.kind = GuestInvocationKind::GsCallback;

@@ -67,12 +67,13 @@ namespace ps2native::nexo
             const uint8_t *observedRam=ram ? frozenRam.data() : nullptr;
             const auto diagnosis=dispatcher ? dispatcher->diagnose(observedRam,targetPc) : ee_aot::Diagnosis{};
             uint32_t base=0,bytes=0;
-            if(ram && !(targetPc&3u) && targetPc<PS2_RAM_SIZE)
+            if(ram && !(targetPc&3u) && ee::rdramCodeOffset(targetPc)<PS2_RAM_SIZE)
             {
                 base=targetPc&~0xFFFFu;
                 if(targetPc-base>=65536u-512u) base+=32768u;
-                bytes=std::min(65536u,PS2_RAM_SIZE-base);
-                writeBlob(directory/"snapshot.bin",std::span(observedRam+base,bytes));
+                const uint32_t physicalBase=ee::rdramCodeOffset(base);
+                bytes=std::min(65536u,PS2_RAM_SIZE-physicalBase);
+                writeBlob(directory/"snapshot.bin",std::span(observedRam+physicalBase,bytes));
             }
             if(context) writeBlob(directory/"ee-context.bin",EeSnapshotCodec::encode(*context));
             std::ostringstream json;
@@ -82,6 +83,9 @@ namespace ps2native::nexo
                 <<",\"operation\":"<<iop_lab::jsonString(operation.substr(0,4096))
                 <<",\"operation_truncated\":"<<(operation.size()>4096 ? "true":"false")
                 <<",\"module_owns_address\":"<<(moduleOwnsAddress ? "true":"false")
+                <<",\"entry_binding_missing\":"
+                <<(dispatcher && (diagnosis.lookup.status==ee_aot::Status::MissingEntry ||
+                                   diagnosis.lookup.status==ee_aot::Status::CodeChanged) ? "true":"false")
                 <<",\"module_key\":"<<iop_lab::jsonString(moduleKey.substr(0,4096))
                 <<",\"module_key_truncated\":"<<(moduleKey.size()>4096 ? "true":"false")
                 <<",\"aot_directory_available\":"<<(dispatcher ? "true":"false")

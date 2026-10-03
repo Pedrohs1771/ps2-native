@@ -159,6 +159,48 @@ class EeDataFamilyTests(unittest.TestCase):
         return self.tool.discover(cases,minimum_variants=1,operand_policy='typed',
                                   root_only=True,region_policy='canonical-v1')
 
+    def test_packed_masks_roundtrip_exactly_with_observation_provenance(self):
+        case=self.case('packed',[0x24420001]*125+[0x03e00008,0])
+        report=self.canonical([case]);compact,shards=self.tool.compact_report(report)
+        packed=self.tool.pack_compact_masks(compact)
+        self.assertEqual(packed['schema_version'],3)
+        self.assertNotIn('guard_masks',packed['families'][0])
+        self.assertEqual(compact['schema_version'],2)
+        self.assertIn('guard_masks',compact['families'][0])
+        for row,data in shards:(self.root/row['name']).write_bytes(data)
+        path=self.root/'packed.json'
+        path.write_bytes(self.tool.encoded_json(packed,1024*1024,compact=True))
+        restored=self.tool.read_report(path,observations=True)
+        self.assertEqual(restored['families'],report['families'])
+        self.assertEqual(restored['provenance'],compact['provenance'])
+
+    def test_publication_packs_repeated_masks_before_raising_size_budget(self):
+        case=self.case('bounded',[0x24420001]*125+[0x03e00008,0])
+        compact,_=self.tool.compact_report(self.canonical([case]))
+        old_size=len(self.tool.encoded_json(compact,1024*1024,compact=True))
+        self.tool.MAX_REPORT_BYTES=old_size-1
+        path=self.root/'bounded.json'
+        result=self.tool.write_report([case],path,minimum_variants=1,
+            operand_policy='typed',root_only=True,region_policy='canonical-v1')
+        self.assertEqual(result['schema_version'],3)
+        self.assertLess(path.stat().st_size,old_size)
+        restored=self.tool.read_report(path,observations=True)
+        self.assertEqual(restored['families'],self.canonical([case])['families'])
+
+    def test_packed_masks_reject_unused_bits_invalid_hex_and_mixed_encodings(self):
+        case=self.case('invalid-packed',[0x24420001,0x03e00008,0])
+        compact,shards=self.tool.compact_report(self.canonical([case]))
+        packed=self.tool.pack_compact_masks(compact)
+        for row,data in shards:(self.root/row['name']).write_bytes(data)
+        path=self.root/'invalid.json'
+        for change in [{'guard_mask_bits_le':'81'},{'guard_mask_bits_le':'0000'},
+                       {'guard_mask_bits_le':'zz'},{'guard_mask_bits_le':True},
+                       {'guard_masks':[0xffff0000,0xffffffff,0xffffffff]}]:
+            mutated=json.loads(json.dumps(packed));mutated['families'][0].update(change)
+            path.write_text(json.dumps(mutated))
+            with self.subTest(change=change),self.assertRaisesRegex(ValueError,'mask'):
+                self.tool.read_report(path)
+
     def test_canonical_regions_cross_metadata_linear_boundaries(self):
         case=self.case('split',[0x3c020001,0x24420002,0xac820000,
                                 0x24420003,0x03e00008,0])

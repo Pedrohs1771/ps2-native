@@ -362,6 +362,7 @@ public:
                                 const std::vector<ExecutableCodeRange> &ranges);
     RecompiledFunction lookupFunction(uint32_t address);
     bool hasFunction(uint32_t address) const;
+    bool hasMissingFunctionReport() const;
     bool dispatchGuestBranch(uint8_t *rdram,
                              R5900Context *ctx,
                              uint32_t targetPc,

@@ -10,8 +10,58 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-from discover_ee_data_families import (MAX_FAMILIES, MAX_CANDIDATES, bounded_bytes,
+from discover_ee_data_families import (MAX_FAMILIES, MAX_CANDIDATES, MAX_CASES,
+    MAX_REGIONS, MAX_PROVENANCE_BYTES, MAX_PROVENANCE_SHARDS, bounded_bytes,
     ordinary_path, parameter_kind, canonical_region, read_report)
+
+MAX_AGGREGATE_REPORT_BYTES = 128 * 1024 * 1024
+
+
+def candidate_collection(paths):
+    """Validate bounded publications before merging their native structures."""
+    paths=list(paths) if isinstance(paths,(list,tuple)) else [paths]
+    if not 1<=len(paths)<=MAX_CASES:
+        raise ValueError('candidate report collection budget exceeded')
+    paths=[ordinary_path(path) for path in paths]
+    if len(set(paths))!=len(paths):
+        raise ValueError('duplicate candidate report path')
+    families=[];ledger=[];policy=None;total=0;shards={}
+    for path in paths:
+        total+=path.stat().st_size
+        if total>MAX_AGGREGATE_REPORT_BYTES:
+            raise ValueError('aggregate candidate report byte budget exceeded')
+        raw=bounded_bytes(path,64*1024*1024)
+        digest=hashlib.sha256(raw).hexdigest()
+        report=read_report(path,expected_sha256=digest)
+        if not isinstance(report,dict) or type(report.get('schema_version')) is not int or \
+                report['schema_version'] not in (1,2,3) or \
+                report.get('status')!='CANDIDATES_LABORATORY' or report.get('strict_approval') is not False:
+            raise ValueError('expected a laboratory candidate report')
+        rows=report.get('families');current=report.get('discovery_policy',{})
+        if not isinstance(rows,list) or not 1<=len(rows)<=MAX_CANDIDATES:
+            raise ValueError('family input budget exceeded')
+        if not isinstance(current,dict) or (policy is not None and current!=policy):
+            raise ValueError('candidate report discovery policies differ')
+        policy=current
+        if len(families)+len(rows)>MAX_REGIONS:
+            raise ValueError('aggregate candidate structure budget exceeded')
+        families.extend(rows)
+        for shard in report.get('provenance',{}).get('shards',[]):
+            previous=shards.setdefault(shard['sha256'],shard)
+            if previous!=shard:
+                raise ValueError('candidate provenance identities disagree')
+        if len(shards)>MAX_PROVENANCE_SHARDS or \
+                sum(row['bytes'] for row in shards.values())>MAX_PROVENANCE_BYTES or \
+                sum(row['record_count'] for row in shards.values())>MAX_REGIONS:
+            raise ValueError('aggregate candidate provenance budget exceeded')
+        ledger.append({'name':path.name,'sha256':digest,'bytes':len(raw)})
+    identity=ledger[0]['sha256']
+    if len(ledger)>1:
+        framed=b'ee-family-candidate-collection-v1\0'+len(ledger).to_bytes(8,'little')
+        for row in ledger:
+            framed+=row['bytes'].to_bytes(8,'little')+bytes.fromhex(row['sha256'])
+        identity=hashlib.sha256(framed).hexdigest()
+    return families,policy,ledger,identity
 
 
 def uint(value):
@@ -101,14 +151,8 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
     if output.exists():
         raise ValueError('family catalog output must be fresh')
     generator = ordinary_path(generator)
-    report_bytes = bounded_bytes(report_path, 64 * 1024 * 1024)
-    report = read_report(report_path,expected_sha256=hashlib.sha256(report_bytes).hexdigest())
-    if not isinstance(report, dict) or report.get('schema_version') not in (1,2) or \
-            type(report['schema_version']) is not int or report.get('status') != 'CANDIDATES_LABORATORY' or \
-            report.get('strict_approval') is not False:
-        raise ValueError('expected a laboratory candidate report')
-    families = report.get('families')
-    if not isinstance(families, list) or not 1 <= len(families) <= MAX_CANDIDATES or len(cases) > 16 or \
+    families,policy,candidate_reports,candidate_identity=candidate_collection(report_path)
+    if len(cases) > 16 or \
             type(families_per_source) is not int or not 1 <= families_per_source <= 32 or type(terminal_only) is not bool or \
             type(root_data_parameters) is not bool or type(source_buckets) is not int or not 1 <= source_buckets <= 256 or \
             type(workers) is not int or not 1 <= workers <= 16:
@@ -116,8 +160,6 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
     selected = set(only_shapes)
     if entry_policy not in ('observed','root-only'):
         raise ValueError('invalid family entry policy')
-    policy=report.get('discovery_policy',{})
-    if not isinstance(policy,dict):raise ValueError('invalid discovery policy')
     region_policy=policy.get('region_policy','metadata')
     canonical=region_policy=='canonical-v1'
     if region_policy not in ('metadata','canonical-v1') or (canonical and
@@ -179,7 +221,8 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
         words, masks, offsets, ledger = root_shape(case,typed_data=root_data_parameters)
         add(words, masks, offsets)
         root_cases.append(ledger)
-    if not shapes or len(shapes) > MAX_CANDIDATES:
+    shape_budget=MAX_CANDIDATES if len(candidate_reports)==1 else MAX_REGIONS
+    if not shapes or len(shapes) > shape_budget:
         raise ValueError('combined family budget exceeded')
     generator_hash = hashlib.sha256(bounded_bytes(generator, 64 * 1024 * 1024)).hexdigest()
     sources, descriptors, rejected, bodies, admitted = {}, [], [], [], []
@@ -279,7 +322,8 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
                 'reused_body_sources':reused_source_count,'reused_families':len(retained),
                 'generation_workers':workers,
                 'publisher_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'candidate_report_sha256': hashlib.sha256(report_bytes).hexdigest(), 'rejected': rejected,
+                'candidate_report_sha256':candidate_identity,'candidate_reports':candidate_reports,
+                'candidate_count':len(shapes),'rejected': rejected,
                 'selected_shapes': sorted(selected), 'root_cases': root_cases,
                 'entry_policy': entry_policy,
                 'region_policy':region_policy,
@@ -299,7 +343,7 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--candidates', required=True, type=Path)
+    parser.add_argument('--candidates', required=True, type=Path, action='append')
     parser.add_argument('--generator', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--case', action='append', default=[], type=Path)

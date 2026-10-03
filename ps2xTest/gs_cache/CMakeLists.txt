@@ -15,6 +15,7 @@ add_library(ps2_gs_cache_backend_under_test STATIC
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/gs_cpu_backend.cpp"
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/gs_frontend.cpp"
     "${PS2_GS_RUNTIME_DIR}/src/lib/gs/ps2_gs_memory.cpp"
+    "${PS2_GS_RUNTIME_DIR}/src/lib/gs/ps2_gif_arbiter.cpp"
 )
 target_include_directories(ps2_gs_cache_backend_under_test PUBLIC "${PS2_GS_RUNTIME_DIR}/include")
 target_compile_features(ps2_gs_cache_backend_under_test PUBLIC cxx_std_20)
@@ -48,7 +49,7 @@ add_gs_cache_suite(ps2_gs_texture_cache_tests gs_texture_cache_tests.cpp texture
 
 add_gs_cache_suite(ps2_gs_clut_cache_tests gs_clut_cache_tests.cpp clut
     unaligned_csm1_ct32 unaligned_csm1_ct16 unaligned_csm1_ct16s wrapped_clut unaligned_csm2
-    retained_palette clut_uses_page_cache cbp0_conditional cbp1_conditional
+    retained_palette clut_reload_current_vram cbp0_conditional cbp1_conditional
     reserved_cld nonindexed_cld tex2_reload shared_contexts
     csa_ct32 csa_ct16 csa_ct16s texa_without_reload palette_before_filtering high_planes)
 

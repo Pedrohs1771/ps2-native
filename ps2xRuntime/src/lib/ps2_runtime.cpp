@@ -10,6 +10,7 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ee_scheduler.h"
+#include "runtime/host_frame_timing.h"
 #include "ThreadNaming.h"
 #include "Kernel/Stubs/Audio.h"
 #include "Kernel/Stubs/GS.h"
@@ -732,8 +733,8 @@ PS2Runtime::~PS2Runtime()
         requestStop();
         m_iopSubsystem.reset();
         m_iopHost.reset();
-#if defined(PLATFORM_VITA)
         m_audioBackend.stopAll();
+#if defined(PLATFORM_VITA)
         m_audioBackend.setAudioReady(false);
 #else
         if (IsAudioDeviceReady())
@@ -1461,7 +1462,12 @@ bool PS2Runtime::hasFunction(uint32_t address) const
     }
     if (moduleOwnsAddress)
     {
-        return false;
+        // A loaded module still shadows the legacy boot table. An offline bank
+        // may supply an unbound entry only after its live instruction bytes
+        // pass the AOT guard; diagnostic runtime compilation cannot fill it.
+        auto *self = const_cast<PS2Runtime *>(this);
+        return ps2xUsesAotEeOverlays() &&
+               ps2xResolveNativeOverlay(self, self->m_memory.getRDRAM(), address) != nullptr;
     }
 
     uint32_t slot = 0u;
@@ -1515,16 +1521,6 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
     if (RecompiledFunction native = ps2xResolveNativeOverlay(this, m_memory.getRDRAM(), address))
         return native;
 
-    if (ps2xUsesAotEeOverlays())
-    {
-        std::cerr << "[EE:UNSEEN_CODE] pc=0x" << std::hex << address << std::dec << '\n';
-        requestStop(); // An AOT miss never inherits a diagnostic continue/skip policy.
-#if PS2X_NEXO_LAB
-        ps2native::nexo::captureEeMiss(m_memory.getRDRAM(),nullptr,ps2native::ee_aot::compiledDispatcher(),
-            address,0u,GuestBranchKind::IndirectJump,"lookup-no-entry",moduleOwnsAddress,moduleKey);
-#endif
-    }
-
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
               << " tableBase=0x" << g_ps2RecompiledFunctionTableBase
               << " tableEnd=0x" << g_ps2RecompiledFunctionTableEnd
@@ -1535,6 +1531,9 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 
     static RecompiledFunction missingFunction = [](uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // Admission failures are captured at invocation, when the guest
+        // context is available. A preceding lookup must not publish a second,
+        // context-free miss which prevents automatic offline recovery.
         const uint32_t badPc = ctx->pc;
         runtime->reportMissingFunction(rdram,
                                        ctx,
@@ -1562,6 +1561,11 @@ PS2Runtime::MissingFunctionPolicy PS2Runtime::missingFunctionPolicy() const
 void PS2Runtime::resetMissingFunctionReportOnce()
 {
     m_missingFunctionReported.store(false, std::memory_order_release);
+}
+
+bool PS2Runtime::hasMissingFunctionReport() const
+{
+    return m_missingFunctionReported.load(std::memory_order_acquire);
 }
 
 void PS2Runtime::reportMissingFunction(uint8_t *rdram,
@@ -1742,6 +1746,14 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      GuestBranchKind kind,
                                      const char *debugName)
 {
+    // A nested callee may have suspended this thread or installed an
+    // invocation. Do not touch or continue the old context after that transfer,
+    // even when its saved PC happens to equal a caller's fallthrough.
+    if (m_eeScheduler && m_eeScheduler->isExecutingGuest() &&
+        m_eeScheduler->currentContext() != ctx)
+    {
+        return false;
+    }
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
@@ -1788,7 +1800,25 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
-    targetFn(rdram, ctx, this);
+    try
+    {
+        targetFn(rdram, ctx, this);
+    }
+    catch (const EeDispatcherTransfer &)
+    {
+        // Unwind only to this runtime boundary, then let generated callers
+        // propagate false by ordinary returns. C++ destructors still run.
+        // Direct syscall/test callers retain the typed transfer contract.
+        if (!m_eeScheduler || !m_eeScheduler->isExecutingGuest())
+            throw;
+        return false;
+    }
+
+    if (m_eeScheduler && m_eeScheduler->isExecutingGuest() &&
+        m_eeScheduler->currentContext() != ctx)
+    {
+        return false;
+    }
 
     if (isStopRequested() || ctx->pc == 0u)
     {
@@ -2748,6 +2778,16 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 
 void PS2Runtime::run()
 {
+    ps2x::runtime::ScopedSigtermStopRequest sigtermStop;
+    const char *frameTimeCsvEnv = std::getenv("PS2X_FRAME_TIME_CSV");
+    const std::string frameTimeCsvPath = frameTimeCsvEnv ? frameTimeCsvEnv : "";
+    ps2x::runtime::HostFrameTimingRecorder hostFrameTiming;
+
+    if (!frameTimeCsvPath.empty() && !sigtermStop.installed())
+    {
+        std::cerr << "[frame-time] SIGTERM handler unavailable; bounded shutdown may not write CSV\\n";
+    }
+
     m_stopRequested.store(false, std::memory_order_relaxed);
     ps2_stubs::resetSifState();
     resetIop();
@@ -2793,8 +2833,12 @@ void PS2Runtime::run()
         gameThreadFinished.store(true, std::memory_order_release); });
 
     uint64_t tick = 0;
-    while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
+    while (!sigtermStop.requested() && !isStopRequested() &&
+           !gameThreadFinished.load(std::memory_order_acquire))
     {
+        const auto hostFrameStart = frameTimeCsvPath.empty()
+                                        ? ps2x::runtime::HostFrameTimingRecorder::Clock::time_point{}
+                                        : ps2x::runtime::HostFrameTimingRecorder::Clock::now();
         PS2_IF_AGRESSIVE_LOGS({
             tick++;
             if ((tick % 120) == 0)
@@ -2865,6 +2909,13 @@ void PS2Runtime::run()
         }
         EndDrawing();
 
+        if (!frameTimeCsvPath.empty())
+        {
+            hostFrameTiming.record(hostFrameStart,
+                                   ps2x::runtime::HostFrameTimingRecorder::Clock::now(),
+                                   m_memory.gs().vsyncTick.load(std::memory_order_acquire));
+        }
+
         if (WindowShouldClose())
         {
             RUNTIME_LOG("[run] window close requested, breaking out of loop");
@@ -2877,6 +2928,29 @@ void PS2Runtime::run()
     if (gameThread.joinable())
     {
         gameThread.join();
+    }
+
+    if (!frameTimeCsvPath.empty())
+    {
+        std::ofstream output(frameTimeCsvPath, std::ios::out | std::ios::trunc);
+        if (!output)
+        {
+            std::cerr << "[frame-time] unable to open CSV output: " << frameTimeCsvPath << '\n';
+        }
+        else
+        {
+            hostFrameTiming.writeCsv(output);
+            output.close();
+            if (!output)
+            {
+                std::cerr << "[frame-time] failed writing CSV output: " << frameTimeCsvPath << '\n';
+            }
+            else
+            {
+                RUNTIME_LOG("[frame-time] samples=" << hostFrameTiming.sampleCount()
+                                                     << " csv=" << frameTimeCsvPath << std::endl);
+            }
+        }
     }
 
     if (m_debugUiInitialized && m_debugUiShutdownCallback)

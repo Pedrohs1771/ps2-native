@@ -34,6 +34,10 @@ MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_PROVENANCE_SHARD_BYTES = 4 * 1024 * 1024
 MAX_PROVENANCE_BYTES = 128 * 1024 * 1024
 MAX_PROVENANCE_SHARDS = 64
+
+
+class CandidateBudgetExceeded(ValueError):
+    """The finite publication must be split; no semantic failure is implied."""
 DATA_FIELDS = {0x09:'addiu-s16',0x0a:'slti-s16',0x0b:'sltiu-s16',0x0c:'andi-u16',
                0x0d:'ori-u16',0x0e:'xori-u16',0x20:'lb-s16',0x21:'lh-s16',0x23:'lw-s16',
                0x24:'lbu-s16',0x25:'lhu-s16',0x27:'lwu-s16',0x37:'ld-s16',0x1e:'lq-s16',
@@ -235,7 +239,7 @@ def discover(cases, *, minimum_variants=2, operand_policy='observed',
         if len({raw for _, raw in group}) < minimum_variants:
             continue
         if len(families) >= MAX_CANDIDATES:
-            raise ValueError('candidate family budget exceeded')
+            raise CandidateBudgetExceeded('candidate family budget exceeded')
         words = list(struct.unpack('<' + 'I' * (len(normalized) // 4), normalized))
         first = next(iter(group))[1]
         masks, parameters = [], []
@@ -278,12 +282,16 @@ def discover(cases, *, minimum_variants=2, operand_policy='observed',
             'counts': counts, 'families': sorted(families, key=lambda family: family['shape_sha256'])}
 
 
+class PublicationBudgetExceeded(ValueError):
+    pass
+
+
 def encoded_json(value,limit,*,compact=False):
     encoded=io.StringIO();total=1
     encoder=json.JSONEncoder(separators=(',',':')) if compact else json.JSONEncoder(indent=2)
     for chunk in encoder.iterencode(value):
         total+=len(chunk)
-        if total>limit:raise ValueError('candidate report exceeds its publication budget')
+        if total>limit:raise PublicationBudgetExceeded('candidate report exceeds its publication budget')
         encoded.write(chunk)
     encoded.write('\n')
     return encoded.getvalue().encode('ascii')
@@ -344,8 +352,30 @@ def compact_report(report):
     return summary,shards
 
 
+def pack_compact_masks(report):
+    """Losslessly encode the two admitted masks as one bit per instruction.
+
+    Version three is used only when the ordinary v2 publication exceeds its
+    byte budget. Guard words and hash-identified provenance remain unchanged.
+    """
+    if report.get('schema_version')!=2:
+        raise ValueError('mask packing requires a compact v2 report')
+    families=[]
+    for family in report['families']:
+        masks=family.get('guard_masks');words=family.get('guard_words')
+        if not isinstance(masks,list) or not isinstance(words,list) or \
+                not 1<=len(words)<=128 or len(words)!=len(masks) or \
+                any(not integer(mask) or mask not in (0xffffffff,0xffff0000) for mask in masks):
+            raise ValueError('invalid mask packing dimensions')
+        bits=sum((mask==0xffff0000)<<index for index,mask in enumerate(masks))
+        families.append({**{key:value for key,value in family.items() if key!='guard_masks'},
+            'guard_mask_bits_le':bits.to_bytes((len(words)+7)//8,'little').hex()})
+    return {**report,'schema_version':3,'guard_mask_encoding':'typed-mask-bits-le-v1',
+            'families':families}
+
+
 def read_report(path,*,observations=False,expected_sha256=None):
-    """Read v1 or validate bounded v2 provenance before any conversion work."""
+    """Read v1 or validate bounded v2/v3 provenance before conversion work."""
     path=ordinary_path(path);data=bounded_bytes(path,MAX_REPORT_BYTES)
     if expected_sha256 is not None and (not isinstance(expected_sha256,str) or
             not re.fullmatch('[0-9a-f]{64}',expected_sha256) or
@@ -353,7 +383,7 @@ def read_report(path,*,observations=False,expected_sha256=None):
         raise ValueError('candidate report identity differs')
     report=json.loads(data)
     if not isinstance(report,dict):raise ValueError('candidate report must be an object')
-    if type(report.get('schema_version')) is not int or report['schema_version'] not in (1,2):
+    if type(report.get('schema_version')) is not int or report['schema_version'] not in (1,2,3):
         raise ValueError('unsupported candidate schema')
     if report['schema_version']==1:return report
     families=report.get('families');provenance=report.get('provenance')
@@ -361,6 +391,23 @@ def read_report(path,*,observations=False,expected_sha256=None):
             report.get('closure_proved') is not False or not isinstance(families,list) or \
             not 1<=len(families)<=MAX_CANDIDATES or not isinstance(provenance,dict):
         raise ValueError('invalid compact candidate publication')
+    if report['schema_version']==3:
+        if report.get('guard_mask_encoding')!='typed-mask-bits-le-v1':
+            raise ValueError('unsupported guard mask encoding')
+        decoded=[]
+        for family in families:
+            words=family.get('guard_words') if isinstance(family,dict) else None
+            packed=family.get('guard_mask_bits_le') if isinstance(family,dict) else None
+            if not isinstance(words,list) or not 1<=len(words)<=128 or \
+                    'guard_masks' in family or not isinstance(packed,str) or \
+                    not re.fullmatch('[0-9a-f]{'+str(2*((len(words)+7)//8))+'}',packed):
+                raise ValueError('invalid packed mask dimensions')
+            bits=int.from_bytes(bytes.fromhex(packed),'little')
+            if bits>>len(words):raise ValueError('nonzero unused packed mask bits')
+            decoded.append({**{key:value for key,value in family.items() if key!='guard_mask_bits_le'},
+                'guard_masks':[0xffff0000 if bits&(1<<index) else 0xffffffff
+                               for index in range(len(words))]})
+        families=report['families']=decoded
     origins=provenance.get('origins');shards=provenance.get('shards')
     if not isinstance(origins,list) or not 1<=len(origins)<=MAX_CASES or \
             not isinstance(shards,list) or not 1<=len(shards)<=MAX_PROVENANCE_SHARDS:
@@ -446,7 +493,12 @@ def write_report(cases, output, **policy):
     canonical=policy.get('region_policy')=='canonical-v1'
     shards=[]
     if canonical:report,shards=compact_report(report)
-    encoded=encoded_json(report,MAX_REPORT_BYTES,compact=canonical)
+    try:
+        encoded=encoded_json(report,MAX_REPORT_BYTES,compact=canonical)
+    except PublicationBudgetExceeded:
+        if not canonical:raise
+        report=pack_compact_masks(report)
+        encoded=encoded_json(report,MAX_REPORT_BYTES,compact=True)
     for row,data in shards:
         path=ordinary_path(output.parent/row['name'])
         if path.exists():

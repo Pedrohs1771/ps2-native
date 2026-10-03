@@ -1,5 +1,17 @@
 # PS2Native NEXO — uma ISO, um comando, um jogo nativo para PC
 
+**Estado atual (03/10/2026): experimental.** O alvo desta etapa é conversão
+automática até menus, som e controles; gameplay 3D fica depois. A CLI já contém
+recuperação EE offline com memória privada e reuso, sem agente de IA na conversão.
+O replay comercial mais recente produziu PCM não nulo e abertura animada, mas
+**0/5 menus estão qualificados**. Universalidade, 90% e natividade integral
+continuam sem comprovação. Evidências e roteiro atual:
+[adaptação automática](docs/ADAPTACAO_AUTONOMA_20261003.md),
+[Beta v0.1](docs/BETA_V01.md) e
+[prompt de retomada](docs/PROMPT_CONTINUAR_CODEX.txt).
+Para reconstruir em outro servidor: [retomada na VPS](docs/VPS_CONTINUACAO.md).
+Os marcos e a priorização abaixo preservam o levantamento histórico anterior.
+
 **Repositório:** [Pedrohs1771/ps2-native](https://github.com/Pedrohs1771/ps2-native)  
 **Alvo imediato:** Linux x86-64, Vulkan, execução nativa de EE/IOP/VU.  
 **Prioridade:** destravar a partida, colocar o 3D na tela e integrar a conversão automática.  
@@ -276,10 +288,17 @@ Não alternar continuamente o mesmo cache CMake entre os dois perfis.
 A interface pública já existe:
 
 ```bash
+python3 -m tools.ps2native convert "/caminho/jogo.iso"
 python3 -m tools.ps2native build --iso "/caminho/jogo.iso" --target desktop --out "/caminho/pacote-novo"
 ```
 
-**Estado atual:** o comando constrói um pacote experimental. O ciclo completo descrito nesta seção é a implementação a concluir, principalmente em `tools/ps2native/pipeline.py` e `tools/ps2native/cli.py`.
+**Estado atual:** `convert` constrói o pacote experimental, executa probes de recuperação offline no Linux, verifica os hashes e abre o runner desktop com a ISO identificada. Use `--no-run` para converter sem o lançamento final, ou `--run-timeout N` para limitar esse lançamento; expirar o prazo é falha. A conversão usa ferramentas locais, sem API de IA. O lançamento remove o driver de compilação EE ao vivo. Isso não comprova natividade integral de EE/IOP/VU nem compatibilidade de menus.
+
+O ciclo miss → captura → geração offline → compilação → relink → replay está integrado ao `convert`. O processo convidado para antes da compilação. A memória privada em `build/ps2native-memory` reutiliza casos por identidade de ISO, gerador e fontes; os bancos conferem os bytes das instruções antes de executar. `--adapt-rounds` limita recuperações e `--probe-timeout` define a duração de cada probe. `--no-adapt` permite somente o build experimental. O probe automático exige Linux, Xvfb, xdotool, ImageMagick e PulseAudio; eles são ferramentas de conversão, não dependências de IA.
+
+Threads e callbacks sem função compilada chegam à captura estrita, preservando argumentos e o endereço solicitado. A recuperação de código KSEG0/KSEG1 mantém o PC virtual e verifica os bytes na RAM física; outros segmentos e janelas que excedem a RAM são recusados. Esses contratos permitem adaptação automática a código observado. Não implementam automaticamente os dispositivos ainda ausentes nem aprovam um jogo pela ausência de falta de código.
+
+No lote de laboratório de 03/10/2026, as cinco ISOs chegaram ao fim de probes delimitados. Quatro destinos EE ausentes foram recuperados automaticamente em R-Type e Sega Ages; a repetição reutilizou os quatro casos sem nova recuperação. O lote reutiliza objetos convidados de builds anteriores e não qualifica uma conversão fria nem menus. Menus, áudio, controles, IOP/VU nativos e a meta de compatibilidade continuam pendentes. Veja [o checkpoint da adaptação](docs/ADAPTACAO_AUTONOMA_20261003.md).
 
 O destino deve ser novo. O usuário informa a ISO e o diretório de saída; a ferramenta resolve inventário, workspace, catálogos e compilação.
 
@@ -479,6 +498,7 @@ Preservar o diff e continuar a implementação local.
 
 ```bash
 python3 -m tools.ps2native inspect --iso "/caminho/jogo.iso" --json-output
+python3 -m tools.ps2native convert "/caminho/jogo.iso" --no-run
 python3 -m tools.ps2native build --iso "/caminho/jogo.iso" --target desktop --out "/caminho/pacote-novo"
 python3 -m tools.ps2native verify --package "/caminho/pacote-novo"
 ```

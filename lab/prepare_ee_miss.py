@@ -13,6 +13,18 @@ import zlib
 RAM_BYTES = 32 * 1024 * 1024
 
 
+def ram_offset(address):
+    """Physical RAM for a physical PC or a direct-mapped KSEG0/KSEG1 PC."""
+    if type(address) is not int or not 0 <= address <= 0xFFFFFFFF:
+        return RAM_BYTES
+    if address < RAM_BYTES:
+        return address
+    if (address & 0xE0000000) not in (0x80000000, 0xA0000000):
+        return RAM_BYTES
+    physical = address & 0x1FFFFFFF
+    return physical if physical < RAM_BYTES else RAM_BYTES
+
+
 def bounded_bytes(path, bound):
     with path.open('rb') as stream:
         data = stream.read(bound + 1)
@@ -29,21 +41,26 @@ def prepare(capture, generator, output):
     if not isinstance(request, dict):
         raise ValueError('EE miss request must be an object')
     base, entry, size = request['window_base'], request['target_pc'], request['window_bytes']
+    physical_base = ram_offset(base)
     if any(type(request[field]) is not int for field in
            ('schema_version', 'window_base', 'target_pc', 'window_bytes', 'ee_model_profile')) or \
             request['schema_version'] != 1 or request['processor'] != 'EE' or \
             request['ee_model_profile'] != 1 or request['runtime_admission'] != 'missing' or \
             request['complete'] is not True or request['ram_captured'] is not True or \
-            request['module_owns_address'] is not False or \
+            type(request['module_owns_address']) is not bool or \
+            (request['module_owns_address'] and
+             (request.get('entry_binding_missing') is not True or
+              not isinstance(request.get('module_key'), str) or
+              not 1 <= len(request['module_key']) <= 4096)) or \
             type(request['context_captured']) is not bool or \
             request['complete_machine_checkpoint'] is not False or request['quiescence_qualified'] is not False or \
             request['overlay_lookup_status'] not in ('MissingEntry', 'CodeChanged') or \
             not 0 < size <= 65536 or size % 4 or base < 0 or base % 4 or \
-            base >= RAM_BYTES or size > RAM_BYTES - base or entry % 4 or not base <= entry < base + size:
+            physical_base >= RAM_BYTES or size > RAM_BYTES - physical_base or entry % 4 or not base <= entry < base + size:
         raise ValueError('EE miss identity/context is not an admitted byte-generation case')
     ram = bounded_bytes(capture / 'ee-ram.bin', RAM_BYTES)
     image = bounded_bytes(capture / 'snapshot.bin', 65536)
-    if len(ram) != RAM_BYTES or len(image) != size or image != ram[base:base + size]:
+    if len(ram) != RAM_BYTES or len(image) != size or image != ram[physical_base:physical_base + size]:
         raise ValueError('EE snapshot differs from the captured full RAM')
     cpu_hash = None
     if request['context_captured']:
@@ -84,6 +101,8 @@ def prepare(capture, generator, output):
                 'capture_request_sha256': hashlib.sha256(request_bytes).hexdigest(),
                 'ee_ram_sha256': hashlib.sha256(ram).hexdigest(), 'cpu_snapshot_sha256': cpu_hash,
                 'context_captured': request['context_captured'], 'generator_sha256': generator_hash,
+                'module_owns_address': request['module_owns_address'],
+                'module_key': request.get('module_key', ''),
                 'preparer_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'complete_machine_checkpoint': False,
                 'scope': 'observed RAM byte case; entry-context/fetch/closure/fidelity and full machine replay unqualified'}

@@ -78,7 +78,9 @@ namespace ps2_syscalls
             invocations.reserve(handlers.size());
             for (const PS2Runtime::EeExitHandlerRegistration &handler : handlers)
             {
-                if (handler.function == 0u || !runtime->hasFunction(handler.function))
+                if (handler.function == 0u ||
+                    (runtime->missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop &&
+                     !runtime->hasFunction(handler.function)))
                 {
                     continue;
                 }
@@ -266,7 +268,11 @@ namespace ps2_syscalls
             setReturnS32(ctx, KE_NOT_DORMANT);
             return;
         }
-        if (!runtime->hasFunction(target->entry))
+        // Native coverage is not a kernel admission condition. The strict
+        // scheduler captures an unbound entry with the new thread's context.
+        if (target->entry == 0u ||
+            (runtime->missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop &&
+             !runtime->hasFunction(target->entry)))
         {
             setReturnS32(ctx, KE_ERROR);
             return;

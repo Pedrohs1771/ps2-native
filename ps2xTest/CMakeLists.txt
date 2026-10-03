@@ -22,6 +22,7 @@ target_include_directories(ps2_test_function_table PRIVATE
 
 add_library(ps2_test_lib STATIC
     src/native_overlay_tests.cpp
+    src/host_frame_timing_tests.cpp
     src/code_generator_tests.cpp
     src/r5900_decoder_tests.cpp
     src/elf_analyzer_tests.cpp
@@ -36,6 +37,8 @@ add_library(ps2_test_lib STATIC
     src/ps2_iop_tests.cpp
     src/ps2_sif_rpc_tests.cpp
     src/ps2_sif_dma_tests.cpp
+    src/ps2_spu2_bus_tests.cpp
+    src/ps2_entry_recovery_tests.cpp
     src/ps2_recompiler_tests.cpp
     src/ps2_runtime_expansion_tests.cpp
 )
@@ -47,6 +50,7 @@ target_include_directories(ps2_test_lib PRIVATE
     ${CMAKE_SOURCE_DIR}/ps2xAnalyzer/include
     ${CMAKE_SOURCE_DIR}/ps2xRuntime/include
     ${CMAKE_SOURCE_DIR}/ps2xRuntime/src/lib
+    ${CMAKE_SOURCE_DIR}/ps2xIOP/src
 )
 
 target_link_libraries(ps2_test_lib PRIVATE

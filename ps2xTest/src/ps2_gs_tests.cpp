@@ -41,7 +41,8 @@ namespace
     constexpr uint32_t kGsCallbackGp = 0x0036A7F0u;
     constexpr uint32_t kGsCallbackCallerSp = 0x00123450u;
 
-    static_assert(sizeof(GsImageMem) == 12, "GsImageMem size mismatch");
+    static_assert(sizeof(GsLoadImageDescriptorMem) == 96, "GS SDK load descriptor size mismatch");
+    static_assert(sizeof(GsStoreImageDescriptorMem) == 80, "GS SDK store descriptor size mismatch");
 
     void setRegU32(R5900Context &ctx, int reg, uint32_t value)
     {
@@ -156,16 +157,6 @@ namespace
     {
         ctx->pc = 0u;
         runtime->requestStop();
-    }
-
-    void writeGsImageTest(uint8_t *rdram, uint32_t addr, const GsImageMem &image)
-    {
-        std::memcpy(rdram + addr, &image, sizeof(image));
-    }
-
-    void writeGsImageTest(std::vector<uint8_t> &rdram, uint32_t addr, const GsImageMem &image)
-    {
-        writeGsImageTest(rdram.data(), addr, image);
     }
 
     void writePSMT4Texel(std::vector<uint8_t> &vram, uint32_t tbp, uint32_t tbw, uint32_t x, uint32_t y, uint8_t index)
@@ -3890,94 +3881,217 @@ void register_ps2_gs_tests()
                      "triangle fan quad should light at least one framebuffer row");
         });
 
-        tc.Run("sceGsExecLoadImage and sceGsExecStoreImage roundtrip and free guest packets", [](TestCase &t)
+        tc.Run("GS SDK 96-byte image descriptors preserve DBP units across upload and download", [](TestCase &t)
         {
             PS2Runtime runtime;
             t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
             uint8_t *const rdram = runtime.memory().getRDRAM();
-            constexpr uint32_t kImageAddr = 0x4000u;
+            constexpr uint32_t kLoadImageAddr = 0x4000u;
+            constexpr uint32_t kStoreImageAddr = 0x4100u;
+            constexpr uint32_t kSdkLoadImageAddr = 0x4200u;
+            constexpr uint32_t kSdkStoreImageAddr = 0x4400u;
             constexpr uint32_t kSrcAddr = 0x5000u;
             constexpr uint32_t kDstAddr = 0x6000u;
-
-            const GsImageMem image{0u, 0u, 2u, 2u, 0u, 1u, 0u};
-            const uint8_t pixels[16] = {
-                0x10u, 0x20u, 0x30u, 0x40u,
-                0x50u, 0x60u, 0x70u, 0x80u,
-                0x90u, 0xA0u, 0xB0u, 0xC0u,
-                0xD0u, 0xE0u, 0xF0u, 0xFFu,
+            constexpr uint32_t kImageWidth = 2u;
+            constexpr uint32_t kImageHeight = 2u;
+            constexpr uint8_t kImagePsm = GS_PSM_CT32;
+            const uint32_t dbps[] = {6400u, 6720u};
+            const uint8_t pixels[sizeof(dbps)][16] = {
+                {0x10u, 0x20u, 0x30u, 0x40u, 0x50u, 0x60u, 0x70u, 0x80u,
+                 0x90u, 0xA0u, 0xB0u, 0xC0u, 0xD0u, 0xE0u, 0xF0u, 0xFFu},
+                {0x01u, 0x12u, 0x23u, 0x34u, 0x45u, 0x56u, 0x67u, 0x78u,
+                 0x89u, 0x9Au, 0xABu, 0xBCu, 0xCDu, 0xDEu, 0xEFu, 0xF1u},
             };
 
-            writeGsImageTest(rdram, kImageAddr, image);
-            std::memcpy(rdram + kSrcAddr, pixels, sizeof(pixels));
-
-            R5900Context loadCtx{};
-            setRegU32(loadCtx, 4, kImageAddr);
-            setRegU32(loadCtx, 5, kSrcAddr);
-            ps2_stubs::sceGsExecLoadImage(rdram, &loadCtx, &runtime);
-            t.Equals(static_cast<int32_t>(getRegU32Test(loadCtx, 2)), 0,
-                     "sceGsExecLoadImage should succeed for a simple CT32 upload");
-            uint64_t loadTag = 0u;
-            std::memcpy(&loadTag, rdram + runtime.guestHeapBase(), sizeof(loadTag));
-            t.Equals(loadTag, 0x1000000000008004ull,
-                     "sceGsExecLoadImage should populate the packed A+D GIF tag in guest RAM");
-            uint64_t loadReg1 = 0u;
-            uint64_t loadReg2 = 0u;
-            uint64_t loadReg3 = 0u;
-            uint64_t loadReg4 = 0u;
-            std::memcpy(&loadReg1, rdram + runtime.guestHeapBase() + 24u, sizeof(loadReg1));
-            std::memcpy(&loadReg2, rdram + runtime.guestHeapBase() + 40u, sizeof(loadReg2));
-            std::memcpy(&loadReg3, rdram + runtime.guestHeapBase() + 56u, sizeof(loadReg3));
-            std::memcpy(&loadReg4, rdram + runtime.guestHeapBase() + 72u, sizeof(loadReg4));
-            t.Equals(loadReg1, 0x50ull, "sceGsExecLoadImage should encode BITBLTBUF as A+D register 0x50");
-            t.Equals(loadReg2, 0x51ull, "sceGsExecLoadImage should encode TRXPOS as A+D register 0x51");
-            t.Equals(loadReg3, 0x52ull, "sceGsExecLoadImage should encode TRXREG as A+D register 0x52");
-            t.Equals(loadReg4, 0x53ull, "sceGsExecLoadImage should encode TRXDIR as A+D register 0x53");
-            expectGuestHeapReusable(t, runtime,
-                                    "sceGsExecLoadImage should free its temporary GIF packet");
-
-            R5900Context storeCtx{};
-            setRegU32(storeCtx, 4, kImageAddr);
-            setRegU32(storeCtx, 5, kDstAddr);
-            ps2_stubs::sceGsExecStoreImage(rdram, &storeCtx, &runtime);
-            t.Equals(static_cast<int32_t>(getRegU32Test(storeCtx, 2)), 0,
-                     "sceGsExecStoreImage should succeed for a matching CT32 readback");
-            uint64_t storeTag = 0u;
-            std::memcpy(&storeTag, rdram + runtime.guestHeapBase(), sizeof(storeTag));
-            t.Equals(storeTag, 0x1000000000008004ull,
-                     "sceGsExecStoreImage should populate the packed A+D GIF tag in guest RAM");
-            uint64_t storeReg1 = 0u;
-            uint64_t storeReg2 = 0u;
-            uint64_t storeReg3 = 0u;
-            uint64_t storeReg4 = 0u;
-            std::memcpy(&storeReg1, rdram + runtime.guestHeapBase() + 24u, sizeof(storeReg1));
-            std::memcpy(&storeReg2, rdram + runtime.guestHeapBase() + 40u, sizeof(storeReg2));
-            std::memcpy(&storeReg3, rdram + runtime.guestHeapBase() + 56u, sizeof(storeReg3));
-            std::memcpy(&storeReg4, rdram + runtime.guestHeapBase() + 72u, sizeof(storeReg4));
-            t.Equals(storeReg1, 0x50ull, "sceGsExecStoreImage should encode BITBLTBUF as A+D register 0x50");
-            t.Equals(storeReg2, 0x51ull, "sceGsExecStoreImage should encode TRXPOS as A+D register 0x51");
-            t.Equals(storeReg3, 0x52ull, "sceGsExecStoreImage should encode TRXREG as A+D register 0x52");
-            t.Equals(storeReg4, 0x53ull, "sceGsExecStoreImage should encode TRXDIR as A+D register 0x53");
-            expectGuestHeapReusable(t, runtime,
-                                    "sceGsExecStoreImage should free its temporary GIF packet");
-
-            bool roundtripOk = true;
-            size_t mismatchIndex = 0u;
-            for (size_t i = 0; i < sizeof(pixels); ++i)
+            for (size_t imageIndex = 0; imageIndex < std::size(dbps); ++imageIndex)
             {
-                if (rdram[kDstAddr + i] != pixels[i])
+                const uint32_t imageAddr = kLoadImageAddr + static_cast<uint32_t>(imageIndex) * 0x100u;
+                std::memset(rdram + imageAddr, 0xCD, 96u);
+                std::memcpy(rdram + kSrcAddr, pixels[imageIndex], sizeof(pixels[imageIndex]));
+
+                R5900Context defineLoadCtx{};
+                setRegU32(defineLoadCtx, 4, imageAddr);
+                setRegU32(defineLoadCtx, 5, dbps[imageIndex]);
+                setRegU32(defineLoadCtx, 6, 1u);
+                setRegU32(defineLoadCtx, 7, kImagePsm);
+                setRegU32(defineLoadCtx, 8, 0u);
+                setRegU32(defineLoadCtx, 9, 0u);
+                setRegU32(defineLoadCtx, 10, kImageWidth);
+                setRegU32(defineLoadCtx, 11, kImageHeight);
+                ps2_stubs::sceGsSetDefLoadImage(rdram, &defineLoadCtx, &runtime);
+                t.Equals(getRegU32Test(defineLoadCtx, 2), 6u,
+                         "sceGsSetDefLoadImage returns its six-qword SDK header size");
+
+                uint64_t loadHeader[12]{};
+                std::memcpy(loadHeader, rdram + imageAddr, sizeof(loadHeader));
+                const uint64_t expectedLoadHeader[12] = {
+                    0x1000000000008004ull, 0xEull,
+                    (static_cast<uint64_t>(dbps[imageIndex]) << 32u) | (1ull << 48u),
+                    0x50ull, 0ull, 0x51ull,
+                    (static_cast<uint64_t>(kImageHeight) << 32u) | kImageWidth,
+                    0x52ull, 0ull, 0x53ull,
+                    (2ull << 58u) | (1ull << 15u) | 1ull, 0ull,
+                };
+                t.IsTrue(std::memcmp(loadHeader, expectedLoadHeader, sizeof(loadHeader)) == 0,
+                         "setdef output matches the 96-byte SDK GIF header layout");
+                t.Equals(loadHeader[0], 0x1000000000008004ull,
+                         "load descriptor starts with the four-register A+D GIF tag");
+                t.Equals(loadHeader[1], 0xEull,
+                         "load descriptor selects the packed A+D register list");
+                t.Equals(static_cast<uint32_t>((loadHeader[2] >> 32u) & 0x3FFFu), dbps[imageIndex],
+                         "load descriptor stores DBP in 256-byte units without rescaling");
+                t.Equals(static_cast<uint32_t>(loadHeader[10] & 0x7FFFu), 1u,
+                         "load descriptor records the one-qword CT32 image payload");
+
+                R5900Context loadCtx{};
+                const uint32_t execLoadImageAddr = imageIndex == 0u
+                    ? imageAddr
+                    : kSdkLoadImageAddr + static_cast<uint32_t>(imageIndex) * 0x100u;
+                if (execLoadImageAddr != imageAddr)
                 {
-                    roundtripOk = false;
-                    mismatchIndex = i;
-                    break;
+                    std::memcpy(rdram + execLoadImageAddr, expectedLoadHeader, sizeof(expectedLoadHeader));
                 }
+                setRegU32(loadCtx, 4, execLoadImageAddr);
+                setRegU32(loadCtx, 5, kSrcAddr);
+                ps2_stubs::sceGsExecLoadImage(rdram, &loadCtx, &runtime);
+                t.Equals(getRegU32Test(loadCtx, 2), 0u,
+                         "sceGsExecLoadImage consumes the descriptor emitted by setdef");
+                uint32_t firstPixel = 0u;
+                std::memcpy(&firstPixel, pixels[imageIndex], sizeof(firstPixel));
+                t.Equals(runtime.gs().ReadVram(GS_PSM_CT32, dbps[imageIndex], 1u, 0u, 0u),
+                         static_cast<uint64_t>(firstPixel),
+                         "upload writes the source pixel at the requested nonzero DBP");
+                expectGuestHeapReusable(t, runtime,
+                                        "sceGsExecLoadImage frees its temporary transfer packet");
+
+                // Seed the download source at the requested address independently
+                // of the upload path, so matching address scaling bugs cannot mask
+                // one another in a roundtrip.
+                for (uint32_t y = 0; y < kImageHeight; ++y)
+                {
+                    for (uint32_t x = 0; x < kImageWidth; ++x)
+                    {
+                        uint32_t pixel = 0u;
+                        const size_t offset = (static_cast<size_t>(y) * kImageWidth + x) * sizeof(pixel);
+                        std::memcpy(&pixel, pixels[imageIndex] + offset, sizeof(pixel));
+                        runtime.gs().WriteVram(GS_PSM_CT32, dbps[imageIndex], 1u, x, y, pixel);
+                    }
+                }
+
+                R5900Context defineStoreCtx{};
+                setRegU32(defineStoreCtx, 4, kStoreImageAddr);
+                setRegU32(defineStoreCtx, 5, dbps[imageIndex]);
+                setRegU32(defineStoreCtx, 6, 1u);
+                setRegU32(defineStoreCtx, 7, kImagePsm);
+                setRegU32(defineStoreCtx, 8, 0u);
+                setRegU32(defineStoreCtx, 9, 0u);
+                setRegU32(defineStoreCtx, 10, kImageWidth);
+                setRegU32(defineStoreCtx, 11, kImageHeight);
+                std::memset(rdram + kStoreImageAddr, 0xCD, 80u);
+                ps2_stubs::sceGsSetDefStoreImage(rdram, &defineStoreCtx, &runtime);
+                t.Equals(getRegU32Test(defineStoreCtx, 2), 5u,
+                         "sceGsSetDefStoreImage returns its five-qword SDK header size");
+                uint64_t storeHeader[10]{};
+                std::memcpy(storeHeader, rdram + kStoreImageAddr, sizeof(storeHeader));
+                const uint64_t expectedStoreHeader[10] = {
+                    0x1000000000008004ull, 0xEull,
+                    static_cast<uint64_t>(dbps[imageIndex]) | (1ull << 16u),
+                    0x50ull, 0ull, 0x51ull,
+                    (static_cast<uint64_t>(kImageHeight) << 32u) | kImageWidth,
+                    0x52ull, 1ull, 0x53ull,
+                };
+                t.IsTrue(std::memcmp(storeHeader, expectedStoreHeader, sizeof(storeHeader)) == 0,
+                         "setdef output matches the 80-byte SDK store header layout");
+                t.Equals(storeHeader[0], 0x1000000000008004ull,
+                         "store descriptor starts with the four-register A+D GIF tag");
+                t.Equals(static_cast<uint32_t>(storeHeader[2] & 0x3FFFu), dbps[imageIndex],
+                         "store descriptor stores SBP in 256-byte units without rescaling");
+                t.Equals(storeHeader[8], 1ull, "store descriptor selects local-to-host direction");
+
+                R5900Context storeCtx{};
+                const uint32_t execStoreImageAddr = imageIndex == 0u
+                    ? kStoreImageAddr
+                    : kSdkStoreImageAddr + static_cast<uint32_t>(imageIndex) * 0x100u;
+                if (execStoreImageAddr != kStoreImageAddr)
+                {
+                    std::memcpy(rdram + execStoreImageAddr, expectedStoreHeader, sizeof(expectedStoreHeader));
+                }
+                setRegU32(storeCtx, 4, execStoreImageAddr);
+                const uint32_t dstAddr = kDstAddr + static_cast<uint32_t>(imageIndex) * 0x100u;
+                setRegU32(storeCtx, 5, dstAddr);
+                ps2_stubs::sceGsExecStoreImage(rdram, &storeCtx, &runtime);
+                t.Equals(getRegU32Test(storeCtx, 2), 0u,
+                         "sceGsExecStoreImage consumes the descriptor emitted by setdef");
+                t.IsTrue(std::memcmp(rdram + dstAddr, pixels[imageIndex],
+                                     sizeof(pixels[imageIndex])) == 0,
+                         "download reads back the image from the same nonzero DBP");
+                expectGuestHeapReusable(t, runtime,
+                                        "sceGsExecStoreImage frees its temporary transfer packet");
             }
-            if (!roundtripOk)
-            {
-                t.Fail("sceGsExecLoadImage/sceGsExecStoreImage should roundtrip CT32 pixel data "
-                       "(first mismatch at byte " + std::to_string(mismatchIndex) +
-                       ", got " + std::to_string(rdram[kDstAddr + mismatchIndex]) +
-                       ", expected " + std::to_string(pixels[mismatchIndex]) + ")");
-            }
+        });
+
+        tc.Run("GIF HLE appends leave DMA count pending for a guest close", [](TestCase &t)
+        {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            PS2Runtime runtime;
+            R5900Context ctx{};
+            constexpr uint32_t stateAddr = 0x1000u;
+            constexpr uint32_t tagAddr = 0x2000u;
+            const uint32_t state[4] = {tagAddr + 32u, tagAddr, tagAddr, tagAddr + 16u};
+            const uint32_t dmaTag = 0x10000000u;
+            const uint64_t gifTag[2] = {makeGifTag(0u, 0u, 1u, false), 0xEull};
+            std::memcpy(rdram.data() + stateAddr, state, sizeof(state));
+            std::memcpy(rdram.data() + tagAddr, &dmaTag, sizeof(dmaTag));
+            std::memcpy(rdram.data() + tagAddr + 16u, gifTag, sizeof(gifTag));
+
+            setRegU32(ctx, 4, stateAddr);
+            setRegU32(ctx, 5, 0x50u);
+            setRegU64(ctx, 6, 0x0001000000000000ull);
+            ps2_stubs::sceGifPkAddGsAD(rdram.data(), &ctx, &runtime);
+            setRegU32(ctx, 5, 0x52u);
+            setRegU64(ctx, 6, 0x0000000100000004ull);
+            ps2_stubs::sceGifPkAddGsAD(rdram.data(), &ctx, &runtime);
+            ps2_stubs::sceGifPkCloseGifTag(rdram.data(), &ctx, &runtime);
+
+            uint32_t countWord = 0u;
+            uint32_t currentAddr = 0u;
+            uint64_t closedGifTag = 0u;
+            std::memcpy(&countWord, rdram.data() + tagAddr, sizeof(countWord));
+            std::memcpy(&currentAddr, rdram.data() + stateAddr, sizeof(currentAddr));
+            std::memcpy(&closedGifTag, rdram.data() + tagAddr + 16u, sizeof(closedGifTag));
+            t.Equals(countWord, dmaTag, "appending and closing GIF must not finalize the enclosing DMA tag");
+            t.Equals(closedGifTag & 0x7FFFull, uint64_t{2u}, "GIF count closes independently of DMA count");
+
+            // Guest packet code closes CNT by adding the appended payload QWC.
+            // An eager HLE count update makes this 6, swallowing the next DMA tag.
+            countWord += ((currentAddr - tagAddr) >> 4u) - 1u;
+            t.Equals(countWord, uint32_t{0x10000003u}, "a guest close must count the three payload qwords once");
+        });
+
+        tc.Run("GIF HLE termination finalizes DMA once and preserves seeded count", [](TestCase &t)
+        {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            PS2Runtime runtime;
+            R5900Context ctx{};
+            constexpr uint32_t stateAddr = 0x1000u;
+            constexpr uint32_t tagAddr = 0x2000u;
+            const uint32_t state[4] = {tagAddr + 20u, tagAddr, tagAddr, 0u};
+            const uint32_t dmaTag = 0x10000002u;
+            std::memcpy(rdram.data() + stateAddr, state, sizeof(state));
+            std::memcpy(rdram.data() + tagAddr, &dmaTag, sizeof(dmaTag));
+            setRegU32(ctx, 4, stateAddr);
+            ps2_stubs::sceGifPkTerminate(rdram.data(), &ctx, &runtime);
+
+            uint32_t countWord = 0u;
+            uint32_t pending = 1u;
+            std::memcpy(&countWord, rdram.data() + tagAddr, sizeof(countWord));
+            std::memcpy(&pending, rdram.data() + stateAddr + 8u, sizeof(pending));
+            t.Equals(countWord, uint32_t{0x10000003u}, "aligned payload QWC adds to the existing DMA count");
+            t.Equals(pending, uint32_t{0u}, "termination clears the pending tag");
+            t.Equals(getRegU32Test(ctx, 2), tagAddr + 32u, "termination returns the aligned cursor");
+            ps2_stubs::sceGifPkTerminate(rdram.data(), &ctx, &runtime);
+            std::memcpy(&countWord, rdram.data() + tagAddr, sizeof(countWord));
+            t.Equals(countWord, uint32_t{0x10000003u}, "repeated termination does not add the payload twice");
         });
 
         tc.Run("sceGifPkRefLoadImage seeds A+D GIFtag nloop once (no double-count)", [](TestCase &t)

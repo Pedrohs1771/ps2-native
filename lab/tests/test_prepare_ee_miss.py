@@ -63,6 +63,29 @@ class PrepareEeMissTests(unittest.TestCase):
         self.assertEqual(manifest['generator_sha256'], metadata['generator_sha256'])
         self.assertEqual(manifest['banks'][0]['image_sha256'], metadata['image_sha256'])
 
+    def test_kernel_alias_case_preserves_virtual_pc_and_checks_physical_snapshot(self):
+        alias = 0x80010000
+        self.request.update(target_pc=alias, window_base=alias, overlay_lookup_status='MissingEntry')
+        self.write_request()
+        cpu = bytearray((self.capture / 'ee-context.bin').read_bytes())
+        struct.pack_into('<I', cpu, 24 + 512, alias)
+        struct.pack_into('<I', cpu, 20, zlib.crc32(cpu[:20] + cpu[24:]))
+        (self.capture / 'ee-context.bin').write_bytes(cpu)
+        metadata = self.prepare()
+        self.assertEqual(metadata['entry'], alias)
+        self.assertEqual(metadata['base'], alias)
+        self.assertEqual((self.root / 'case/snapshot.bin').read_bytes(), self.image)
+        CATALOG.generate([self.root / 'case'], GENERATOR, self.root / 'catalog')
+
+    def test_non_ram_aliases_and_alias_windows_crossing_ram_are_refused(self):
+        for target, base, size in ((0xC0010000,0xC0010000,12),
+                                   (0x82010000,0x82010000,12),
+                                   (0x9FC00000,0x9FC00000,12),
+                                   (0xA1FFFFFC,0xA1FFFFFC,12)):
+            self.request.update(target_pc=target, window_base=base, window_bytes=size)
+            self.write_request()
+            with self.subTest(target=target), self.assertRaises(ValueError): self.prepare()
+
     def test_pc_delay_state_and_noncanonical_boolean_are_rejected(self):
         original = (self.capture / 'ee-context.bin').read_bytes()
         for offset, value in ((24 + 512, 0x10004), (24 + 1350, 1), (24 + 1350, 2)):
@@ -94,6 +117,15 @@ class PrepareEeMissTests(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(ValueError): self.prepare()
             self.assertFalse((self.root / 'case').exists())
             self.request = original
+
+    def test_unbound_entry_in_a_loaded_module_has_explicit_recovery_evidence(self):
+        self.request.update(module_owns_address=True, entry_binding_missing=True,
+                            module_key='cdrom0:\\unseen.elf;1', overlay_lookup_status='MissingEntry')
+        self.write_request()
+        metadata = self.prepare()
+        self.assertEqual(metadata['entry'], 0x10000)
+        self.assertEqual(metadata['module_key'], 'cdrom0:\\unseen.elf;1')
+        self.assertTrue(metadata['module_owns_address'])
 
     def test_incomplete_context_remains_explicit_and_existing_case_is_preserved(self):
         self.request['context_captured'] = False;self.write_request()

@@ -2,6 +2,8 @@
 #include "ps2_runtime.h"
 #include "ps2_syscalls.h"
 #include "ps2_stubs.h"
+#include "ps2_iop_host.h"
+#include "Kernel/Stubs/CD.h"
 
 #include <filesystem>
 #include <fstream>
@@ -947,6 +949,67 @@ void register_ps2_runtime_io_tests()
             t.Equals(getRegS32(&test.ctx, 2), 1, "sceCdRead should succeed when cdImage is configured");
             t.Equals(std::memcmp(test.rdram.data() + bufAddr, "cd-image", 8), 0,
                      "sceCdRead should copy sector data from the configured image");
+        });
+
+        tc.Run("sceCdDiskReady shares mounted media state with the IOP host", [](TestCase &t)
+        {
+            TestContext test;
+            PS2IopHostAdapter iopHost(test.runtime);
+            const auto ready = [&](uint32_t mode)
+            {
+                clearContext(test.ctx);
+                setRegU32(test.ctx, 4, mode);
+                ps2_stubs::sceCdDiskReady(test.rdram.data(), &test.ctx, &test.runtime);
+                return getRegS32(&test.ctx, 2);
+            };
+
+            PS2Runtime::setIoPaths({});
+            t.Equals(ready(0u), 6, "an unmounted drive should report SCECdNotReady in blocking mode");
+            t.Equals(ready(8u), 0, "an unmounted drive should expose a clear raw status register");
+            t.Equals(iopHost.cdDiskReady(1u), 6, "the IOP host should see the same absent-media state");
+
+            const auto imagePath = test.paths.base / "mounted.iso";
+            {
+                std::ofstream invalidImage(imagePath, std::ios::binary);
+            }
+            PS2Runtime::IoPaths ioPaths{};
+            ioPaths.cdImage = imagePath;
+            PS2Runtime::setIoPaths(ioPaths);
+            t.Equals(ready(0u), 6, "an empty image should not count as mounted media");
+            t.Equals(ready(8u), 0, "an invalid image should not set the raw ready bit");
+            t.Equals(iopHost.cdDiskReady(2u), 6, "mode 2 should poll the mounted media state");
+
+            constexpr size_t sectorBytes = 2048u;
+            std::vector<uint8_t> image(32u * sectorBytes, 0u);
+            std::memcpy(image.data() + 16u * sectorBytes + 1u, "CD001", 5u);
+            image[16u * sectorBytes] = 1u;
+            image[16u * sectorBytes + 6u] = 1u;
+            {
+                std::ofstream validImage(imagePath, std::ios::binary | std::ios::trunc);
+                validImage.write(reinterpret_cast<const char *>(image.data()),
+                                 static_cast<std::streamsize>(image.size()));
+            }
+            t.Equals(ready(0u), 2, "a mounted ISO should report SCECdComplete in blocking mode");
+            t.Equals(ready(2u), 2, "mode 2 should poll and accept mounted media");
+            t.Equals(ready(8u), 0x40, "mode 8 should expose the mounted drive raw status");
+            t.Equals(iopHost.cdDiskReady(8u), 0x40, "the IOP endpoint should expose the same raw drive status");
+
+            std::error_code error;
+            std::filesystem::remove(imagePath, error);
+            t.IsTrue(!error, "the mounted test image should be removable");
+            t.Equals(ready(0u), 6, "removing the mounted image should make the drive not ready immediately");
+            t.Equals(ready(8u), 0, "removing the mounted image should clear the raw ready bit immediately");
+            t.Equals(iopHost.cdDiskReady(1u), 6, "the IOP endpoint should observe removed media");
+
+            ioPaths.cdImage.clear();
+            ioPaths.cdRoot = test.paths.cdRoot;
+            PS2Runtime::setIoPaths(ioPaths);
+            {
+                std::ofstream virtualDiscFile(test.paths.cdRoot / "SYSTEM.CNF", std::ios::binary);
+                virtualDiscFile << "BOOT2 = cdrom0:\\SLUS_000.00;1";
+            }
+            t.Equals(ready(1u), 2, "a mounted extracted-disc directory should also report ready");
+            t.Equals(iopHost.cdDiskReady(1u), 2, "the IOP endpoint should see the same mounted directory");
         });
     });
 }

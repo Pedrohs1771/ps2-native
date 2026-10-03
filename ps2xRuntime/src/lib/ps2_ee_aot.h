@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2_ee_aot_bank.h"
+#include "runtime/ee_ram_alias.h"
 
 #include <array>
 #include <span>
@@ -55,7 +56,7 @@ namespace ps2native::ee_aot
             uint32_t sourceSize;
             uint32_t next;
         };
-        std::array<uint32_t, PS2_RAM_SIZE / pageBytes> m_pages;
+        std::array<uint32_t, 3u * PS2_RAM_SIZE / pageBytes> m_pages;
         std::vector<uint32_t> m_heads;
         std::vector<std::vector<uint8_t>> m_images;
         std::vector<Entry> m_entries;

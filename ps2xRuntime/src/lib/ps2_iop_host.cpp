@@ -286,6 +286,23 @@ void PS2IopHostAdapter::audioCommand(uint32_t sid,
                                             receive.size);
 }
 
+void PS2IopHostAdapter::writeSpu2Register(uint32_t address, uint16_t value)
+{
+    m_runtime.audioBackend().writeSpu2Register(address, value);
+}
+
+bool PS2IopHostAdapter::writeSpu2Dma(uint32_t core, uint32_t iopAddress,
+                                   std::span<const uint8_t> data, bool autoDma)
+{
+    (void)iopAddress;
+    return autoDma && m_runtime.audioBackend().enqueueSpu2Pcm(core, data);
+}
+
+void PS2IopHostAdapter::resetSpu2()
+{
+    m_runtime.audioBackend().resetSpu2();
+}
+
 std::string PS2IopHostAdapter::hostPath(ps2x::iop::HostPathKind kind) const
 {
     const PS2Runtime::IoPaths &paths = PS2Runtime::getIoPaths();
@@ -329,6 +346,11 @@ bool PS2IopHostAdapter::searchCdFile(std::string_view path,
     result.name = found.name;
     result.date = found.date;
     return true;
+}
+
+int32_t PS2IopHostAdapter::cdDiskReady(uint32_t mode)
+{
+    return ps2_stubs::queryCdDiskReady(mode);
 }
 
 uint64_t PS2IopHostAdapter::openHostFile(std::string_view path)

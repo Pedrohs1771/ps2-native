@@ -2,6 +2,7 @@
 #include "ps2recomp/code_generator.h"
 #include "ps2recomp/r5900_decoder.h"
 #include "ps2recomp/instructions.h"
+#include "runtime/ee_ram_alias.h"
 #include <cstring>
 #include <deque>
 #include <map>
@@ -16,8 +17,10 @@ namespace ps2recomp
                                      OverlayDependencyContract contract)
     {
         constexpr uint32_t ramSize = 32u * 1024u * 1024u;
+        const uint32_t physicalBase = ps2native::ee::rdramCodeOffset(base);
         if ((base & 3u) || (entry & 3u) || (bytes.size() & 3u) || bytes.empty() ||
-            base >= ramSize || bytes.size() > ramSize - base || entry < base || entry - base >= bytes.size())
+            physicalBase >= ramSize || bytes.size() > ramSize - physicalBase ||
+            entry < base || entry - base >= bytes.size())
             throw std::invalid_argument("invalid EE overlay snapshot or entry");
         const uint32_t end = base + static_cast<uint32_t>(bytes.size());
         const auto inside = [=](uint32_t pc) { return !(pc & 3u) && pc >= base && pc < end; };

@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,95 @@ namespace
             setRegU32(*ctx, 2, 0x00BEEFu);
             ctx->pc = 0x33330000u;
         }
+    }
+
+    constexpr uint32_t kLocalTransferOuter = 0x00126000u;
+    constexpr uint32_t kLocalTransferMiddle = 0x00126010u;
+    constexpr uint32_t kLocalTransferLeaf = 0x00126020u;
+    constexpr uint32_t kLocalTransferResume = 0x00126030u;
+    constexpr uint32_t kLocalTransferWake = 0x00126040u;
+    constexpr uint32_t kLocalTransferCallback = 0x00126050u;
+    bool gLocalTransferCallbackMode = false;
+    bool gLocalTransferEscaped = false;
+    bool gLocalTransferContinued = false;
+    bool gLocalTransferResumed = false;
+    bool gLocalTransferCallbackRan = false;
+    uint32_t gLocalTransferReturns = 0u;
+    uint32_t gLocalTransferDestructors = 0u;
+
+    struct LocalTransferGuard
+    {
+        ~LocalTransferGuard() { ++gLocalTransferDestructors; }
+    };
+
+    void testLocalTransferLeaf(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        LocalTransferGuard guard;
+        // Deliberately equal every caller's fallthrough: PC equality alone
+        // cannot prove that a suspended/replaced context may continue.
+        ctx->pc = kLocalTransferResume;
+        if (gLocalTransferCallbackMode)
+        {
+            GuestInvocation invocation{};
+            invocation.context.pc = kLocalTransferCallback;
+            runtime->eeScheduler().invokeCurrent(std::move(invocation));
+        }
+        runtime->eeScheduler().sleepCurrent();
+    }
+
+    void testLocalTransferMiddle(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        LocalTransferGuard guard;
+        const bool continued = runtime->dispatchGuestBranch(rdram, ctx, kLocalTransferLeaf,
+            kLocalTransferMiddle, kLocalTransferResume, PS2Runtime::GuestBranchKind::DirectCall,
+            "owned transfer leaf");
+        ++gLocalTransferReturns;
+        if (!continued) return;
+        gLocalTransferContinued = true;
+        runtime->requestStop();
+    }
+
+    void testLocalTransferOuter(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        try
+        {
+            const bool continued = runtime->dispatchGuestBranch(rdram, ctx, kLocalTransferMiddle,
+                kLocalTransferOuter, kLocalTransferResume, PS2Runtime::GuestBranchKind::DirectCall,
+                "owned transfer middle");
+            ++gLocalTransferReturns;
+            if (!continued) return;
+            gLocalTransferContinued = true;
+            runtime->requestStop();
+        }
+        catch (const EeDispatcherTransfer &)
+        {
+            gLocalTransferEscaped = true;
+            throw;
+        }
+    }
+
+    void testLocalTransferResume(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gLocalTransferResumed = true;
+        ctx->pc = 0u;
+        runtime->requestStop();
+    }
+
+    void testLocalTransferWake(uint8_t *, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        runtime->eeScheduler().wakeupThread(EeScheduler::kMainThreadId, false);
+        ctx->pc = 0u;
+    }
+
+    void testLocalTransferCallback(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        gLocalTransferCallbackRan = true;
+        ctx->pc = 0u;
+    }
+
+    void testGuestBranchError(uint8_t *, R5900Context *, PS2Runtime *)
+    {
+        throw std::runtime_error("owned execution failure");
     }
 
     std::atomic<uint32_t> gGuestJumpTargetCount{0u};
@@ -381,6 +471,58 @@ void register_ps2_runtime_expansion_tests()
                      "missing exact final-function target should request runtime stop");
         });
 
+        tc.Run("guest dispatch contains typed scheduler transfers at the nearest call boundary", [](TestCase &t)
+        {
+            for (const bool callbackMode : {false, true})
+            {
+                PS2Runtime runtime;
+                std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
+                runtime.registerFunction(kLocalTransferOuter, testLocalTransferOuter);
+                runtime.registerFunction(kLocalTransferMiddle, testLocalTransferMiddle);
+                runtime.registerFunction(kLocalTransferLeaf, testLocalTransferLeaf);
+                runtime.registerFunction(kLocalTransferResume, testLocalTransferResume);
+                runtime.registerFunction(kLocalTransferWake, testLocalTransferWake);
+                runtime.registerFunction(kLocalTransferCallback, testLocalTransferCallback);
+                gLocalTransferCallbackMode = callbackMode;
+                gLocalTransferEscaped = gLocalTransferContinued = gLocalTransferResumed = false;
+                gLocalTransferCallbackRan = false;
+                gLocalTransferReturns = gLocalTransferDestructors = 0u;
+                R5900Context context{};
+                context.pc = kLocalTransferOuter;
+                SET_GPR_U32(&context, 29, 0x001F0000u);
+                auto &scheduler = runtime.eeScheduler();
+                scheduler.reset(ram.data(), context);
+                const int waker = scheduler.createThread(EeThreadCreateParams{0u, kLocalTransferWake,
+                    0x001E0000u, 0x800u, 0u, 5, 0u});
+                scheduler.startThread(waker, 0u, context, false);
+                scheduler.run();
+                t.IsFalse(gLocalTransferEscaped, "typed transfers should stop at the nearest runtime call boundary");
+                t.Equals(gLocalTransferReturns, 2u, "both callers should propagate a false dispatch result normally");
+                t.IsFalse(gLocalTransferContinued, "matching PCs must not resume a waiting or replaced context");
+                t.IsTrue(gLocalTransferResumed, "the saved guest continuation should execute through the scheduler");
+                t.Equals(gLocalTransferDestructors, 2u, "both C++ guards must be destroyed exactly once");
+                t.Equals(gLocalTransferCallbackRan, callbackMode, "callback admission and completion must be preserved");
+            }
+        });
+
+        tc.Run("guest dispatch preserves ordinary execution exceptions", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            runtime.registerFunction(kLocalTransferLeaf, testGuestBranchError);
+            R5900Context context{};
+            bool failed = false;
+            try
+            {
+                runtime.dispatchGuestBranch(nullptr, &context, kLocalTransferLeaf, kLocalTransferOuter,
+                    kLocalTransferResume, PS2Runtime::GuestBranchKind::DirectCall, "owned failure");
+            }
+            catch (const std::runtime_error &error)
+            {
+                failed = std::string(error.what()) == "owned execution failure";
+            }
+            t.IsTrue(failed, "an execution error must not become a completed transfer or success");
+        });
+
         tc.Run("dispatchGuestBranch call normalizes unchanged callee PC to fallthrough", [](TestCase &t)
         {
             PS2Runtime runtime;
@@ -546,6 +688,43 @@ void register_ps2_runtime_expansion_tests()
             ps2_stubs::sceMpegAddCallback(rdram.data(), &addAfterReinit, nullptr);
             t.Equals(getRegS32(addAfterReinit, 2), 1,
                      "sceMpegInit should reset MPEG callback bookkeeping between runs");
+        });
+
+        tc.Run("MPEG preserves a null n32 callback argument despite stale stack words", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "guest callback memory should initialize");
+            uint8_t *rdram = runtime.memory().getRDRAM();
+            ps2_stubs::resetMpegStubState();
+            constexpr uint32_t handle = 0x00123000u;
+            constexpr uint32_t callback = 0x00124000u;
+            constexpr uint32_t source = 0x00128000u;
+            constexpr uint32_t stack = 0x00140000u;
+            runtime.registerFunction(callback, &testRecordMpegStreamCallback);
+            runtime.registerFunction(kMpegCallbackStopPc, &testStopAfterMpegCallback);
+            R5900Context idle{};
+            idle.pc = kMpegCallbackStopPc;
+            runtime.eeScheduler().reset(rdram, idle);
+            R5900Context context{};
+            setRegU32(context, 4, handle);
+            setRegU32(context, 7, callback);
+            setRegU32(context, 8, 0u);
+            setRegU32(context, 29, stack);
+            Ps2FastWrite32(rdram, stack + 0x10u, 0xDEADC0DEu);
+            ps2_stubs::sceMpegAddStrCallback(rdram, &context, &runtime);
+            const std::array<uint8_t, 17> packet{
+                0u, 0u, 1u, 0xE0u, 0u, 11u, 0x80u, 0u, 0u,
+                0u, 0u, 1u, 0xB3u, 0x14u, 0u, 0xF0u, 0x13u};
+            std::memcpy(rdram + source, packet.data(), packet.size());
+            setRegU32(context, 5, source);
+            setRegU32(context, 6, packet.size());
+            gMpegStreamCallbackCount.store(0u);
+            ps2_stubs::sceMpegDemuxPss(rdram, &context, &runtime);
+            runtime.eeScheduler().run();
+            t.Equals(gMpegStreamCallbackCount.load(), 1u, "the registered callback must execute");
+            t.Equals(gMpegStreamCallbackUserData.load(), 0u,
+                     "a null fifth argument must not be replaced by stack data");
+            ps2_stubs::resetMpegStubState();
         });
 
         tc.Run("sceMpegDemuxPssRing dispatches registered video and audio stream callbacks", [](TestCase &t)
@@ -746,6 +925,79 @@ void register_ps2_runtime_expansion_tests()
             runtime.requestStop();
         });
 
+        tc.Run("MPEG HLE completion remains visible to native IsEnd readers", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            constexpr uint32_t handle = 0x00140000u;
+            constexpr uint32_t work = 0x00141000u;
+            ps2_stubs::resetMpegStubState();
+            ps2_stubs::notifyMpegCdStreamStart();
+            R5900Context ctx{};
+            setRegU32(ctx, 4, handle);
+            setRegU32(ctx, 5, work);
+            setRegU32(ctx, 6, 0x2000u);
+            Ps2FastWrite32(rdram.data(), work, 1u);
+            ps2_stubs::sceMpegCreate(rdram.data(), &ctx, &runtime);
+            t.Equals(Ps2FastRead32(rdram.data(), work), 0u,
+                     "create should clear completion when reusing a guest work area");
+            constexpr uint32_t stream = 0x00148000u;
+            const uint8_t programEnd[] = {0u, 0u, 1u, 0xB9u};
+            std::memcpy(rdram.data() + stream, programEnd, sizeof(programEnd));
+            setRegU32(ctx, 5, stream);
+            setRegU32(ctx, 6, sizeof(programEnd));
+            runtime.eeScheduler().bindMainContextForSyscall(ctx, rdram.data());
+            ps2_stubs::sceMpegDemuxPss(rdram.data(), &ctx, &runtime);
+            setRegU32(ctx, 5, 0x00150000u);
+            ps2_stubs::sceMpegGetPicture(rdram.data(), &ctx, nullptr);
+            t.Equals(Ps2FastRead32(rdram.data(), work), 0u,
+                     "a program end code alone must not override buffered producer data");
+            ps2_stubs::notifyMpegCdStreamEof();
+
+            setRegU32(ctx, 5, 0x00150000u);
+            ps2_stubs::sceMpegGetPicture(rdram.data(), &ctx, nullptr);
+            // Native SDK IsEnd reads *(mpeg->work), without calling the HLE.
+            // A mixed native/HLE path must observe the same completion state.
+            const uint32_t nativeEnd = Ps2FastRead32(
+                rdram.data(), Ps2FastRead32(rdram.data(), handle + 0x40u));
+            t.Equals(nativeEnd, 1u,
+                     "GetPicture should publish drained producer EOF to native readers");
+            ps2_stubs::sceMpegIsEnd(rdram.data(), &ctx, nullptr);
+            t.Equals(::getRegU32(&ctx, 2), nativeEnd,
+                     "HLE and native IsEnd must agree on the completed stream");
+
+            ps2_stubs::sceMpegReset(rdram.data(), &ctx, nullptr);
+            t.Equals(Ps2FastRead32(rdram.data(), work), 0u,
+                     "reset should clear the native completion flag");
+            runtime.requestStop();
+        });
+
+        tc.Run("MPEG native completion waits through the last frame presentation", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            constexpr uint32_t handle = 0x00160000u;
+            constexpr uint32_t work = 0x00161000u;
+            ps2_stubs::resetMpegStubState();
+            ps2_stubs::notifyMpegCdStreamStart();
+            R5900Context ctx{};
+            setRegU32(ctx, 4, handle);
+            setRegU32(ctx, 5, work);
+            setRegU32(ctx, 6, 0x2000u);
+            ps2_stubs::sceMpegCreate(rdram.data(), &ctx, &runtime);
+            ps2_stubs::enqueueMpegDecodedFrameForTesting(handle);
+            ps2_stubs::notifyMpegCdStreamEof();
+
+            setRegU32(ctx, 5, 0x00170000u);
+            ps2_stubs::sceMpegGetPicture(rdram.data(), &ctx, &runtime);
+            t.Equals(Ps2FastRead32(rdram.data(), work), 0u,
+                     "draining the queue must not cut short the displayed final frame");
+            ps2_stubs::sceMpegIsEnd(rdram.data(), &ctx, &runtime);
+            t.Equals(::getRegU32(&ctx, 2), 0u,
+                     "the final frame remains active until its presentation deadline");
+            runtime.requestStop();
+        });
+
         tc.Run("sceMpegGetPicture blocks as a typed scheduler wait and resumes on EOF", [](TestCase &t)
         {
             PS2Runtime runtime;
@@ -811,6 +1063,49 @@ void register_ps2_runtime_expansion_tests()
                      "only the injected decoder frame should be counted as served");
         });
 
+        tc.Run("sceSdRemote block status observes DMA without advancing it on each poll", [](TestCase &t)
+        {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            R5900Context init{};
+            ps2_stubs::sceSdRemoteInit(rdram.data(), &init, nullptr);
+            R5900Context ctx{};
+            setRegU32(ctx, 5, 0x80E0u);
+            setRegU32(ctx, 7, 0x10u);
+            setRegU32(ctx, 8, 0x00010000u);
+            setRegU32(ctx, 9, 0x00002000u);
+            ps2_stubs::sceSdRemote(rdram.data(), &ctx, nullptr);
+            setRegU32(ctx, 5, 0x8100u);
+            for (uint32_t poll = 0; poll < 10u; ++poll)
+            {
+                ps2_stubs::sceSdRemote(rdram.data(), &ctx, nullptr);
+                t.Equals(getRegU32(&ctx, 2), 0x00010000u,
+                         "reading DMA status must not itself consume PCM or change banks");
+            }
+        });
+
+        tc.Run("sceSdTransToIOP copies PCM into IOP memory instead of acknowledging a stub", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "EE memory should initialize");
+            t.IsTrue(runtime.syncCoreSubsystems(), "IOP memory should bind");
+            constexpr uint32_t source = 0x00310000u;
+            constexpr uint32_t destination = 0x001239C0u;
+            const std::array<uint8_t, 8> pcm{0x10, 0x12, 0xEF, 0xED, 0x21, 0x23, 0xDE, 0xDC};
+            uint8_t *rdram = runtime.memory().getRDRAM();
+            std::memcpy(rdram + source, pcm.data(), pcm.size());
+            R5900Context ctx{};
+            setRegU32(ctx, 4, source);
+            setRegU32(ctx, 5, destination);
+            setRegU32(ctx, 6, pcm.size());
+            setRegU32(ctx, 7, 1u);
+            ps2_stubs::sceSdTransToIOP(rdram, &ctx, &runtime);
+            std::array<uint8_t, 8> actual{};
+            t.IsTrue(runtime.readIopMemory(destination, actual.data(), actual.size()),
+                     "IOP destination should be readable");
+            t.IsTrue(actual == pcm, "the transferred PCM must match EE bytes exactly");
+            t.Equals(getRegS32(ctx, 2), 0, "blocking transfer should complete successfully");
+        });
+
         tc.Run("sceSdRemote isolates voice transfers from block streaming state", [](TestCase &t)
         {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
@@ -840,8 +1135,8 @@ void register_ps2_runtime_expansion_tests()
             setRegU32(blockStatusCtx, 6, 1u);
             setRegU32(blockStatusCtx, 7, 0u);
             ps2_stubs::sceSdRemote(rdram.data(), &blockStatusCtx, nullptr);
-            t.Equals(getRegU32(&blockStatusCtx, 2), 0x00012B40u,
-                     "initial block-status poll should advance the streaming ring");
+            t.Equals(getRegU32(&blockStatusCtx, 2), 0x00012740u,
+                     "initial block-status poll should preserve the pause position");
 
             R5900Context voiceCtx{};
             setRegU32(voiceCtx, 29, kStackAddr);
@@ -867,7 +1162,7 @@ void register_ps2_runtime_expansion_tests()
                      "voice-transfer status should complete independently from block position");
 
             ps2_stubs::sceSdRemote(rdram.data(), &blockStatusCtx, nullptr);
-            t.Equals(getRegU32(&blockStatusCtx, 2), 0x00012F40u,
+            t.Equals(getRegU32(&blockStatusCtx, 2), 0x00012740u,
                      "voice transfer should not replace or advance the block-streaming ring");
         });
 
@@ -904,18 +1199,18 @@ void register_ps2_runtime_expansion_tests()
             t.Equals(remote(0x80E0u, 1u, 0x13u, 0x00020000u, 0x00002000u, 0x00020800u), 0u,
                      "core 1 block stream should start independently");
 
-            t.Equals(remote(0x8100u, 0u, 0u), 0x00010400u,
-                     "core 0 status should advance only the core 0 cursor");
-            t.Equals(remote(0x8100u, 1u, 0u), 0x00020C00u,
+            t.Equals(remote(0x8100u, 0u, 0u), 0x00010000u,
+                     "core 0 status should observe the core 0 cursor");
+            t.Equals(remote(0x8100u, 1u, 0u), 0x00020800u,
                      "core 1 status should retain its independent pause position");
-            t.Equals(remote(0x8100u, 0u, 0u), 0x01010800u,
-                     "loop status should expose the second buffer in the high byte");
+            t.Equals(remote(0x8100u, 0u, 0u), 0x00010000u,
+                     "repeated status reads should not switch loop banks");
 
-            t.Equals(remote(0x80E0u, 0u, 0x02u), 0x01010800u,
+            t.Equals(remote(0x80E0u, 0u, 0x02u), 0x00010000u,
                      "block STOP should return the final core 0 cursor");
             t.Equals(remote(0x8100u, 0u, 0u), 0u,
                      "stopped block status should no longer expose a live cursor");
-            t.Equals(remote(0x8100u, 1u, 0u), 0x01021000u,
+            t.Equals(remote(0x8100u, 1u, 0u), 0x00020800u,
                      "stopping core 0 should not stop or advance core 1");
 
             ps2_stubs::sceSdRemoteInit(rdram.data(), &initCtx, nullptr);
@@ -923,6 +1218,82 @@ void register_ps2_runtime_expansion_tests()
                      "sceSdRemoteInit should reset block state for both cores");
             t.Equals(remote(0x80F0u, 1u, 0u), 1u,
                      "sceSdRemoteInit should restore idle voice status to complete");
+        });
+
+        tc.Run("sceSdRemote sends IOP AutoDMA stereo PCM to the consumer and derives status from consumption", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "EE memory should initialize");
+            t.IsTrue(runtime.syncCoreSubsystems(), "IOP memory should bind");
+            uint8_t *rdram = runtime.memory().getRDRAM();
+            R5900Context init{};
+            ps2_stubs::sceSdRemoteInit(rdram, &init, &runtime);
+            constexpr uint32_t base = 0x001239C0u;
+            std::array<int16_t, 2048> input{};
+            for (uint32_t tile = 0; tile < 4u; ++tile)
+                for (uint32_t sample = 0; sample < 256u; ++sample)
+                {
+                    input[tile * 512u + sample] = static_cast<int16_t>(1000 + tile * 100 + sample);
+                    input[tile * 512u + 256u + sample] = static_cast<int16_t>(-1000 - tile * 100 - sample);
+                }
+            t.IsTrue(runtime.writeIopMemory(base, input.data(), sizeof(input)), "PCM ring should reach IOP RAM");
+            auto remote = [&](uint32_t command, uint32_t entry, uint32_t value, uint32_t arg4 = 0u, uint32_t arg5 = 0u)
+            {
+                R5900Context ctx{};
+                setRegU32(ctx, 5, command);
+                setRegU32(ctx, 6, entry);
+                setRegU32(ctx, 7, value);
+                setRegU32(ctx, 8, arg4);
+                setRegU32(ctx, 9, arg5);
+                ps2_stubs::sceSdRemote(rdram, &ctx, &runtime);
+                return getRegU32(&ctx, 2);
+            };
+            remote(0x8010u, 0x0980u, 0x3FFFu);
+            remote(0x8010u, 0x0A80u, 0x3FFFu);
+            remote(0x8010u, 0x0F80u, 0x7FFFu);
+            remote(0x8010u, 0x1080u, 0x7FFFu);
+            t.Equals(remote(0x8020u, 0x0980u, 0u), 0x3FFFu, "master volume should round trip through Remote");
+            t.Equals(remote(0x80E0u, 0u, 0x10u, base, sizeof(input)), 0u, "AutoDMA ring should start");
+            for (uint32_t poll = 0; poll < 10u; ++poll)
+                t.Equals(remote(0x8100u, 0u, 0u), base, "polling alone must not advance the ring");
+
+            std::array<int16_t, 512> output{};
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            for (uint32_t sample = 0; sample < 256u; ++sample)
+            {
+                t.Equals(output[sample * 2u], input[sample], "left channel must use the first 256-sample plane");
+                t.Equals(output[sample * 2u + 1u], input[256u + sample], "right channel must use the second plane");
+            }
+            t.Equals(remote(0x8100u, 0u, 0u), base + 1024u, "256 rendered frames should consume exactly one DMA tile");
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            t.Equals(remote(0x8100u, 0u, 0u), 0x01000000u | (base + 2048u), "consuming half of the ring must select bank 1");
+            std::fill(input.begin() + 1024u, input.begin() + 1280u, 2222);
+            std::fill(input.begin() + 1280u, input.begin() + 1536u, -3333);
+            t.IsTrue(runtime.writeIopMemory(base, input.data(), sizeof(input)), "producer should refill the ring");
+            remote(0x8100u, 0u, 0u);
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            t.Equals(output[0], static_cast<int16_t>(2222), "consumer should observe refreshed IOP left PCM");
+            t.Equals(output[1], static_cast<int16_t>(-3333), "consumer should observe refreshed IOP right PCM");
+
+            remote(0x8010u, 0x0980u, 0u);
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            t.Equals(output[0], static_cast<int16_t>(0), "zero core master-left volume should mute left PCM");
+            t.IsTrue(output[1] != 0, "master-left mute must leave the right channel audible");
+            t.Equals(remote(0x8100u, 0u, 0u), base, "loop consumption should wrap to bank 0");
+
+            remote(0x8010u, 0x0980u, 0x3FFFu);
+            remote(0x8010u, 0x0F80u, 0u);
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            t.Equals(output[0], static_cast<int16_t>(0), "zero core B left volume should mute left PCM");
+            t.IsTrue(output[1] != 0, "core B left mute must leave the right channel audible");
+            t.Equals(remote(0x8100u, 0u, 0u), base + 1024u,
+                     "status should advance one tile into the wrapped bank");
+            t.Equals(remote(0x8100u, 1u, 0u), 0u, "rendering core 0 must not start core 1");
+            t.Equals(remote(0x80E0u, 0u, 2u), base + 1024u,
+                     "STOP should report the last consumed DMA position");
+            runtime.audioBackend().renderBlockAudio(0u, output.data(), 256u);
+            t.IsTrue(std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; }),
+                     "a stopped stream must render silence");
         });
 
         tc.Run("IPU init skips missing optional helper instead of dispatching the default trap", [](TestCase &t)

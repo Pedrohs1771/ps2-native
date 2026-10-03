@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace ps2x::iop { class IopHost; }
+
 namespace ps2x::iop::detail
 {
     class IopMemory
@@ -37,7 +39,7 @@ namespace ps2x::iop::detail
             uint64_t delayCycles = 0;
         };
 
-        IopMemory();
+        explicit IopMemory(IopHost *host = nullptr);
 
         void reset();
 
@@ -75,6 +77,7 @@ namespace ps2x::iop::detail
     private:
         [[nodiscard]] uint32_t readHardware32(uint32_t address) const;
         void writeHardware32(uint32_t address, uint32_t value);
+        void writeSpu2Halfword(uint32_t address, uint16_t value);
         void markOwned(uint32_t address, size_t size);
 
         std::vector<uint8_t> m_ram;
@@ -86,5 +89,7 @@ namespace ps2x::iop::detail
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
         std::optional<DmaStart> m_dmaStart;
+        IopHost *m_host = nullptr;
+        uint32_t m_spuDmaDiagnostics = 0u;
     };
 }

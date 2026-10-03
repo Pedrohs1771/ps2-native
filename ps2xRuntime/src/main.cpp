@@ -304,7 +304,9 @@ int main(int argc, char *argv[])
 #endif
         std::cout.flush();
         std::cerr.flush();
-        std::_Exit(0);
+        // Conversion consumes this typed failure after the process has stopped.
+        // The delivered runner never starts a compiler to repair itself.
+        std::_Exit(runtime.hasMissingFunctionReport() ? 73 : 0);
     }
     catch (const std::exception &e)
     {

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <span>
 
 namespace ps2x::iop
 {
@@ -96,6 +97,25 @@ namespace ps2x::iop
 
         virtual void audioCommand(uint32_t sid, uint32_t function, GuestBuffer send, GuestBuffer receive) = 0;
 
+        // The actual IRX implementation can drive SPU2 directly, without an
+        // EE LIBSD RPC. DMA payloads are borrowed only for the duration of this
+        // call, so a sound consumer must copy bytes it will use asynchronously.
+        virtual void writeSpu2Register(uint32_t address, uint16_t value)
+        {
+            (void)address;
+            (void)value;
+        }
+        virtual bool writeSpu2Dma(uint32_t core, uint32_t iopAddress,
+                                  std::span<const uint8_t> data, bool autoDma)
+        {
+            (void)core;
+            (void)iopAddress;
+            (void)data;
+            (void)autoDma;
+            return false;
+        }
+        virtual void resetSpu2() {}
+
         virtual std::string hostPath(HostPathKind kind) const = 0;
         virtual std::string translateGuestPath(std::string_view path) const = 0;
         // Resolves a CD/DVD filename to the 32-byte sceCdlFILE metadata used
@@ -106,6 +126,13 @@ namespace ps2x::iop
             (void)layer;
             (void)result;
             return false;
+        }
+        // CDVDFSV DiskReady forwards CDVDMAN's mode and returns its status.
+        // Hosts without a mounted drive must not report SCECdComplete (2).
+        virtual int32_t cdDiskReady(uint32_t mode)
+        {
+            (void)mode;
+            return 6; // SCECdNotReady
         }
         virtual uint64_t openHostFile(std::string_view path) = 0;
         virtual bool hostFileSize(uint64_t handle, uint64_t &size) const = 0;

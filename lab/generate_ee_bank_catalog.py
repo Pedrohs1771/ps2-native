@@ -2,11 +2,25 @@
 """Generate finite static EE banks from validated recovered snapshots, offline."""
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
 import subprocess
 import tempfile
+try:
+    from lab.prepare_ee_miss import RAM_BYTES, ram_offset
+except ModuleNotFoundError as error:
+    if error.name != 'lab':
+        raise
+    # CTest and importlib consumers need not add the repository or lab folder
+    # to sys.path. Load this exact peer rather than a same-named external module.
+    _prepare_spec = importlib.util.spec_from_file_location(
+        'ps2native_ee_prepare', Path(__file__).with_name('prepare_ee_miss.py'))
+    _prepare_module = importlib.util.module_from_spec(_prepare_spec)
+    _prepare_spec.loader.exec_module(_prepare_module)
+    RAM_BYTES = _prepare_module.RAM_BYTES
+    ram_offset = _prepare_module.ram_offset
 
 
 def dependency_runs(rows):
@@ -153,7 +167,7 @@ def generate(cases, generator, output, root=None, *, normal_entries=True, _accep
                 metadata['schema_version'] != 1 or metadata['image_bytes'] != len(image) or \
                 hashlib.sha256(image).hexdigest() != metadata['image_sha256'] or \
                 not image or len(image) > 65536 or len(image) % 4 or base % 4 or entry % 4 or \
-                base < 0 or base >= 32 * 1024 * 1024 or len(image) > 32 * 1024 * 1024 - base or \
+                base < 0 or ram_offset(base) >= RAM_BYTES or len(image) > RAM_BYTES - ram_offset(base) or \
                 not base <= entry < base + len(image):
             raise ValueError('invalid EE snapshot identity or dimensions')
         key = hashlib.sha256(base.to_bytes(4, 'little') + entry.to_bytes(4, 'little') + image).hexdigest()

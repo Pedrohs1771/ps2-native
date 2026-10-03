@@ -442,28 +442,32 @@ void register_ps2_sif_rpc_tests()
             const auto libsdModule = env.runtime.loadIopModule("rom0:LIBSD");
             t.IsTrue(libsdModule.moduleId > 0, "LIBSD test should load its IOP module first");
 
-            constexpr uint32_t kSetVoiceRpc = 0x8010u;
+            constexpr uint32_t kSetParamRpc = 0x8010u;
             constexpr uint32_t kSendAddr = 0x00035B00u;
             constexpr uint32_t kRecvAddr = 0x00035C00u;
 
-            std::array<uint32_t, 5> command{};
-            command[0] = 3u;          // voice index
-            command[2] = 0x1000u;    // neutral pitch
-            command[3] = 0x00120000u; // plausible sample address
+            std::array<uint32_t, 3> command{};
+            command[0] = 0u;          // EE return address
+            command[1] = 0x0980u;     // core 0 master left volume
+            command[2] = 0x2345u;     // register value
             writeGuestStruct(env.rdram.data(), kSendAddr, command);
             std::memset(env.rdram.data() + kRecvAddr, 0xA5, 16u);
             const ps2x::iop::RpcResult result =
-                callIop(env, IOP_SID_LIBSD, kSetVoiceRpc,
+                callIop(env, IOP_SID_LIBSD, kSetParamRpc,
                         kSendAddr, static_cast<uint32_t>(sizeof(command)),
                         kRecvAddr, 16u);
 
             t.IsTrue(result.handled, "LIBSD SID should be handled by the IOP audio service");
             t.Equals(result.resultAddress, kRecvAddr, "LIBSD should return the audio backend receive buffer");
             t.IsFalse(result.signalNowaitCompletion, "LIBSD should not request special nowait signaling");
-            for (uint32_t index = 0u; index < 16u; ++index)
+            t.Equals(readGuestStruct<uint32_t>(env.rdram.data(), kRecvAddr), 0u,
+                     "sceSdSetParam RPC should return zero for its void SDK operation");
+            t.Equals(env.runtime.audioBackend().getSpu2Param(0x0980u), 0x2345u,
+                     "SetParam should update the addressed SPU2 register");
+            for (uint32_t index = sizeof(uint32_t); index < 16u; ++index)
             {
                 t.Equals(env.rdram[kRecvAddr + index], static_cast<uint8_t>(0xA5),
-                         "LIBSD should preserve the backend-owned response buffer");
+                         "SetParam should leave bytes after its result word untouched");
             }
         });
 

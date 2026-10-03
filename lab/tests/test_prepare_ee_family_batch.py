@@ -7,10 +7,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'lab'))
 import prepare_ee_family_batch as batch
+import discover_ee_data_families as discovery
+import generate_ee_family_catalog as publisher
 
 
 class FamilyBatchTests(unittest.TestCase):
@@ -74,6 +77,27 @@ class FamilyBatchTests(unittest.TestCase):
         self.assertEqual(result['family_count'],1)
         self.assertTrue(result['manifest_published'])
         self.assertFalse(result['closure_proved'])
+
+    def test_capture_root_collects_completed_misses_in_order_without_addresses(self):
+        root=self.root/'misses';root.mkdir()
+        for name in ['ee-miss-000002','ee-miss-000001']:
+            capture=root/name;capture.mkdir()
+            for file in ['request.json','snapshot.bin','ee-ram.bin']:
+                (capture/file).write_bytes(b'owned input')
+        self.assertEqual([p.name for p in batch.discover_captures(root)],
+                         ['ee-miss-000001','ee-miss-000002'])
+        self.assertFalse((self.root/'output').exists())
+
+    def test_capture_root_rejects_empty_incomplete_linked_and_over_budget_inputs(self):
+        root=self.root/'misses';root.mkdir()
+        with self.assertRaises(ValueError):batch.discover_captures(root)
+        capture=root/'ee-miss-000001';capture.mkdir()
+        with self.assertRaises(ValueError):batch.discover_captures(root)
+        for name in ['request.json','snapshot.bin','ee-ram.bin']:(capture/name).write_bytes(b'x')
+        link=root/'ee-miss-000002';link.symlink_to(capture,target_is_directory=True)
+        with self.assertRaises(ValueError):batch.discover_captures(root)
+        link.unlink()
+        with self.assertRaises(ValueError):batch.discover_captures(root,limit=0)
 
     def test_failed_frontend_leaves_receipt_and_no_catalog_manifest(self):
         case=self.case('a');self.family.write_text('#!/usr/bin/env python3\nraise SystemExit(2)\n')
@@ -158,6 +182,47 @@ class FamilyBatchTests(unittest.TestCase):
         self.assertEqual(sorted(len(row['words']) for row in catalog['families']),[3,6])
         self.assertEqual(result['discovery_policy']['region_policy'],'canonical-v1')
         self.assertFalse(catalog['terminal_only'])
+
+    def distinct_cases(self):
+        a=self.case('first');b=self.case('second')
+        image=struct.pack('<III',0x3c030001,0x03e00008,0)
+        (b/'snapshot.bin').write_bytes(image)
+        path=b/'bank.json';metadata=json.loads(path.read_text())
+        metadata['image_sha256']=hashlib.sha256(image).hexdigest();path.write_text(json.dumps(metadata))
+        return [a,b]
+
+    def test_candidate_limit_partitions_cases_without_discarding_structures(self):
+        cases=self.distinct_cases()
+        with patch.object(discovery,'MAX_CANDIDATES',1),patch.object(publisher,'MAX_CANDIDATES',1):
+            result=self.run_batch(cases=cases,workers=2)
+        self.assertEqual(result['status'],'PUBLISHED_LABORATORY')
+        self.assertEqual(result['candidate_count'],2)
+        self.assertEqual(result['family_count'],2)
+        self.assertEqual(result['discovery_counts']['cases'],2)
+        self.assertEqual(len(result['candidate_reports']),2)
+        for row in result['candidate_reports']:
+            path=self.root/'output'/row['name']
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),row['sha256'])
+            self.assertEqual(len(json.loads(path.read_text())['families']),1)
+        self.assertFalse(result['closure_proved'])
+
+    def test_partitioned_discovery_keeps_aggregate_work_bounded(self):
+        cases=self.distinct_cases()
+        with patch.object(discovery,'MAX_CANDIDATES',1),patch.object(batch,'MAX_SCANNED_WORDS',5):
+            with self.assertRaisesRegex(ValueError,'aggregate partitioned discovery'):
+                self.run_batch(cases=cases)
+        result=json.loads((self.root/'output/report.json').read_text())
+        self.assertEqual(result['failed_step'],'structure-discovery')
+        self.assertFalse(result['manifest_published'])
+        self.assertFalse((self.root/'output/catalog').exists())
+
+    def test_nonbudget_discovery_error_is_not_retried_as_smaller_partitions(self):
+        cases=self.distinct_cases()
+        with patch.object(batch,'write_report',side_effect=ValueError('invalid dependency')) as writer:
+            with self.assertRaisesRegex(ValueError,'invalid dependency'):
+                self.run_batch(cases=cases)
+        self.assertEqual(writer.call_count,1)
+        self.assertFalse((self.root/'output/catalog').exists())
 
 
 if __name__=='__main__':unittest.main()

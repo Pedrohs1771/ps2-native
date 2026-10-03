@@ -75,6 +75,14 @@ namespace iop_test
             std::memcpy(result.name.data(), "IOPRP271.IMG", 12u);
             return true;
         }
+        int32_t cdDiskReady(uint32_t mode) override
+        {
+            ++cdDiskReadyCalls;
+            cdDiskReadyMode = mode;
+            if (mode == 8u)
+                return cdMediaReady ? 0x40 : 0;
+            return cdMediaReady ? 2 : 6;
+        }
         uint64_t openHostFile(std::string_view) override { return file.empty() ? 0u : 1u; }
         bool hostFileSize(uint64_t handle, uint64_t &size) const override
         {
@@ -129,6 +137,9 @@ namespace iop_test
         size_t audioCalls = 0u;
         int32_t initResult = 0;
         bool cdSearchAvailable = false;
+        bool cdMediaReady = false;
+        uint32_t cdDiskReadyMode = 0xFFFFFFFFu;
+        uint32_t cdDiskReadyCalls = 0u;
         uint32_t nextHandle = 0x1000u;
     };
 

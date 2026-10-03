@@ -15,8 +15,8 @@ namespace ps2native::ee_aot
     Diagnosis Dispatcher::diagnose(const uint8_t *ram,uint32_t pc) const
     {
         Diagnosis result{lookup(ram,pc),{}};
-        if (!ram || (pc & 3u) || pc >= PS2_RAM_SIZE) return result;
-        const uint32_t page=m_pages[pc/pageBytes];
+        if (!ram || (pc & 3u) || ee::rdramCodeOffset(pc) >= PS2_RAM_SIZE) return result;
+        const uint32_t page=m_pages[ee::rdramCodePage(pc,pageBytes)];
         if (page==absent) return result;
         for (uint32_t index=m_heads[page+(pc%pageBytes)/4u];index!=absent;index=m_entries[index].next)
         {
@@ -24,7 +24,7 @@ namespace ps2native::ee_aot
             const std::span expected(m_images[entry.bank].data()+entry.offset,entry.sourceSize);
             uint32_t count=0,first=absent;
             for (uint32_t offset=0;offset<entry.sourceSize;++offset)
-                if (ram[entry.sourceBegin+offset]!=expected[offset])
+                if (ram[ee::rdramCodeOffset(entry.sourceBegin)+offset]!=expected[offset])
                 {
                     ++count;
                     if (first==absent) first=offset;
@@ -51,9 +51,10 @@ namespace ps2native::ee_aot
         m_images.reserve(program.banks.size());
         for (const auto &bank : program.banks)
         {
+            const uint32_t physicalBase = ee::rdramCodeOffset(bank.base);
             if (bank.image.empty() || bank.image.size() > 65536u || bank.image.size() % 4u ||
-                (bank.base & 3u) || bank.base >= PS2_RAM_SIZE ||
-                bank.image.size() > PS2_RAM_SIZE - bank.base || bank.bindings.empty() ||
+                (bank.base & 3u) || physicalBase >= PS2_RAM_SIZE ||
+                bank.image.size() > PS2_RAM_SIZE - physicalBase || bank.bindings.empty() ||
                 bank.bindings.size() > 32768u)
                 throw std::invalid_argument("invalid EE AOT bank dimensions");
             const auto imageBegin = reinterpret_cast<uintptr_t>(bank.image.data());
@@ -73,7 +74,7 @@ namespace ps2native::ee_aot
                     binding.address - binding.sourceBegin >= binding.sourceSize ||
                     !addresses.insert(binding.address).second)
                     throw std::invalid_argument("invalid EE AOT binding identity");
-                const uint32_t page = binding.address / pageBytes;
+                const uint32_t page = ee::rdramCodePage(binding.address,pageBytes);
                 if (m_pages[page] == absent)
                 {
                     m_pages[page] = static_cast<uint32_t>(m_heads.size());
@@ -93,8 +94,8 @@ namespace ps2native::ee_aot
     {
         if (!ram) return {nullptr, Status::NoRam};
         if (pc & 3u) return {nullptr, Status::MisalignedPc};
-        if (pc >= PS2_RAM_SIZE) return {nullptr, Status::OutsideRam};
-        const uint32_t page = m_pages[pc / pageBytes];
+        if (ee::rdramCodeOffset(pc) >= PS2_RAM_SIZE) return {nullptr, Status::OutsideRam};
+        const uint32_t page = m_pages[ee::rdramCodePage(pc,pageBytes)];
         if (page == absent) return {};
         uint32_t entry = m_heads[page + (pc % pageBytes) / 4u];
         if (entry == absent) return {};
@@ -103,7 +104,7 @@ namespace ps2native::ee_aot
         {
             const auto &candidate = m_entries[entry];
             ++result.versionsChecked;
-            if (std::memcmp(ram + candidate.sourceBegin,
+            if (std::memcmp(ram + ee::rdramCodeOffset(candidate.sourceBegin),
                             m_images[candidate.bank].data() + candidate.offset,
                             candidate.sourceSize) == 0)
                 return {candidate.function, Status::Ready, result.versionsChecked};

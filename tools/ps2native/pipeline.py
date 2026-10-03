@@ -6,6 +6,7 @@ import csv
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import uuid
@@ -49,7 +50,7 @@ def sha256_file(path: Path) -> str:
 
 _SOURCE_SNAPSHOT_ROOTS = (
     ".gitignore", "CMakeLists.txt", "cmake", "android", "ps2xAnalyzer", "ps2xIOP",
-    "ps2xRecomp", "ps2xRuntime", "ps2xStudio", "ps2xTest", "tools",
+    "ps2xRecomp", "ps2xRuntime", "ps2xStudio", "ps2xTest", "tools", "lab",
 )
 _SOURCE_SNAPSHOT_EXCLUDED_DIRS = {".git", "__pycache__", "build", "out", ".gradle"}
 
@@ -317,29 +318,48 @@ def _find_tool(explicit: str | None, env_name: str, names: Sequence[str], root: 
     )
 
 
-def _run(command: Sequence[str], log_path: Path, cwd: Path | None, timeout: int) -> str:
+def _run(command: Sequence[str], log_path: Path, cwd: Path | None,
+         timeout: int | None, *, env: dict[str, str] | None = None) -> str:
     try:
-        completed = subprocess.run(
-            list(command), cwd=cwd, text=True, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, timeout=timeout, check=False,
+        process = subprocess.Popen(
+            list(command), cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=(os.name == "posix"),
         )
     except FileNotFoundError as exc:
         raise PipelineError(f"executable not found: {command[0]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        output = exc.stdout or ""
-        if isinstance(output, bytes):
-            output = output.decode(errors="replace")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(output, encoding="utf-8", errors="replace")
-        raise PipelineError(f"command timed out after {timeout}s: {command[0]} (log: {log_path})") from exc
-    output = completed.stdout or ""
+
+    def terminate_tool():
+        # CMake starts make and compiler processes. Killing only CMake leaves
+        # those children consuming CPU and writing into an abandoned build.
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            elif process.poll() is None:
+                process.kill()
+        except ProcessLookupError:
+            pass
+
+    with process:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            terminate_tool()
+            output, _ = process.communicate()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(output or "", encoding="utf-8", errors="replace")
+            raise PipelineError(f"command timed out after {timeout}s: {command[0]} (log: {log_path})") from exc
+        except BaseException:
+            terminate_tool()
+            process.communicate()
+            raise
+    output = output or ""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(output, encoding="utf-8", errors="replace")
-    if completed.returncode != 0:
+    if process.returncode != 0:
         tail = "\n".join(output.splitlines()[-16:])
         detail = f"\nLast tool output:\n{tail}" if tail else ""
         raise PipelineError(
-            f"command exited with status {completed.returncode}: {' '.join(command)}\n"
+            f"command exited with status {process.returncode}: {' '.join(command)}\n"
             f"See log: {log_path}{detail}"
         )
     return output
@@ -792,6 +812,16 @@ def _configure_module_recompiler(
     config_path.write_text(config_text[:insert_at] + additions + config_text[insert_at:], encoding="utf-8")
 
 
+def _configure_boot_recompiler(config: Path, workspace: Path, manifest: dict[str, Any],
+                               module_keys: list[str], symbol_prefix: str) -> None:
+    _configure_module_recompiler(config, module_keys, symbol_prefix, emit_dense_function_table=True)
+    manifest["build_inputs"]["analysis_config"] = {
+        "path": str(config.relative_to(workspace)),
+        "size_bytes": config.stat().st_size,
+        "sha256": sha256_file(config),
+    }
+
+
 def _compile_secondary_ee_modules(
     workspace: Path,
     logs: Path,
@@ -1074,6 +1104,11 @@ def _configure_and_package(
         f"-DPS2X_LARGE_GENERATED_FAST_COMPILE_THRESHOLD_BYTES:STRING={_LARGE_GENERATED_FAST_COMPILE_THRESHOLD_BYTES}",
         "-DCMAKE_BUILD_TYPE:STRING=Release",
     ]
+    adaptation = manifest.get("automatic_adaptation", {})
+    if adaptation.get("enabled"):
+        configure += ["-DPS2X_BUILD_NEXO_LAB:BOOL=ON", "-DPS2X_RUNTIME_AOT_EE_OVERLAYS:BOOL=ON",
+                      "-DPS2X_NEXO_CAPTURE_ONLY:BOOL=ON",
+                      "-DNEXO_EE_BANK_MANIFEST:FILEPATH=" + adaptation["catalog_manifest"]]
     deps = root / "build" / "_deps"
     for dependency in ("elfio", "toml11", "fmt", "libdwarf", "rabbitizer", "raylib"):
         source = deps / f"{dependency}-src"
@@ -1081,6 +1116,8 @@ def _configure_and_package(
             configure.append(f"-DFETCHCONTENT_SOURCE_DIR_{dependency.upper()}:PATH={source}")
 
     _step(manifest, "desktop_configure", "started")
+    manifest.setdefault("build_inputs", {}).setdefault("configuration", {}).update(
+        precompiled_headers=True, unity_build=False, build_jobs=jobs, build_type="Release")
     _run(configure, workspace / "logs" / "cmake-configure.log", project_dir, timeout)
     _step(manifest, "desktop_configure", "complete")
     large_generated_sources = [
@@ -1510,19 +1547,13 @@ def run_build(args: Any) -> dict[str, Any]:
         if not config.is_file():
             raise PipelineError(f"ELF analyzer returned success without creating TOML config: {config}")
         _step(manifest, "analyze_boot_elf", "complete")
-        manifest["build_inputs"]["analysis_config"] = {
-            "path": str(config.relative_to(workspace)),
-            "size_bytes": config.stat().st_size,
-            "sha256": sha256_file(config),
-        }
-
         boot_module_keys = _boot_module_keys(
             report.boot_elf_path,
             report.boot_elf_sha256,
             inventory_items if isinstance(inventory_items, list) else [],
         )
         boot_symbol_prefix = f"ps2boot_{report.boot_elf_sha256[:24].lower()}_"
-        _configure_module_recompiler(config, boot_module_keys, boot_symbol_prefix, emit_dense_function_table=True)
+        _configure_boot_recompiler(config, workspace, manifest, boot_module_keys, boot_symbol_prefix)
         manifest["boot_elf"].update({
             "module_keys": boot_module_keys,
             "module_registration_symbol": f"{boot_symbol_prefix}register_compiled_module",
@@ -1697,7 +1728,14 @@ def run_build(args: Any) -> dict[str, Any]:
                     "address_coverage_status": address_ledger_status,
                 }
         else:
-            _configure_and_package(root, workspace, generated, disc, output, args.cmake, args.build_jobs, args.timeout, manifest)
+            if getattr(args, "adapt", False):
+                from .autoadapt import DesktopAdaptation
+                with DesktopAdaptation(root, workspace, output, iso, args, manifest) as adaptation:
+                    _configure_and_package(root, workspace, generated, disc, output,
+                                           args.cmake, args.build_jobs, args.timeout, manifest)
+                    manifest["automatic_adaptation"] = adaptation.run()
+            else:
+                _configure_and_package(root, workspace, generated, disc, output, args.cmake, args.build_jobs, args.timeout, manifest)
         manifest["artifact_files_schema_version"] = 1
         manifest["mutable_outputs"] = (
             ["ps2_log.txt", "game/ps2_log.txt"] if args.target == "desktop" else []
@@ -1747,6 +1785,7 @@ def run_build(args: Any) -> dict[str, Any]:
             "message": manifest["message"], "gameplay_compatibility": "unverified",
             "support_tier": "experimental", "native_translation_status": translation_status,
             "address_coverage_status": address_ledger_status,
+            "adaptation_status": manifest.get("automatic_adaptation", {}).get("status", "not_requested"),
         }
     except Exception as exc:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):

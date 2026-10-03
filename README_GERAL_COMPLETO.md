@@ -1,3 +1,3800 @@
+# PS2Native — README único do projeto inteiro
+
+## Estado atual, arquitetura, planos completos, implementação e evidências
+
+**Atualização deste levantamento:** 2026-10-02T11:35:33.800213-03:00 — America/Sao_Paulo.\
+**Projeto:** `/home/pedrohs/Downloads/ps2-native-recompiler`.\
+**Repositório:** [Pedrohs1771/ps2-native](https://github.com/Pedrohs1771/ps2-native).\
+**Branch consultada:** `codex/ps2-native-recomp`.\
+**HEAD consultado:** `c4d5ea7ad3872f91604a7b30c77db5367fa746db`.\
+**Arquivo consolidado:** `README_GERAL_COMPLETO.md`.
+
+Este arquivo reúne o plano anterior, o plano atual, a arquitetura NEXO, os relatórios, a documentação dos componentes, os contratos, os experimentos e a evolução observada do PS2Native. O foco é a ferramenta universal; Monster House é o primeiro caso de desenvolvimento e aceitação.
+
+**Resultado atual:** há uma esteira experimental real de ISO → inventário → análise → C++ → código host → pacote de PC, com captura e recuperação offline de código EE, catálogos concretos e de famílias, infraestrutura AOT para IOP/VU e rasterização GS exercitada em GPU física. A conversão automática de qualquer ISO, o pacote integralmente nativo, um jogo completo aprovado e o APK jogável em aparelho físico ainda não foram demonstrados.
+
+**Atualização principal:** o corpus publicado chegou a **40 casos, 63.196 propostas e 17.622 famílias EE admitidas**. O comando público `recover-ee` preparou o lote e recompilou o catálogo incremental. Um runner novo ultrapassou a ausência anterior `0x139be00` e encontrou `0x13a1984`, já capturada. A união com essa nova janela teria **73.869 propostas**, acima do limite de 65.536 de uma publicação; a partição automática desse conjunto ainda precisa ser implementada.
+
+**M6, M7, M8 e M9 permanecem abertos.** Não há aprovação de gameplay causal no runner mais recente, campanha completa, 60 FPS sustentados, áudio integrado correto, save/reload completo, apresentação Vulkan direta ou conversão inédita sem intervenção específica.
+
+### Como interpretar as fontes
+
+1. As seções **ATUAL 01–36** abaixo são a síntese deste levantamento.
+2. Os **Complementos atuais A–E** conservam a documentação posterior, o delta de código, os recibos e o inventário consultados agora.
+3. O **Acervo anterior integral** conserva o README consolidado anterior, incluindo seus 48 anexos e as versões históricas dos planos.
+4. Números, checklists e estados dentro do acervo continuam ligados ao snapshot original. Em caso de diferença de estado, usar a síntese atual e a evidência identificada mais recente.
+5. O `README.md` vigente está preservado integralmente no [Anexo 32](#anexo-32). O plano mestre anterior está preservado no [Anexo 02](#anexo-02). A arquitetura NEXO anterior está no [Anexo 01](#anexo-01).
+
+Os dois planos foram conferidos contra os arquivos atuais. A documentação é consolidada aqui sem substituir o conteúdo de `README.md` ou do plano mestre. Fontes externas citadas nos anexos são referências históricas desses documentos; seus programas, versões e condições não foram revalidados nesta atualização local.
+
+### Vocabulário de estado
+
+| Estado | Significado neste arquivo |
+|---|---|
+| Implementado | Existe código correspondente no checkout |
+| Exercitado | Existe execução delimitada, com perfil e resultado identificados |
+| Compilado | O artefato foi produzido pelo compilador; não aprova seu comportamento no jogo |
+| Integrado experimentalmente | Foi ligado e executado no runner identificado |
+| Laboratório | Evidência limitada ao corpus, fixture, perfil ou percurso declarado |
+| Pendente | O critério de aceitação ainda não está demonstrado |
+| Proposto | Técnica ou componente a implementar e validar |
+| Histórico | Resultado de outra revisão ou de outro perfil, preservado para continuidade |
+
+`built`, `Ready`, retorno zero, ausência de miss e contadores GPU são fatos diferentes. Nenhum deles, isoladamente, certifica um port completo.
+
+## Índice atualizado
+
+1. [Objetivo e contrato de produto](#ps2native-20261002-atual-01)
+2. [Relação entre os planos e ordem vigente](#ps2native-20261002-atual-02)
+3. [Resumo do que já existe](#ps2native-20261002-atual-03)
+4. [Marcos M6–M9 e critérios de aprovação](#ps2native-20261002-atual-04)
+5. [Mapa do repositório](#ps2native-20261002-atual-05)
+6. [Arquitetura da conversão e da execução](#ps2native-20261002-atual-06)
+7. [Entrada ISO, disco e inventário de programas](#ps2native-20261002-atual-07)
+8. [EE: tradução, despacho e entradas interiores](#ps2native-20261002-atual-08)
+9. [EE: estruturas, parâmetros e continuações canônicas](#ps2native-20261002-atual-09)
+10. [Publicação compacta v3 e proveniência](#ps2native-20261002-atual-10)
+11. [Admissão, recusas e limites](#ps2native-20261002-atual-11)
+12. [Cache e compilação incremental](#ps2native-20261002-atual-12)
+13. [Comando público recover-ee](#ps2native-20261002-atual-13)
+14. [Recuperação atual e próxima janela EE](#ps2native-20261002-atual-14)
+15. [IOP, IRX, imports e serviços](#ps2native-20261002-atual-15)
+16. [VU AOT, bancos, replay e integração](#ps2native-20261002-atual-16)
+17. [VIF, GIF e preservação do transporte](#ps2native-20261002-atual-17)
+18. [GS, Vulkan e estado gráfico](#ps2native-20261002-atual-18)
+19. [Temporização e desempenho](#ps2native-20261002-atual-19)
+20. [Áudio, vídeo, controles e saves](#ps2native-20261002-atual-20)
+21. [Processo realizado com Monster House](#ps2native-20261002-atual-21)
+22. [Testes, referências e escopo das provas](#ps2native-20261002-atual-22)
+23. [Execução headless e isolamento](#ps2native-20261002-atual-23)
+24. [Natividade e pacote independente](#ps2native-20261002-atual-24)
+25. [Android e outros alvos de PC](#ps2native-20261002-atual-25)
+26. [Motor autônomo e serviço de nuvem](#ps2native-20261002-atual-26)
+27. [Conversão em minutos e uso de GPU](#ps2native-20261002-atual-27)
+28. [Pesquisa e propostas experimentais](#ps2native-20261002-atual-28)
+29. [Sequência concreta para fechar M6–M9](#ps2native-20261002-atual-29)
+30. [Backlog técnico, dependências e riscos](#ps2native-20261002-atual-30)
+31. [Mais três ISOs e medição dos 90%](#ps2native-20261002-atual-31)
+32. [Comandos existentes e comandos ainda condicionais](#ps2native-20261002-atual-32)
+33. [Artefatos e identidades para retomar](#ps2native-20261002-atual-33)
+34. [Git, publicação e mudanças locais](#ps2native-20261002-atual-34)
+35. [Limites, decisões e respostas diretas](#ps2native-20261002-atual-35)
+36. [Glossário e cobertura documental](#ps2native-20261002-atual-36)
+
+### Conteúdo integral e recibos
+
+- [Complemento A — status do PC atualizado](#ps2native-20261002-atual-anexo-a)
+- [Complemento B — alterações locais de implementação](#ps2native-20261002-atual-anexo-b)
+- [Complemento C — recibos da recuperação e do runner](#ps2native-20261002-atual-anexo-c)
+- [Complemento D — inventário e identidades dos documentos](#ps2native-20261002-atual-anexo-d)
+- [Complemento E — arquivos rastreados do projeto](#ps2native-20261002-atual-anexo-e)
+- [Acervo anterior completo, com os 48 anexos](#acervo-anterior-integral)
+- [Índice dos documentos integrais do acervo](#consolidado-anexos)
+
+<a id="ps2native-20261002-atual-01"></a>
+
+## ATUAL 01 — Objetivo e contrato de produto
+
+A experiência desejada é: uma pessoa fornece uma ISO de PS2; o programa identifica o conteúdo, traduz o código necessário, executa a conversão instrumentada, resolve automaticamente as classes de falha suportadas e entrega um aplicativo completo para PC ou Android.
+
+O executável entregue deve usar traduções de EE, IOP e VU compiladas previamente para a arquitetura de destino. A partida final deve executar essas traduções e os dispositivos implementados no host, sem interpretar ou recompilar a ISA convidada durante a execução.
+
+A fase de conversão pode usar análise, instrumentação, referências e perfis diagnósticos para descobrir código. Essa permissividade de pesquisa não qualifica o pacote final como AOT estrito.
+
+O usuário não deve cadastrar endereços, preparar um TOML por título, corrigir o runtime ou fornecer um agente para cada nova conversão. As correções encontradas durante o desenvolvimento devem virar capacidades gerais, com regressões e critérios próprios de aplicação.
+
+Os **90%** são uma etapa intermediária de compatibilidade medida num catálogo definido. A ambição final continua sendo a biblioteca PS2 inteira. O projeto ainda não demonstrou nenhuma dessas taxas, e “qualquer ISO” não é uma garantia já disponível.
+
+### O que C++ significa aqui
+
+O C++ gerado representa semântica de instruções e interação com estado convidado. Isso não recupera automaticamente nomes, comentários, classes, assets originais ou a organização da engine do estúdio. Recuperar código-fonte original e produzir uma tradução nativa são objetivos diferentes.
+
+A ferramenta aberta, os componentes reaproveitados e os dados do jogo têm proveniências próprias. ISOs, memória capturada e dados comerciais permanecem como insumos locais do laboratório; não são necessários para publicar o código genérico do projeto.
+
+<a id="ps2native-20261002-atual-02"></a>
+
+## ATUAL 02 — Relação entre os planos e ordem vigente
+
+| Fonte | Papel e situação |
+|---|---|
+| `README.md` atual | Define a prioridade de integração no PC e M6–M9; 582 linhas |
+| `README_AUTOMACAO_UNIVERSAL.md` | Plano mestre, arquitetura de longo prazo, 40 tarefas e 24 propostas; arquivo atual com 2.756 linhas |
+| `README.md` anterior, arquitetura NEXO | Contratos causais, identidade, código latente, IR e pesquisa; histórico integral |
+| `RELATORIO_PS2NATIVE_ESTADO_ATUAL.md` | Auditoria de 30/09 e evolução anterior; não representa sozinho o estado de hoje |
+| `docs/STATUS_PC.md` | Snapshot de execução das 10:02 de 02/10, incorporado no Complemento A |
+| Este README único | Integra os planos e atualiza o estado com evidência posterior |
+
+Os documentos antigos usam numerações de marcos diferentes. A numeração vigente é a do `README.md`: **M6 = partida/gráficos PC; M7 = pacote nativo integrado; M8 = automação por ISO no PC; M9 = compatibilidade ampla**. Android continua sendo alvo do produto e não deve ser confundido com o M8 atual.
+
+### Ordem de execução conservada
+
+1. Destravar o percurso atual e alcançar gameplay causal no runner atualizado.
+2. Corrigir a fidelidade gráfica e concluir apresentação Vulkan.
+3. Integrar EE/IOP/VU nativos, dispositivos, áudio e persistência.
+4. Executar o pacote independente fora do checkout.
+5. Fechar descoberta, captura, build, relink, reexecução e empacotamento na CLI existente.
+6. Executar ISOs inéditas sem adaptações exigidas por título.
+7. Medir compatibilidade em catálogo definido e expandir por capacidade.
+8. Validar Android físico e distribuir a esteira reproduzível na nuvem.
+
+A janela de 24 horas do plano é um orçamento de sprint. Os resultados presentes não sustentam promessa de jogo perfeito em 1–2 horas, campanha completa hoje ou conversão universal em dez minutos.
+
+<a id="ps2native-20261002-atual-03"></a>
+
+## ATUAL 03 — Resumo do que já existe
+
+| Frente | Estado demonstrado | Trabalho restante |
+|---|---|---|
+| Entrada ISO | Inspeção, boot ELF, inventário e extração | Formatos e programas além do domínio suportado |
+| Pipeline host | Análise, C++ gerado, compilação e pacote experimental | Fechar o ciclo de execução e aprovação |
+| EE estático | Tradução C++ e registro de entradas interiores em lote | Semântica e cobertura das rotas posteriores |
+| EE concreto observado | 34 bancos e 537.368 entradas no corpus citado | Novas janelas, versões, dependências e produtores |
+| Famílias EE atuais | 17.622 famílias admitidas em 40 casos | Recusas, novas janelas e partição da próxima publicação |
+| Proveniência | Resumo compacto, shards com identidade e máscaras v3 | Integração formal do formato v3 nos schemas documentais |
+| Incremental | Unidades de corpo preservadas; rebuild cacheado medido | Automatizar relink e manter identidade de todos os headers/flags |
+| Recuperação CLI | `recover-ee`: diretório de capturas → lote → catálogo → build opcional | Captura/reexecução/pacote completos dentro do comando principal |
+| IOP | Caminho nativo, catálogo de 3.947 kernels/12 módulos | Cobertura de serviços posteriores e auditoria no pacote final |
+| VU | AOT, seleção de bancos, replay e comparações | Conectar o banco novo ao runner; resolver ausências e efeitos temporais |
+| VIF/GIF | Transporte raw e reset do convidado corrigidos e exercitados | Qualificar o fluxo e a imagem real de gameplay |
+| GS GPU | paraLLEl-GS integrado experimentalmente na RX 6600 | Fidelidade, apresentação Vulkan direta e frame time |
+| Headless | Display privado, screenshots, input e cards isolados | Exploração genérica e critérios de gameplay |
+| Android | Staging Gradle/NDK, assets e Activity | APK integrado, ARM64 físico, input, áudio e desempenho |
+| Nuvem | Arquitetura planejada | Serviço operacional, workers, filas e publicação |
+| Universalidade | Mecanismos reutilizáveis e regressões por classe | Evidência em ISOs inéditas e catálogo amplo |
+
+### Valores atuais e seus denominadores
+
+| Medida | Valor | O que conta |
+|---|---:|---|
+| Casos EE publicados | 40 | Capturas/imagens preparadas pertencentes ao lote |
+| Bindings no lote | 613.362 | Entradas dos metadados examinados |
+| Regiões examinadas | 175.836 | Regiões consideradas pela descoberta |
+| Palavras examinadas | 6.049.107 | Trabalho de varredura do lote |
+| Propostas de estrutura | 63.196 | Formas candidatas antes da admissão |
+| Famílias admitidas | 17.622 | Formas aceitas pelo frontend |
+| Estruturas recusadas | 45.574 | Propostas não admitidas; motivo preservado |
+| Fontes do catálogo | 786 | Índice e unidades C++ da publicação |
+| Corpos anteriores preservados na expansão | 646 | Unidades de corpo C++ retidas |
+| Famílias anteriores preservadas | 14.395 | Conjunto semântico anterior conservado |
+| Corpos preservados na repetição CLI | 785 | Todas as unidades de corpo do catálogo já expandido |
+
+Entradas, famílias, palavras e screenshots não são funções originais únicas nem porcentagem do jogo ou da biblioteca PS2.
+
+<a id="ps2native-20261002-atual-04"></a>
+
+## ATUAL 04 — Marcos M6–M9 e critérios de aprovação
+
+| Marco vigente | Critério mínimo | Estado atual |
+|---|---|---|
+| M6 — partida e gráficos PC | Loading vencido no runner atual, cena controlável, apresentação Vulkan e draws acelerados | Aberto; GPU exercitada, controle/fidelidade/apresentação pendentes |
+| M7 — pacote nativo integrado | EE/IOP/VU AOT, recursos integrados, pacote independente, áudio e save/reload | Aberto; VU diagnóstico no runner mais recente |
+| M8 — conversão automática por ISO | Um comando conduz descoberta/build/reexecução/pacote em títulos inéditos | Aberto; recuperação offline agora exposta na CLI |
+| M9 — compatibilidade ampla | 90%+ completos/nativos/automáticos no catálogo definido | Aberto; avaliação ampla não realizada |
+
+Este levantamento não recertifica retrospectivamente M0–M5. Há componentes prévios funcionando, mas somar checklists de planos distintos não produz um total válido de marcos aprovados.
+
+### Evidência por marco
+
+- **M6:** registrar revisão, runner, backend, dispositivo, vídeo/screenshots, inputs realmente enviados, resposta de personagem/câmera e frame times.
+- **M7:** executar fora do checkout, comprovar ausência de interpretação/recompilação EE/IOP/VU, percorrer conteúdo relevante, ouvir áudio, salvar/sair/reabrir/carregar.
+- **M8:** congelar ferramenta, iniciar workspace limpo, fornecer apenas inputs permitidos, converter título inédito sem PC/TOML/roteiro exigido por título.
+- **M9:** declarar catálogo, revisões, critérios, ambiente e falhas; aprovar somente resultados que satisfaçam simultaneamente completude, natividade e automação.
+
+Uma aprovação curta de gameplay não aprova campanha inteira. Um pacote com todos os arquivos não demonstra que todos os caminhos desses arquivos são executáveis corretamente.
+
+<a id="ps2native-20261002-atual-05"></a>
+
+## ATUAL 05 — Mapa do repositório
+
+O Git rastreia **493 arquivos** neste snapshot. Existem também dois arquivos novos de código/teste ainda não rastreados. `build/` contém experimentos locais ignorados e não entra nessa contagem.
+
+| Diretório | Arquivos rastreados | Responsabilidade |
+|---|---:|---|
+| `(raiz)` | 9 | Build, licença, especificação e planos |
+| `.github` | 1 | CI do repositório |
+| `android` | 9 | Template Android e bootstrap |
+| `docs` | 5 | Handoff, pipeline, lacunas e status |
+| `lab` | 103 | Captura, AOT, catálogos, replay e regressões |
+| `ps2xAnalyzer` | 16 | Análise ELF e descoberta |
+| `ps2xIOP` | 67 | IOP, módulos, kernel e serviços |
+| `ps2xRecomp` | 52 | Tradutores e emissão C++ |
+| `ps2xRuntime` | 156 | Execução, memória e dispositivos |
+| `ps2xStudio` | 9 | Ferramentas visuais herdadas |
+| `ps2xTest` | 26 | Regressões C++ |
+| `schemas` | 15 | Contratos do laboratório |
+| `tools` | 23 | ISO, CLI, pipeline e harnesses |
+| `vita` | 2 | Estrutura histórica de outro alvo |
+
+### Fronteiras de implementação
+
+| Caminho | Responsabilidade |
+|---|---|
+| `tools/iso_inspect/` | Inspecionar e extrair a imagem |
+| `tools/ps2native/cli.py` | `inspect`, `build`, `verify`, `recover-ee` |
+| `tools/ps2native/pipeline.py` | Workspace, subprocessos, geração e pacote |
+| `tools/ps2native/native_recovery.py` | Recuperação offline e build incremental de famílias |
+| `ps2xAnalyzer/` | Análise ELF e configuração |
+| `ps2xRecomp/` | Decodificação e tradução de instruções |
+| `ps2xRuntime/` | Estado, despacho, scheduler, memória e dispositivos |
+| `ps2xIOP/` | Módulos, kernel, imports e execução IOP |
+| `lab/prepare_ee_miss.py` | Transformar uma captura em caso identificado |
+| `lab/prepare_ee_family_batch.py` | Ownership, deduplicação e publicação de lote |
+| `lab/discover_ee_data_families.py` | Descoberta canônica, máscaras e proveniência |
+| `lab/generate_ee_family_catalog.py` | Admissão e fontes estáveis |
+| `lab/generate_ee_bank_catalog.py` | Catálogos de regiões concretas |
+| `lab/generate_iop_bank.py` | Tradução de bancos IOP observados |
+| `lab/generate_vu_bank.py` / `generate_vif_banks.py` | Bancos VU e coleções observadas |
+| `lab/src/vu_runtime_binding.cpp` | Ligação de callbacks nativos e seleção de banco |
+| `schemas/` | Contratos e limites dos formatos |
+| `android/` | Projeto Android e bootstrap dos dados |
+| `ps2xTest/`, `lab/tests/`, `tools/ps2native/tests/` | Regressões com escopos próprios |
+
+A base foi reaproveitada do PS2Recomp; o trabalho do PS2Native inclui a esteira, as extensões de descoberta/dispatch, os catálogos, o laboratório, as correções de runtime e a integração gráfica. A existência de um componente herdado ou de um diretório de plataforma não comprova integração final.
+
+<a id="ps2native-20261002-atual-06"></a>
+
+## ATUAL 06 — Arquitetura da conversão e da execução
+
+```mermaid
+flowchart TD
+    ISO[ISO identificada] --> DISC[Inventário de disco e programas]
+    DISC --> AN[Análise e entradas]
+    AN --> EE[EE concreto e famílias]
+    AN --> IOP[IRX e catálogo IOP]
+    AN --> VU[Microprogramas e bancos VU]
+    EE --> BUILD[Compilação host incremental]
+    IOP --> BUILD
+    VU --> BUILD
+    BUILD --> RUN[Execução instrumentada de conversão]
+    RUN --> RESULT{Resultado observado}
+    RESULT -->|Código ausente| CAP[Captura identificada]
+    CAP --> REC[Recuperação offline]
+    REC --> BUILD
+    RESULT -->|Divergência| REPRO[Reprodução e diagnóstico]
+    RESULT -->|Aceitação aprovada| PACK[Pacote e validação independente]
+```
+
+O diagrama representa a arquitetura desejada usando componentes existentes. A geração e parte da recuperação estão implementadas; o ciclo completo RUN→REC→BUILD→RUN→PACK ainda exige integração.
+
+### Responsabilidades distintas
+
+- **Compilador:** preservar semântica de instruções, entrada, controle, registradores, memória e efeitos.
+- **Runtime:** coordenar estado, chamadas, temporização, eventos, módulos e catálogos.
+- **Dispositivos host:** implementar disco, DMA, SIF/RPC, VIF/GIF/GS, áudio, pad e persistência.
+- **Orquestrador:** manter inputs, ferramentas, filas de descoberta, artefatos, orçamento e publicação.
+- **Laboratório:** produzir capturas, replays, regressões e comparação com referências.
+- **Verificador:** decidir o escopo aprovado a partir de evidência independente do reparo.
+
+O executável final ainda precisa dos dispositivos host, mesmo com as ISAs convidadas recompiladas. Natividade não elimina a necessidade de representar o comportamento do console.
+
+<a id="ps2native-20261002-atual-07"></a>
+
+## ATUAL 07 — Entrada ISO, disco e inventário de programas
+
+O inspector suporta o domínio documentado de ISO9660/Joliet, resolve `SYSTEM.CNF`/`BOOT2`, inventaria arquivos e candidatos ELF, e produz dados de entrada identificados. O pipeline cria workspaces separados por título/hash e evita sobrescrever um destino publicado.
+
+O boot ELF é apenas o primeiro programa. Outros executáveis EE, IRX IOP, overlays, código comprimido, código relocável, uploads VU e versões materializadas em RAM precisam ser acompanhados durante a conversão.
+
+### Processo já realizado
+
+1. Identificar ISO e boot ELF por SHA-256.
+2. Extrair a árvore de disco mantendo caminhos úteis ao runtime.
+3. Analisar o executável inicial e candidatos secundários suportados.
+4. Gerar fontes, tabelas, stubs e relatórios por módulo.
+5. Integrar fontes ao runner host e produzir pacote experimental.
+6. Executar perfis instrumentados para encontrar código e serviços posteriores.
+
+### Lacunas de universalização
+
+O classificador de candidatos secundários usa propriedades ELF/MIPS do domínio suportado. Não reconhece universalmente todos os formatos de código. A análise de código latente precisa conectar produtores de bytes, versões, contexto e pontos reais de execução, evitando classificar todos os dados de RAM como instruções.
+
+O disco deve continuar acessível no contrato exigido pelo jogo. Extrair arquivos não substitui automaticamente semântica de setores, alinhamento, DMA, streaming ou revisões de arquivos.
+
+<a id="ps2native-20261002-atual-08"></a>
+
+## ATUAL 08 — EE: tradução, despacho e entradas interiores
+
+O R5900 é traduzido para C++ mantendo contexto explícito de registradores, PC e memória. O compilador host gera instruções x86-64 no percurso atual. Serviços e dispositivos entram por chamadas ao runtime.
+
+O registro estático passou a incluir limites de instrução decodificados em lote. Isso reduz a necessidade de cadastrar manualmente callbacks e pontos de retomada conhecidos dentro das funções geradas.
+
+### Entrada normal e delay slot
+
+Entrar numa instrução de slot pelo dispatcher não equivale a executar o branch que a antecede. O wrapper precisa distinguir o contexto, executar a instrução correta uma vez e devolver o PC adequado. Branches, likely annulment, links e destinos relocados têm regressões próprias.
+
+Os bancos concretos observados citados no acervo são **34 bancos e 537.368 entradas**. A contagem histórica de **699.283 entradas de retomada estáticas** tem outro domínio; não deve ser somada ou confundida com o catálogo de overlays.
+
+### Guardas e versões
+
+Antes de executar um corpo compilado, a entrada deve corresponder aos bytes e dependências usados na geração. Escritas, aliases e troca de módulos podem invalidar um match. Uma entrada ausente ou ambígua deve produzir diagnóstico, sem escolher um corpo incorreto.
+
+Ainda faltam fechamento das versões de código usadas depois do boot, cobertura de instruções e fidelidade integrada em rotas posteriores. O driver Linux que compila uma `.so` durante desenvolvimento é um recurso diagnóstico; não satisfaz o contrato final de AOT anterior à partida.
+
+<a id="ps2native-20261002-atual-09"></a>
+
+## ATUAL 09 — EE: estruturas, parâmetros e continuações canônicas
+
+Uma família EE conserva a estrutura de opcode, registradores e controle, e parametriza apenas campos de dados explicitamente admitidos. O corpo compilado serve a variações que passam nas guardas, no perfil de operandos e no contrato de entrada.
+
+### Política `canonical-v1` implementada
+
+1. Partir de raízes conhecidas e da entrada observada no miss.
+2. Examinar até 127 palavras em busca de transferência de controle.
+3. Incluir o delay slot quando houver transferência; máximo de 128 palavras.
+4. Sem transferência, emitir 127 palavras lineares com continuação explícita.
+5. Rejeitar dependência truncada.
+6. Admitir somente a entrada normal adequada.
+7. Enfileirar sucessores conhecidos dentro da janela.
+8. Deduplicar raízes e estruturas, preservando proveniência.
+
+| Término | Sucessores conhecidos |
+|---|---|
+| Linear | Próximo endereço após a região |
+| J | Alvo direto |
+| JAL | Alvo e retorno após o slot |
+| JALR com link válido | Retorno após o slot; alvo indireto depende de observação |
+| Branch válido | Alvo relativo e fallthrough após o slot |
+| JR e demais indiretos | Sem destino inventado |
+
+Sucessores fora da janela são contabilizados, mas não tornam outras janelas automaticamente capturadas. A cobertura local da fila não prova fechamento da máquina.
+
+### Correções genéricas já obtidas
+
+- Continuações lineares antes omitidas por detector orientado a terminais.
+- Retornos, branches e outros sucessores identificáveis.
+- J/JAL, link e contexto de entrada.
+- Uso da tradução concreta FPU com bits fixos nas famílias suportadas.
+- Rejeição de campos reservados e formatos inválidos.
+- Publicação compacta sem remover identidade ou proveniência.
+- Preservação de unidades compiláveis anteriores por comparação exata.
+
+As comparações FPU com o emissor concreto do próprio projeto são regressões de consistência. Não equivalem a um oráculo independente da FPU PS2.
+
+<a id="ps2native-20261002-atual-10"></a>
+
+## ATUAL 10 — Publicação compacta v3 e proveniência
+
+O lote novo ultrapassou o orçamento de serialização usando a representação anterior. O código local implementa uma compactação sem perda das máscaras tipadas, preservando o teto de **64 MiB** por resumo.
+
+### Representação
+
+O formato v2 usa `guard_masks` com valores de 32 bits por palavra. O v3 usa `guard_mask_bits_le` e `guard_mask_encoding='typed-mask-bits-le-v1'`: um bit por palavra representa qual das duas máscaras admissíveis (`0xffffffff` ou `0xffff0000`) deve ser reconstruída.
+
+Os words, observações, hashes e dependências continuam presentes. O leitor reconstrói as máscaras antes das verificações existentes e rejeita tamanho errado, hexadecimal inválido, bits reservados, encoding misturado ou valores fora do domínio. A compactação não transforma uma proposta recusada em família admitida.
+
+`write_report` tenta publicar o formato anterior dentro do orçamento e aplica o formato v3 quando a falha específica é de publicação. Não suprime falhas de semântica ou proveniência.
+
+### Resultado real
+
+O resumo do lote de 40 casos ficou com **37.365.626 bytes**, mantendo o mesmo limite de 64 MiB. Os detalhes continuam em shards com nomes, tamanho, quantidade de registros e SHA-256 conferidos pelo leitor.
+
+Os schemas Markdown antigos estão preservados integralmente. A extensão v3 está documentada nesta síntese e no delta de implementação; os arquivos de schema existentes ainda precisam receber essa evolução numa atualização própria.
+
+<a id="ps2native-20261002-atual-11"></a>
+
+## ATUAL 11 — Admissão, recusas e limites
+
+Descoberta, admissão e execução são etapas distintas. Cada proposta é entregue ao frontend, que emite um corpo suportado ou registra a recusa. O catálogo atual contém 17.622 admitidas e 45.574 recusadas.
+
+| Recurso | Limite atual |
+|---|---:|
+| Casos por descoberta | 512 |
+| Bindings agregados | 2.097.152 |
+| Regiões examinadas | 262.144 |
+| Palavras examinadas | 8.388.608 |
+| Palavras de uma região | 128 |
+| Propostas numa publicação | 65.536 |
+| Famílias admitidas no catálogo | 32.768 |
+| Resumo de candidatos | 64 MiB |
+| Um shard de proveniência | 4 MiB |
+| Proveniência agregada | 128 MiB |
+| Shards de proveniência | 64 |
+| Manifest do catálogo | 16 MiB |
+
+### Novo gargalo medido
+
+A janela `0x13a0000` gerou 11.408 propostas; 10.673 são novas diante das 63.196 existentes. A união contém **73.869 estruturas**. Isso supera o teto de propostas de um único relatório, mas não demonstra que o teto de 32.768 famílias admitidas será excedido.
+
+### Próxima evolução proposta, ainda não implementada
+
+Particionar publicações de candidatos, validar cada parte e deduplicar a admissão entre todas as partes. Conservar limites por arquivo e um orçamento agregado explícito. Preservar todos os motivos de recusa, offsets e dependências. Se o catálogo admitido ultrapassar sua capacidade, particionar também o runtime sem perder detecção de ambiguidade.
+
+Nenhuma partição pode descartar silenciosamente excedentes ou escolher o primeiro match. Até essa implementação existir, repetir a preparação monolítica do conjunto inteiro reproduzirá o bloqueio de orçamento.
+
+Quando a parametrização não admitir uma região que o AOT concreto suporta, usar a tradução dos bytes exatos pelo caminho existente, alimentado por raízes/sucessores capturados automaticamente. Essa integração também ainda precisa ser fechada no ciclo público.
+
+<a id="ps2native-20261002-atual-12"></a>
+
+## ATUAL 12 — Cache e compilação incremental
+
+O publicador preserva unidades inteiras de fontes anteriores quando todas as famílias continuam presentes e seus corpos atualmente emitidos são exatamente iguais. O índice sempre representa o conjunto atual. Isso evita reorganizar todas as unidades antigas a cada expansão grande.
+
+| Medição | Resultado | Contexto |
+|---|---:|---|
+| Expansão anterior por árvore de hash | 438,949 s | 614 compilações novas/alteradas |
+| Mesmo conjunto com unidades preservadas | 112,010 s | 135 compilações na medição anterior |
+| Fontes de corpo preservadas na expansão atual | 646 | Corpus de 39 → 40 casos |
+| Geração atual, wrapper | 62,680 s | Caso já preparado reaproveitado |
+| Build inicial da integração atual | 569,140 s até interrupção | Quatro workers; headers compartilhados invalidaram objetos |
+| Retomada do mesmo build | 102,463 s | Dez workers; objetos terminados conservados |
+| Rebuild cacheado via CLI | 1,619 s | Mesmo catálogo, sem corpos novos |
+| Relink do runner novo | 14,432 s | Objetos originais do jogo reaproveitados |
+
+**Fontes preservadas não significam automaticamente objetos preservados.** Headers, ABI, compilador, flags e dependências públicas também entram na identidade. Nesta integração, alterações anteriores do runtime/GS/VIF exigiram recompilar objetos de famílias, apesar de conservar seus corpos C++.
+
+A interrupção do build foi uma troca controlada de paralelismo, registrada por SIGINT no processo próprio. Não houve descarte dos objetos terminados. O tempo de retomada não deve ser anunciado como o tempo total da primeira compilação dessa integração.
+
+### Regras de continuidade
+
+- Manter diretórios persistentes separados para diagnóstico e execução nativa.
+- Iterar com O1/O2 e `-fno-lto`, sem IPO/LTO global.
+- Selecionar o layout realmente compilado como `previous-family-catalog`.
+- Evitar alterações cosméticas em headers compartilhados no ciclo crítico.
+- Medir corpos recompilados, objetos retidos, configuração e link separadamente.
+- Limitar workers por CPU, memória e carga real; impedir builds concorrentes no mesmo cache.
+- Reservar LTO/PGO para otimização final de um artefato já validado.
+
+<a id="ps2native-20261002-atual-13"></a>
+
+## ATUAL 13 — Comando público `recover-ee`
+
+Foi adicionado ao checkout local um comando público para conduzir a recuperação offline de EE. A implementação está em `tools/ps2native/native_recovery.py` e é chamada por `tools/ps2native/cli.py`.
+
+### Operações existentes
+
+1. Receber um diretório de capturas `ee-miss-######`.
+2. Validar arquivos ordinários, inputs existentes, orçamento e saída nova.
+3. Rejeitar caminhos com symlink e sobreposição entre inputs/saída.
+4. Preparar cada captura e juntar aos casos do lote anterior.
+5. Gerar/admitir as estruturas pelo frontend existente.
+6. Publicar o catálogo com manifest identificado.
+7. Opcionalmente configurar o projeto CMake persistente e compilar somente `ps2_ee_compiled_families`.
+8. Registrar etapas, comandos, tempos e falhas em `recovery.json`.
+
+O coletor aceita até 16 capturas por chamada e limita o inventário de diretório. Capturas incompletas são rejeitadas. A preparação posterior confere RAM, janela, pedido/contexto e identidade do gerador dentro do escopo suportado.
+
+### Resultado real do comando
+
+Uma chamada completa terminou em **96,581 s**, com:
+
+- Preparação/publicação: **86,990 s**.
+- Configuração: **7,874 s**.
+- Build cacheado: **1,619 s**.
+- 40 casos e 17.622 famílias.
+- 785 fontes de corpo reaproveitados.
+- `status='built'`, `strict_approval=false`, `closure_proved=false`, `gameplay_approved=false`.
+
+Essa chamada usou uma captura já incorporada para exercitar o percurso público e provar a reutilização. Ela não converteu uma nova ISO e não descobriu a janela seguinte.
+
+### Integrações ainda ausentes
+
+`recover-ee` não lança sozinho o jogo, não escolhe navegação universal, não relinka o runner final, não valida campanha e não empacota a distribuição. O target de build é específico do catálogo de famílias. Ainda não existe coordenação implementada para múltiplos processos alterando simultaneamente o mesmo cache.
+
+O comando reduz intervenção manual numa classe de recuperação. M8 exige fechar o ciclo completo e comprová-lo em títulos inéditos.
+
+<a id="ps2native-20261002-atual-14"></a>
+
+## ATUAL 14 — Recuperação atual e próxima janela EE
+
+### Ausência anterior resolvida no percurso
+
+O carregamento de um save havia encontrado `0x139be00`, chamado a partir de `0x1ba930`. Sua janela de 64 KiB em `0x1390000` foi preparada e incorporada ao lote de 40 casos. A expansão admitiu 3.227 famílias adicionais e preservou as 14.395 anteriores.
+
+Um runner distinto foi ligado com o catálogo ampliado e o runtime GS/VIF corrigido. SHA-256 do runner: `b473269ea17c815a55244826be864965f1d1f70fe6041e5e8e5d58626dc423fc`.
+
+### Execução mais recente
+
+| Item | Resultado |
+|---|---|
+| Percurso | Menu → carregar save existente |
+| Duração do helper | 98,011 s |
+| Duração do wrapper | 98,292 s |
+| Tentativas de screenshot | 31 |
+| PNGs efetivamente existentes | 29 |
+| Próxima ausência EE | `0x13a1984` |
+| Operação registrada | `EE scheduler` |
+| Janela capturada | `0x13a0000`, 65.536 bytes |
+| Cards restaurados por hash | Cinco |
+| Gameplay aprovado | Não |
+
+O processo terminou antes dos inputs W/D planejados para momentos posteriores. Esses comandos não foram aplicados. O retorno zero do helper significa conclusão do roteiro/limpeza, enquanto a captura registra a ausência de código do jogo.
+
+### Próximo caso já preparado
+
+A captura possui pedido, RAM e contexto. A preparação de `next-case` terminou em **0,229 s**, produzindo 14.321 bindings para a janela observada. O conjunto ainda não foi admitido e ligado ao runner.
+
+`complete_machine_checkpoint=false` e `quiescence_qualified=false`: a captura não é um restore completo da máquina. A próxima execução precisa repetir desde boot/menu/save pelo percurso reproduzível, sem tratar o snapshot EE como checkpoint integral.
+
+### Próxima ação de código
+
+Resolver a publicação particionada ou admitir os bytes pelo AOT concreto existente; compilar apenas o delta; relinkar a base congelada; repetir a rota headless; registrar a próxima causa. A ausência é uma nova janela materializada, não um pedido para adicionar um PC específico ao TOML.
+
+<a id="ps2native-20261002-atual-15"></a>
+
+## ATUAL 15 — IOP, IRX, imports e serviços
+
+O laboratório possui frontend de módulos IRX, relocação, guardas de imports, famílias de módulos, catálogo compartilhado e adapter de runtime. O corpus nativo observado reúne **3.947 kernels em 12 módulos**.
+
+Um checkpoint anterior registrou **30.425.512 operações IOP nativas**. Esse contador demonstra execução naquele perfil e percurso; não certifica serviços usados depois, outros módulos ou toda a campanha.
+
+### Contratos a preservar
+
+- Identidade de módulo, código, relocação e tabela de imports.
+- Carregamento, start, unload e substituição.
+- Estado de threads, heap, kernel e interrupções.
+- Pedido/resposta SIF/RPC, filas e ordem de entrega.
+- Estado compartilhado entre chamadas e waits.
+- Falha explícita quando módulo ou serviço não estiver coberto.
+
+Uma espera de RPC deve ser investigada pela cadeia pedido → módulo → serviço → resposta → evento. Retornar sucesso fictício ou adiantar relógio sem reproduzir os efeitos pode ocultar a falha e corromper estado posterior.
+
+O projeto contém também implementação interpretada IOP para diagnóstico. Desativar o fallback no perfil final e conferir sua ausência por execução e por composição do pacote continua sendo requisito de M7.
+
+<a id="ps2native-20261002-atual-16"></a>
+
+## ATUAL 16 — VU AOT, bancos, replay e integração
+
+O caminho AOT VU conserva estado explícito e fornece bancos de microprogramas, entradas, callbacks de execução/continuação, snapshots e replay. `bindNativeVu1` seleciona bancos por identidade dos 16 KiB de código e executa os callbacks compilados.
+
+O binding conserva uma cópia própria do código e confere bytes, mesmo quando reutiliza um índice selecionado. Banco desconhecido deve gerar diagnóstico, sem interpretação oculta. Estados de MSCAL, MSCNT, flags e término precisam sobreviver às continuações.
+
+### Evidência anterior
+
+O replay citado nos planos comparou 168 payloads GIF e estado final relevante. Há comparação temporal com referência PCSX2 fixada: 4.024 ciclos no modelo versus 3.777 na referência, diferença de 247 ciclos. Isso continua sendo uma investigação de escopo localizado.
+
+Comparações entre implementações do próprio projeto são regressões úteis; não independentes. A referência externa fixada permite investigar outra classe de divergência, mas um reset de referência não equivale a importar corretamente todo estado quente de MSCNT.
+
+### Banco novo desta integração
+
+As quatro capturas de cena do percurso GPU anterior contêm o mesmo código VU1 de SHA-256 `cf922121aa4a5f823fe6ad56a5cf8ec90697ff9435455b6c2eed6634fb701e09`, diferente dos dois bancos VIF antigos.
+
+Foi gerado `vu-prologue-bank.cpp`, com 2.048 entradas e símbolo `ps2native::nexo::compiledPrologueVuBank()`. A compilação produziu `vu-prologue-bank.o` em **22,265 s**, com O1 sem LTO no final da linha de flags.
+
+**Esse objeto ainda não foi ligado ou exercitado no runner do jogo.** O perfil atual continua VU diagnóstico. Compilar o banco não encerra M7.
+
+### Próxima integração
+
+Conectar a coleção de bancos depois da inicialização/load ELF, preservar callbacks após ligação dos subsistemas, capturar banco desconhecido durante a conversão e validar MSCAL/MSCNT/continuações com estado completo apropriado. O package final deve ligar somente as traduções admitidas e os dispositivos necessários.
+
+<a id="ps2native-20261002-atual-17"></a>
+
+## ATUAL 17 — VIF, GIF e preservação do transporte
+
+O receptor CPU legado recebia tags IMAGE sintetizadas por fragmento. Um receptor contínuo mantém a tag original; reenviar outra tag como parte do payload faz esses bytes serem tratados como pixels e desloca o fluxo.
+
+O runtime passou a ligar um modo raw para receptores contínuos. VIF entrega exatamente os bytes originais por PATH2 e conserva o contrato legado quando o receptor CPU espera retagging. O modo é uma ligação host, sem acrescentar um novo campo convidado serializado a `PS2Memory`.
+
+### Reset feito pelo convidado
+
+FBRST deve limpar o estado do parser sem apagar a ligação ao receptor host. A regressão falhou antes da correção e passou depois. Inicialização/destruição do objeto limpam o binding quando adequado.
+
+### Testes registrados depois da correção
+
+- Suíte C++ geral: 487/487.
+- Snapshot de dispositivos: 14/14.
+- Captura VIF: 16/16.
+- Bytes raw: GREEN; controle com contrato legado falha como esperado.
+- Reset do convidado: RED → GREEN.
+- Device/frontend físicos: GREEN na RX 6600.
+
+O acervo anterior registra o estágio em que o novo teste não compilava por falta de `<memory>`. Essa falha histórica foi corrigida antes do runner atual. Ela não continua sendo o bloqueio vigente.
+
+<a id="ps2native-20261002-atual-18"></a>
+
+## ATUAL 18 — GS, Vulkan e estado gráfico
+
+A integração usa paraLLEl-GS e Granite em checkouts identificados, com uma camada de transporte e frontend GS do PS2Native. Os ensaios físicos registram **AMD Radeon RX 6600, RADV NAVI23**.
+
+O perfil mais recente declara:
+
+```text
+raster_backend = parallel-vulkan
+present_backend = opengl-readback
+VU = diagnóstico
+EE = concreto/famílias experimental
+IOP = catálogo nativo observado
+```
+
+Isso demonstra rasterização exercitada em GPU física. A apresentação ainda passa por readback e OpenGL; não é apresentação Vulkan direta.
+
+### Fronteiras corrigidas
+
+- Pacotes GIF originais completos e fragmentados.
+- Estado separado por PATH1/PATH2/PATH3.
+- PACKED, REGLIST, IMAGE e isolamento de chunks.
+- Limites de consumo no handler upstream para evitar ler vértices ainda não entregues.
+- Shadow state, observação de IMAGE e envio único ao backend raw.
+- Modo VIF raw e reset do parser preservando o binding.
+- Registro TLS de thread Granite nas chamadas/worker/destruição.
+- VRAM e readback com validação do domínio exercitado.
+
+O ajuste upstream é produzido numa cópia de build após conferir o hash esperado; o checkout externo é preservado. Licenças e versões precisam continuar associadas aos artefatos distribuídos.
+
+### Resultado do percurso gráfico anterior
+
+O runner pós-reset percorreu **361,459 s**, gerou **156 PNGs em 157 tentativas**, quatro snapshots RAM/contexto/GS/VU e zero novos misses EE naquele percurso. Menus e cena do livro/fotos reapareceram; persistem defeitos de imagem/geometria.
+
+O contador final registrou 1.325.299 primitivas, 50.856 passes e 18.186.502.144 bytes de readback. São contadores acumulados de trabalho, **não FPS** nem aprovação de fidelidade.
+
+Nos rings de cena consultados, cada conjunto tinha 512 eventos, incluindo 415 draws e 46 tags. A interpretação antiga de enum como “46 draws” estava errada; `Draw=2`, `Tag=0`. Esses números continuam sendo amostras de ring, não toda a execução.
+
+### Trabalho restante
+
+Reduzir a primeira divergência causal de VU/VIF/GIF/GS/estado, demonstrar controle, comparar imagem/VRAM em replays úteis, implementar apresentação Vulkan direta e remover readbacks integrais desnecessários com coerência correta. Nenhuma hipótese de geometria foi aprovada como causa final.
+
+<a id="ps2native-20261002-atual-19"></a>
+
+## ATUAL 19 — Temporização e desempenho
+
+O produto precisa preservar velocidade da lógica e cadência original do jogo. Duplicar frames ou acelerar artificialmente o relógio não satisfaz a meta de 60 FPS.
+
+Medir separadamente:
+
+- Tempo de simulação EE/IOP/VU e eventos.
+- Trabalho GS CPU/GPU e espera de fila.
+- Uploads, readbacks e bytes efetivamente sincronizados.
+- Apresentação, input latency e tempo de frame p50/p95/p99.
+- Tempo de conversão fria, cacheada e de recuperação incremental.
+- Memória de host, VRAM, temperatura e throttling no mobile.
+
+Um replay antigo indicou aproximadamente 248 ms no receptor GS em 251 ms totais e cerca de 1,3 ms de VU exclusivo. Esse resultado justificou priorizar o renderer naquele caso. Não é medição do frame time atual nem prova de que o renderer era o único gargalo.
+
+Não há benchmark atual que aprove gameplay completa e estável a 60 FPS. Otimização deve seguir hotspots reproduzíveis, conservar estado e comparar correção antes/depois.
+
+<a id="ps2native-20261002-atual-20"></a>
+
+## ATUAL 20 — Áudio, vídeo, controles e saves
+
+O runtime contém serviços de áudio, VAG/SPU, vídeo/IPU, pad, arquivos e memory card, com regressões locais. A presença de código e a passagem de menu não aprovam integração audiovisual completa.
+
+### Controles
+
+O mapping host de referência usa WASD para analógico esquerdo, setas para D-pad, X/Z/C/V para botões e Return para Start. Inputs devem ser dirigidos apenas ao display/processo próprio e registrados com resultado real de envio.
+
+Uma tela etiquetada `after-w-input` não prova que W foi aplicado. Nos percursos recentes houve tentativas tardias após o runner encerrar, e no mais recente W/D sequer foram enviados. Falta provar resposta causal de personagem/câmera.
+
+### Saves
+
+O roteiro atual usa um save existente para entrar em outro caminho do jogo. Cinco arquivos de cards foram restaurados por SHA-256 após a execução. Isso prova isolamento/restauração desses inputs, não valida o ciclo de salvar uma partida nova, sair e carregar o estado correto.
+
+### Gate audiovisual
+
+Comparar entrada aplicada com movimento/ação, áudio audível com estado relevante, reprodução de vídeos e transições, criação de save, encerramento, boot novo e reload. Corrigir ABI, serviço ou timing responsável quando a cadeia de efeitos falhar; não substituir a resposta por sucesso fictício.
+
+<a id="ps2native-20261002-atual-21"></a>
+
+## ATUAL 21 — Processo realizado com Monster House
+
+**ISO usada:** `/home/pedrohs/Downloads/Monster House (BR-USA) (T2.0) (www.romsportugues.com).iso`.\
+**SHA-256 registrado:** `cb596f3249f48e392bc20ec04cdf29074805ae6ef8469c3c18b1abca0c865f74`.
+
+O hash acima vem dos manifests do trabalho anterior; a ISO inteira não foi novamente rehashada para gerar este documento.
+
+### Fase 1 — Base de conversão
+
+Inspeção e extração da ISO, boot ELF, análise, fontes C++ e pacote desktop experimental. O relatório inicial encontrou 7.224 funções processadas, 7.033 recompiladas e 191 stubs. Registrou 13.706 instruções não tratadas/erros e 2.280 warnings/promotions.
+
+Esses valores são históricos do relatório inicial. Correções e regenerações posteriores ocorreram; não representam a lista de erros ativos de hoje, e uma contagem de funções recompiladas não aprova sua semântica.
+
+### Fase 2 — Despacho e serviços
+
+Registro em lote de entradas interiores, drivers de tradução de RAM no desenvolvimento, correções de delay slots, instruções, ABI libm double, pad, SIF/IOP, VIF/VU, arquivos e saves. As fixtures transformaram os sintomas em regressões gerais.
+
+### Fase 3 — AOT e catálogos
+
+Catálogos EE concretos, captura de misses, famílias tipadas, bancos IOP relocáveis, bancos VU e replays. Guardas passaram a conservar identidade de bytes, entrada e versão.
+
+### Fase 4 — Continuações e fontes estáveis
+
+O miss `0x1a51be8` expôs uma continuação linear omitida. Descoberta canônica, FPU fixa e fila de sucessores ampliaram o corpus. A fonte por hash reorganizava muitas folhas; preservar unidades inteiras reduziu um build comparável de 438,949 s para 112,010 s.
+
+### Fase 5 — GPU e transporte
+
+Integração paraLLEl-GS na RX 6600; ensaios de fragmentação; correção da cópia upstream; frontend raw; diagnóstico de retagging IMAGE; correção raw VIF/reset; registro TLS Granite; reexecução com cenas e snapshots.
+
+### Fase 6 — Rota de carregar save
+
+Outra rota materializou a janela `0x1390000`. O catálogo de 40 casos passou `0x139be00`, e a execução nova capturou `0x13a1984` na janela seguinte. A recuperação passou a ter entrada pública `recover-ee`, e o novo limite de propostas foi medido antes de tentar outra recompilação monolítica.
+
+### O que essa trajetória entregou ao PS2Native
+
+Capacidades de entrada, tradução, descoberta, captura, admissão, cache, integração e diagnóstico que podem servir a outros títulos. Monster House não virou uma lista de endereços que define a arquitetura do produto; suas fixtures e roteiros locais ainda precisam ser substituídos por exploração genérica para M8.
+
+O primeiro jogo continua incompleto como caso de aceitação. Cenas de outros perfis diagnósticos não substituem a validação do runner mais recente.
+
+<a id="ps2native-20261002-atual-22"></a>
+
+## ATUAL 22 — Testes, referências e escopo das provas
+
+Esta atualização documental consulta código e recibos; não é uma nova rodada de execução do jogo ou das suítes.
+
+| Conjunto | Resultado registrado | Escopo |
+|---|---:|---|
+| CTest completo anterior | 78/78 | Perfil diagnóstico anterior à integração GS mais recente |
+| C++ depois de VIF/reset | 487/487 | Regressões do runtime compilado naquela revisão |
+| Snapshot de dispositivos | 14/14 | Estado coberto pelo codec/testes |
+| Captura VIF | 16/16 | Casos de captura do conjunto |
+| VIF raw/reset | RED/controle negativo → GREEN | Bytes originais e binding host após reset |
+| GS físico | GREEN | Device/frontend no hardware registrado |
+| Python EE, etapa intermediária | 73/73 | Publicação, descoberta e preparação na sessão de implementação |
+| Python CLI/recuperação/EE final | 98/98; 5,509 s | Resultado de execução registrado na sessão anterior |
+| CLI recovery real | Retorno zero | Preparação/build do catálogo existente; sem gameplay approval |
+| Runner mais recente | Nova captura EE | Passou ausência anterior e delimitou próxima janela |
+
+O resultado Python 98/98 foi registrado na sessão de implementação; o job consultado não contém um recibo próprio persistido para essa bateria. O comando está reproduzido adiante. Não apresentar esse dado como uma nova execução feita durante a documentação.
+
+### Novas regressões no código local
+
+Máscaras v3, reconstrução exata, publicação dentro do orçamento, bits/encoding inválidos, inventário automático de capturas, recusa de inputs incompletos, comando público com executáveis sintéticos offline, build/manifest/reutilização e flags de aprovação preservadas como falsas.
+
+Os executáveis sintéticos de teste da CLI validam orquestração; não são um oráculo do comportamento real de Monster House.
+
+### Hierarquia de evidência
+
+Fonte escrita → código compilado → fixture aprovada → integração no runner → gameplay causal → estabilidade/conteúdo → pacote independente → título inédito automático → catálogo amplo. Cada nível conserva o perfil, a revisão e o input; não promove automaticamente os seguintes.
+
+<a id="ps2native-20261002-atual-23"></a>
+
+## ATUAL 23 — Execução headless e isolamento
+
+Os percursos recentes usam Xvfb próprio, display `:90` ou superior, Xauthority separado, captura de janela própria e áudio isolado. O harness pode encerrar somente os processos que criou e identificou.
+
+### Estado persistido
+
+`launch-record.json`, `game-state.json`, comandos, PID, display, runner, pacote, inputs, observações de menu, screenshots, capturas de miss, hashes de cards e `cleanup.json`.
+
+### Disciplina de teste
+
+- Confirmar processo vivo e identidade antes de mandar input.
+- Registrar tentativa e aplicação real, liberando teclas.
+- Fazer baseline, input e observação dentro do orçamento do runner.
+- Contar PNGs no disco separadamente das tentativas de captura.
+- Preservar as capturas negativas e timeouts.
+- Restaurar cards em cleanup mesmo quando o jogo falha.
+- Não usar screenshots ou teclado da sessão gráfica do usuário.
+
+As fixtures de navegação de Monster House são explícitas e locais. A calibração por imagens CPU/GPU, tolerância e rótulos não constitui um navegador universal de menus.
+
+Snapshots EE/VU/GS ajudam a reproduzir subsistemas. Até haver codec e restore completo qualificado da máquina, repetir desde boot ou save reproduzível, preservando eventos, disco e serviços exigidos.
+
+<a id="ps2native-20261002-atual-24"></a>
+
+## ATUAL 24 — Natividade e pacote independente
+
+O contrato final exige EE/IOP/VU previamente compilados, dispositivos host coerentes e ausência de interpretação/recompilação convidada na partida. Uma biblioteca AOT disponível no checkout não significa que o runner a esteja usando.
+
+### Auditoria de composição
+
+Conferir manifests ligados, símbolos/providers, opções CMake, flags, imports, objetos e chamadas. A rotina de VU deve selecionar o banco correto e não voltar ao core diagnóstico. EE/IOP precisam recusar cobertura ausente sem fallback oculto.
+
+### Auditoria de execução
+
+Contabilizar operações interpretadas e compilação em runtime separadamente para EE, IOP e VU. Exigir zero no percurso final e conservar a detecção de caminhos proibidos. Um contador zero não basta se o teste nunca exercitou o código correspondente.
+
+### Pacote independente
+
+Executar numa pasta nova fora do checkout, sem geradores, compilador de código convidado ou caminhos absolutos do laboratório. Iniciar, jogar, atravessar uma transição, ouvir áudio, salvar, encerrar, carregar novamente e sustentar estabilidade. Declarar o conteúdo realmente validado.
+
+O experimento atual reutiliza objetos e bibliotecas congeladas do pacote anterior. Isso é uma estratégia de iteração, não a distribuição independente já aprovada.
+
+<a id="ps2native-20261002-atual-25"></a>
+
+## ATUAL 25 — Android e outros alvos de PC
+
+O alvo PC exercitado é **Linux x86-64 na máquina de build**. Templates e CI não certificam Windows/macOS. Código host compilado para x86-64 não pode ser reutilizado como executável ARM64; pode-se reaproveitar a tradução C++ e a evidência compatível, recompilando para a ABI apropriada.
+
+### Android implementado
+
+- Projeto por ISO, sem sobrescrever o template compartilhado.
+- Integração dos fontes gerados com CMake/NDK.
+- Alvo `arm64-v8a` e identidade de aplicação derivada do input.
+- Assets do jogo e cópia para armazenamento privado.
+- Activity que prepara dados antes do startup nativo.
+- Resolução do boot ELF em `ANativeActivity::internalDataPath`.
+- Diagnóstico de ferramentas ausentes e projeto staged.
+
+### Android pendente
+
+APK real do caso integrado, instalação e boot físico, paridade de SIMD/FPU, integração VU/IOP/GS, Vulkan do dispositivo, surface/lifecycle, áudio, controles touch/gamepad, armazenamento de saves, campanha e desempenho térmico sustentado.
+
+Os pré-requisitos de versões nos anexos pertencem à configuração local documentada. A atualização deste README não é uma consulta às versões mais recentes de SDK/NDK/Gradle.
+
+APK grande, cópia adicional de assets, assinatura e entrega de dados precisam de solução de produto. O build de protótipo e a estrutura de Android não equivalem a um port móvel jogável.
+
+<a id="ps2native-20261002-atual-26"></a>
+
+## ATUAL 26 — Motor autônomo e serviço de nuvem
+
+O primeiro motor autônomo deve conduzir as classes já mecanizáveis: identificar, gerar, compilar, executar, capturar ausência, ampliar catálogo, relinkar, repetir e publicar escopo aprovado. Ele não pode depender de um agente reescrever o runtime para cada submissão.
+
+### Estados propostos do job
+
+```text
+received → inspected → analyzed → generated → built → exploring
+exploring → missing_code → recovering → built
+exploring → divergence → reproducing → generic_repair_or_blocked
+exploring → acceptance_passed → packaging → independent_validation
+independent_validation → approved_with_scope
+qualquer etapa → budget_exhausted_or_failed_with_receipt
+```
+
+Essa máquina de estados é uma especificação para a integração restante. `recover-ee` já cobre parte de `recovering → built`; não implementa todos os estados.
+
+### Política de reparo
+
+Resolver ausência de código com captura/admissão/compilação. Resolver espera com evento/serviço correto. Resolver divergência com reprodução e regressão. Um reparo genérico precisa ter condições de aplicação, efeitos esperados, invalidação e teste. Rejeitar alteração que só muda o verificador ou fabrica aprovação.
+
+### Serviço de nuvem proposto
+
+Fila e workers isolados, armazenamento de inputs/artefatos, DAG de tarefas, cache por identidade/ABI/ferramenta, orçamento de CPU/GPU, retomada, logs limitados e publicação verificável. Não foi identificado serviço operacional de upload/filas que já entregue ports completos.
+
+O caminho local precisa ser reproduzível antes de distribuir workers. A nuvem aumenta capacidade; não corrige automaticamente lacunas semânticas e não elimina a necessidade de explorar/validar o jogo.
+
+<a id="ps2native-20261002-atual-27"></a>
+
+## ATUAL 27 — Conversão em minutos e uso de GPU
+
+Há etapas medidas em segundos e recuperação cacheada em cerca de 97 segundos. Ainda não há medição de conversão inédita completa em dez minutos.
+
+### Onde o hardware acelera
+
+| Recurso | Uso adequado |
+|---|---|
+| CPU multinúcleo | Descoberta, emissão C++, compilação, compressão e orquestração |
+| GPU | Rasterização GS, compute adequado, replay gráfico e certas comparações paralelas |
+| VRAM | Dados e buffers consumidos pela GPU |
+| RAM/cache de disco | Artefatos, objetos, metadados e reuso do pipeline |
+| Workers distribuídos | Etapas independentes com inputs e ABI identificados |
+
+O compilador C++ usado atualmente não transfere automaticamente compilação/link para a GPU. Colocar dados na VRAM não torna o linker mais rápido. As otimizações imediatas são reduzir trabalho inválido, preservar unidades/objetos, limitar dependências, evitar LTO no ciclo e compilar somente o delta.
+
+### Orçamento de latência proposto
+
+```text
+T_total = inspeção + extração + análise + geração + compilação + link
+        + exploração necessária + recuperações + validação + pacote
+```
+
+O tempo de um build cacheado mede apenas uma parcela. Uma execução que demora até materializar código novo impõe um custo que o cache do compilador não remove.
+
+### Otimizações de maior retorno
+
+1. Particionar publicações sem invalidar corpos anteriores.
+2. Reutilizar candidatos/identidades quando a política e o corpus permanecerem compatíveis.
+3. Automatizar AOT concreto para recusas suportadas.
+4. Capturar uploads/materializadores antes da primeira falha de dispatch.
+5. Manter ABI/headers estáveis para evitar recompilações amplas.
+6. Relinkar com os mesmos objetos de jogo quando não mudaram.
+7. Remover readback integral desnecessário com dependências corretas.
+8. Usar replay reduzido em divergências gráficas/semânticas.
+9. Planejar workers por custo observado e memória disponível.
+10. Medir conversões frias e cacheadas separadamente.
+
+<a id="ps2native-20261002-atual-28"></a>
+
+## ATUAL 28 — Pesquisa e propostas experimentais
+
+As 24 propostas do plano mestre permanecem integralmente no [Anexo 02](#anexo-02), com experimentos e critérios. Elas não são todas implementadas e não são declaradas descobertas inéditas mundiais.
+
+| Linha de pesquisa do plano | Situação/conexão atual |
+|---|---|
+| Descoberta AOT orientada por evidência | Capturas e catálogos existem; ciclo completo pendente |
+| Catálogo de versões materializadas | Bancos/guardas existem; produtores/aliases/fechamento pendentes |
+| Assinaturas semânticas validadas | Famílias tipadas existem num domínio finito |
+| Primeira divergência causal | Capturas/replay existem; diagnóstico geral pendente |
+| Exploração por novidade útil | Proposta; fixtures atuais são específicas |
+| ABI estável jogo/runtime | Necessidade demonstrada pela invalidação de headers |
+| Registro compacto e sharding | Compactação v2/v3 e proveniência existem; nova partição pendente |
+| Especialização VU verificada | AOT/replay existem; binding do banco atual pendente |
+| Perfis com evidência própria | Recibos/identidades existem; promoção automatizada pendente |
+| Planejador por custo observado | Paralelismo foi ajustado manualmente; scheduler geral pendente |
+| Substituição de serviços por efeitos | Serviços existem; síntese geral é proposta |
+| Reparo por modelo com confirmação executável | Proposta; nenhum uso de API paga nesta atualização |
+| Proveniência setor→código | Proposta para materializadores e overlays |
+| AOT com guardas verificáveis | Guardas e identidades existentes, fechamento global pendente |
+| Avanço de esperas por eventos comprovados | Proposta; preservar semântica temporal |
+| Síntese de sequências com prova local | Proposta; não substituir regressões por promessas |
+| Testes derivados de efeitos observados | Capturas ajudam; geração geral pendente |
+| Grafo de evidência | Manifests existem; DAG de aprovação completo pendente |
+| Objetos por contrato de módulo | Unidades preservadas implementadas; ABI ainda dependente de headers |
+| Otimização das ferramentas de conversão | Compactação e incremental medidos |
+| Reparos priorizados por informação | Direção de pesquisa, sem motor automático aprovado |
+| Composição de patches por restrições | Proposta |
+| Contratos de especialistas | Arquitetura proposta |
+| Regressão metamórfica | Casos locais existem; programa sistemático pendente |
+
+### Experimentos adicionais para o próximo gargalo
+
+**Publicação por conjunto de evidências:** validar partes independentes, deduplicar formas globalmente e demonstrar igualdade do conjunto admitido contra uma execução monolítica reduzida. Aceitar somente se não houver perda, ambiguidade escondida ou reinterpretação de políticas.
+
+**Descoberta no materializador:** registrar origem e identidade de uma página no momento de carga/cópia/upload, antes do dispatch. Comparar ganho de latência com misses reativos e verificar que código/dados não foram confundidos.
+
+**Reuso por invariantes completos:** tratar hashes de fonte, headers, toolchain e ABI como contrato explícito de objeto. Medir custo real, sem anunciar reuso de objeto quando só o corpo C++ foi preservado.
+
+**Replay causal gráfico:** conservar estado completo da fronteira útil, localizar primeiro draw/transfer/efeito divergente e comparar VU/VIF/GIF/GS separadamente. Não partir de um estado quente reconstruído como reset sem qualificação.
+
+Esses experimentos são propostas deste documento. A novidade histórica absoluta não foi pesquisada; o critério útil é redução de intervenção/custo com correção preservada.
+
+<a id="ps2native-20261002-atual-29"></a>
+
+## ATUAL 29 — Sequência concreta para fechar M6–M9
+
+### Etapa A — Prosseguir do bloqueio conhecido
+
+Implementar publicações EE limitadas em partes ou usar o AOT concreto suportado. Adicionar regressões pequenas de deduplicação/política/proveniência/orçamento. Incorporar `next-case`, preservar o catálogo compilado, compilar o delta e relinkar a base atual.
+
+### Etapa B — Reexecutar com evidência causal
+
+Criar job headless novo, repetir menu/save com cards isolados e observar o primeiro resultado. Mandar controles enquanto o processo está vivo. Registrar baseline, ação e resposta. Se aparecer outra janela, recuperar em lote; se houver cobertura e comportamento errado, reduzir a divergência.
+
+### Etapa C — Qualificar gráficos e apresentação
+
+Comparar capturas úteis de VU/VIF/GIF/GS, corrigir a causa de geometria/imagem, demonstrar draws na GPU e concluir Vulkan direto. Medir readbacks e frame time. Aceleração sem fidelidade não encerra M6.
+
+### Etapa D — Integrar o perfil AOT
+
+Ligar banco/coleção VU atual, validar seleção/continuações, conferir EE e IOP ligados, eliminar fallback convidado e registrar contadores/traps relevantes. Verificar áudio, vídeo, pad, transições e save/reload.
+
+### Etapa E — Validar pacote independente
+
+Construir pacote novo, executar fora do checkout, fazer percurso e estabilidade, depois ampliar validação do conteúdo principal. Preservar melhor artefato funcional e a reprodução das falhas restantes.
+
+### Etapa F — Fechar o comando universal
+
+Integrar execução/captura/partição/admissão/build/relink/reexecução/validação/pacote na CLI existente. Persistir fila, identidade e orçamento. Testar falha, retomada e convergência; não exigir edição por jogo.
+
+### Etapa G — Generalizar e medir
+
+Congelar versão, converter três ISOs inéditas diferentes em workspaces limpos, incorporar correções genéricas numa rodada nova e ampliar catálogo. Validar Android sobre as mesmas traduções/fontes com ABI e aparelho próprios.
+
+Nenhuma dessas etapas tem ETA total confiável no estado atual. Há custo medido de operações; ainda existem causas e conteúdo não explorados.
+
+<a id="ps2native-20261002-atual-30"></a>
+
+## ATUAL 30 — Backlog técnico, dependências e riscos
+
+| ID | Entrega | Estado | Gate |
+|---|---|---|---|
+| C01 | Compactar máscaras sem perda | Implementado/testado localmente | Roundtrip e proveniência |
+| C02 | Coletar diretório de misses | Implementado/testado localmente | Inventário/inputs válidos |
+| C03 | Recuperação pública offline | Implementado/exercitado | Manifest/build identificados |
+| C04 | Particionar candidatos | Pendente imediato | União 73.869 sem perda |
+| C05 | AOT concreto para recusas suportadas | Gerador existe; ciclo pendente | Bytes exatos/entrada/catálogo |
+| C06 | Relink e reexecução automáticos | Operações manuais existentes | CLI persistente e retomável |
+| C07 | Controle causal atual | Pendente | Movimento/ação após input real |
+| C08 | Fidelidade de geometria/imagem | Pendente | Reprodução e comparação útil |
+| C09 | Apresentação Vulkan direta | Pendente | Backend e frame time registrados |
+| C10 | Banco VU atual no runner | Objeto compilado; integração pendente | Seleção e estado/continuação |
+| C11 | Auditoria AOT estrita | Pendente | Zero ISA interpretada/recompilada |
+| C12 | Áudio e save/reload integrado | Pendente | Ciclo real fora do workspace |
+| C13 | Conteúdo principal/campanha | Pendente | Escopo publicado de completude |
+| C14 | Exploração de menus inéditos | Pendente | Nenhum roteiro exigido por título |
+| C15 | Pacote independente | Pendente | Sem dependências do checkout |
+| C16 | Rodada de três ISOs | Pendente | Versão congelada e zero intervenção específica |
+| C17 | APK físico ARM64 | Pendente | Boot/gameplay/áudio/save/estabilidade |
+| C18 | Serviço de nuvem | Planejado | Esteira local reproduzível antes de distribuição |
+
+### Riscos que já apareceram
+
+| Risco | Resposta técnica |
+|---|---|
+| Milhares de entradas e janelas tardias | Captura em lote, sucessores e produtores; evitar cadastro manual |
+| Relatório acima do orçamento | Compactação/partição verificadas, sem descarte |
+| Corpo preservado mas objeto invalidado | Identidade de headers/ABI/flags e cache separado |
+| LTO longo na depuração | O1/O2 sem LTO; link incremental |
+| Imagem apresentada porém errada | Reproduzir primeira divergência e comparar estado |
+| Banco VU desconhecido | Capturar/compilar offline; falha explícita no perfil final |
+| Snapshot parcial usado como restore completo | Reboot/save reproduzível ou codec integral qualificado |
+| Helper rc0 confundido com jogo aprovado | Separar recibo do helper, resultado do runner e critérios |
+| Input enviado após processo encerrar | Confirmar PID/identidade e registrar aplicação dentro do orçamento |
+| Quatro jogos tratados como 90% | Catálogo definido com falhas/timeouts no denominador |
+| Cache x86 usado como ARM | Recompilar tradução para destino e validar SIMD/FPU |
+| Reparador altera o gate para passar | Verificador e evidência independentes do reparo |
+
+<a id="ps2native-20261002-atual-31"></a>
+
+## ATUAL 31 — Mais três ISOs e medição dos 90%
+
+Monster House deve permanecer como regressão. A próxima rodada deve usar três títulos/revisões inéditos com características distintas, como streaming/código carregado, uso relevante de VU/GS e combinação diferente de serviços/dispositivos.
+
+Não há seleção de títulos ou conversões dessa rodada aprovada neste levantamento. A escolha precisa ser feita sobre os inputs disponíveis e o protocolo definido.
+
+### Protocolo
+
+1. Congelar commit, toolchain, runtime, política e critérios.
+2. Usar workspace limpo e nenhum catálogo manual preexistente do título.
+3. Fornecer apenas ISO e opções públicas permitidas.
+4. Executar a esteira e registrar primeira falha/resultado.
+5. Se surgir correção genérica, publicar nova versão e iniciar rodada identificada.
+6. Declarar separadamente build, boot, gameplay, completude, natividade e automação.
+
+```csv
+iso_hash,title,revision,tool_commit,build,native,boot,gameplay,audio,save_reload,completion,automatic,conversion_seconds,first_failure
+```
+
+```text
+compatibilidade completa automática =
+  títulos/revisões completos, nativos e automáticos aprovados
+  / total de títulos/revisões do catálogo definido
+```
+
+Falhas e timeouts entram no denominador. Registrar também taxas de build e gameplay. Jogar para verificar o resultado não é edição do conversor; preparar manualmente configuração/PC/roteiro necessário à geração é intervenção específica.
+
+Quatro jogos avaliam generalização inicial; não comprovam 90% da biblioteca. O projeto deve crescer por classes de capacidade e preservar casos que falham para evitar selecionar apenas títulos favoráveis.
+
+<a id="ps2native-20261002-atual-32"></a>
+
+## ATUAL 32 — Comandos existentes e comandos ainda condicionais
+
+Os comandos a seguir são referências de operação. Não foram executados novamente para produzir esta documentação.
+
+### Interface de preparação e pacote
+
+```bash
+cd /home/pedrohs/Downloads/ps2-native-recompiler
+python3 -m tools.ps2native inspect --iso "/caminho/jogo.iso" --json-output
+python3 -m tools.ps2native build --iso "/caminho/jogo.iso" --target desktop --out "/caminho/pacote-novo"
+python3 -m tools.ps2native verify --package "/caminho/pacote-novo"
+```
+
+`build` produz pacote experimental no domínio suportado. `verify` confere integridade do inventário; não aprova gameplay ou campanha.
+
+### Recuperação offline pública existente
+
+```bash
+python3 -m tools.ps2native recover-ee \
+  --capture-root "/caminho/runtime/misses" \
+  --previous-batch "/caminho/lote-anterior" \
+  --previous-family-catalog "/caminho/catalogo-realmente-compilado/catalog.json" \
+  --family-generator build/ps2xRecomp/ps2_native_data_family \
+  --overlay-generator build/ps2xRecomp/ps2_native_overlay \
+  --native-build build/ee-families-native \
+  --out "/caminho/recuperacao-nova" \
+  --workers 8 \
+  --timeout 3600
+```
+
+A saída deve ser nova. `--native-build` exige cache CMake existente com projeto fonte válido. Sem esse argumento o comando publica fontes/catálogo, sem compilar a biblioteca.
+
+**Condição atual:** a captura nova `0x13a1984` faz a união exceder o limite de uma publicação. Esse comando não contorna o limite até a partição/AOT concreto ser integrada.
+
+### Preparação de lote existente
+
+```bash
+python3 lab/prepare_ee_family_batch.py \
+  --capture-root "/caminho/runtime/misses" \
+  --previous-batch "/caminho/lote-anterior" \
+  --previous-family-catalog "/caminho/catalogo-compilado/catalog.json" \
+  --family-generator build/ps2xRecomp/ps2_native_data_family \
+  --overlay-generator build/ps2xRecomp/ps2_native_overlay \
+  --output "/caminho/lote-novo" \
+  --workers 8
+```
+
+### Comando da regressão Python registrada
+
+```bash
+python3 -m unittest \
+  tools.ps2native.tests.test_native_recovery \
+  tools.ps2native.tests.test_cli \
+  lab.tests.test_ee_data_families \
+  lab.tests.test_ee_family_catalog \
+  lab.tests.test_prepare_ee_family_batch
+```
+
+### Integração geral
+
+```bash
+ctest --test-dir build --output-on-failure -j 4
+build/ps2xTest/ps2x_tests
+```
+
+Esses comandos usam o perfil do diretório indicado. Conferir manifests/opções antes de anunciar resultado como nativo. Não reconstruir todo o jogo por cada novo PC quando apenas o catálogo mudou.
+
+<a id="ps2native-20261002-atual-33"></a>
+
+## ATUAL 33 — Artefatos e identidades para retomar
+
+### Job de recuperação atual
+
+```text
+build/lab/ee-load-native-recovery-1790948588452292506/
+  batch-packed/report.json
+  batch-packed/candidates.json
+  batch-packed/catalog/catalog.json
+  expanded-families.a
+  previous-families.a
+  native-gpu-stream-reset-runner
+  relink.json
+  native-family-build.json
+  native-family-resume.json
+  public-cli.json
+  public-cli-recovery/recovery.json
+  public-cli-recovery/batch/report.json
+  public-cli-recovery/batch/catalog/catalog.json
+  game-run/headless-test.json
+  game-run/cleanup.json
+  game-run/misses/ee-miss-000001/request.json
+  next-case/bank.json
+  next-case/snapshot.bin
+  next-prepare.json
+  next-discovery-measurement.json
+  vu-prologue-bank.o
+  vu-compile.json
+```
+
+### Layout efetivamente compilado mais recente
+
+`build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/batch/catalog/catalog.json`.
+
+SHA-256 do manifest: `918206b8a5bd2fdf825db2cdf1df32a46ed62b6542de2b8aa3257588d893e96c`.
+
+Usar `public-cli-recovery/batch` para o corpus anterior e esse manifest para conservar as 785 unidades de corpo. O build persistente é `build/ee-families-native`; o projeto fonte é `build/lab/native-ee-family-project`.
+
+### Base gráfica congelada
+
+Job: `build/lab/gs-stream-corrected-1790945198323964871`.\
+Runtime: `libps2_runtime_gpu_stream_reset.a`.\
+SHA-256 registrado: `856a268b142945e84d606b7445aabdd53c07e57b209f04ef581b9178df5f42e9`.
+
+O relink reutiliza objetos do jogo, catálogo EE concreto e IOP, substituindo a biblioteca de famílias. Manter compatibilidade de ABI e a identidade real dos objetos; não trocar uma biblioteca por outra apenas pelo nome.
+
+### Caso VU observado
+
+Fonte: `build/lab/gs-load-existing-save-1790946973205664734/vu-prologue-bank.cpp`.\
+Objeto compilado: job de recuperação atual, `vu-prologue-bank.o`.\
+Estado: disponível para integração, ainda não instalado no runner.
+
+Os caminhos de `build/` são locais e ignorados. O README conserva os recibos selecionados, mas não torna ISOs, RAM/VRAM, cards, screenshots, bibliotecas ou executáveis disponíveis num clone do GitHub.
+
+<a id="ps2native-20261002-atual-34"></a>
+
+## ATUAL 34 — Git, publicação e mudanças locais
+
+O HEAD consultado é `c4d5ea7ad3872f91604a7b30c77db5367fa746db`. Os commits recentes preservam fontes EE, integram transporte GS/VIF/reset e consolidam a documentação anterior. O snapshot remoto consultado na implementação anterior coincidia com esse HEAD; este levantamento não é uma nova verificação de publicação remota.
+
+### Delta local de implementação anterior a esta documentação
+
+| Arquivo | Situação |
+|---|---|
+| `lab/discover_ee_data_families.py` | Modificado localmente |
+| `lab/generate_ee_family_catalog.py` | Modificado localmente |
+| `lab/prepare_ee_family_batch.py` | Modificado localmente |
+| `lab/tests/test_ee_data_families.py` | Modificado localmente |
+| `lab/tests/test_prepare_ee_family_batch.py` | Modificado localmente |
+| `tools/ps2native/cli.py` | Modificado localmente |
+| `tools/ps2native/native_recovery.py` | Novo, não rastreado |
+| `tools/ps2native/tests/test_native_recovery.py` | Novo, não rastreado |
+
+Esses arquivos ainda estão fora do HEAD consultado. O Complemento B conserva o diff dos arquivos rastreados e o conteúdo integral dos dois arquivos novos. Publicar o README não publica automaticamente o código local descrito nele.
+
+O remote do projeto é `ps2native` para Pedrohs1771/ps2-native. `origin` aponta para a base upstream e não deve receber publicação do trabalho deste fork.
+
+Esta tarefa gera o documento local. Não executa API paga, não usa a chave fornecida anteriormente e não adiciona credenciais ao artefato. O código e o plano principal são preservados.
+
+<a id="ps2native-20261002-atual-35"></a>
+
+## ATUAL 35 — Limites, decisões e respostas diretas
+
+### Já temos um recompiler real?
+
+Sim: há código EE traduzido para C++ e compilado para o host, runtime, entrada ISO, pacote experimental, entradas interiores, catálogos e mecanismos de recuperação. Isso constitui uma base de recompilação real, com domínio e lacunas explícitos.
+
+### Já transforma qualquer ISO sem ninguém mexer?
+
+Não demonstrado. Há preparação automática e recuperação offline de uma classe de ausência EE. Falta fechar a esteira, explorar títulos inéditos, resolver mais classes de comportamento e medir generalização.
+
+### Monster House está completo e jogável a 60 FPS?
+
+Não aprovado. Houve menus/cenas 3D em perfis experimentais e trabalho GS na GPU. O runner mais recente termina num miss EE; controle causal, imagem fiel, áudio, saves, estabilidade e conteúdo principal continuam pendentes.
+
+### O que melhorou mais recentemente?
+
+Publicação v3 dentro do orçamento, corpus de 40 casos/17.622 famílias, catálogo anterior preservado, comando público `recover-ee`, rebuild cacheado de 1,619 s, relink de 14,432 s e avanço da rota de load até uma nova janela capturada.
+
+### Qual é o próximo impedimento concreto?
+
+O conjunto seguinte tem 73.869 propostas e excede 65.536 de um relatório. Implementar partição/admissão sem perda ou integrar a tradução concreta suportada. Depois repetir o percurso no runner e investigar a próxima causa real.
+
+### Quanto falta em minutos?
+
+Não existe ETA total confiável para “100% perfeito” a partir dessa evidência. Tempos de geração, build e link são conhecidos; quantidade de janelas, falhas semânticas, integração e conteúdo a validar ainda não é.
+
+### Que resultado encerra o projeto?
+
+Aplicativos independentes com conteúdo declarado completo, natividade auditada, correção audiovisual/controles/persistência e desempenho no alvo, produzidos automaticamente para ISOs inéditas, com taxa de compatibilidade medida e expansão sustentada.
+
+<a id="ps2native-20261002-atual-36"></a>
+
+## ATUAL 36 — Glossário e cobertura documental
+
+| Termo | Uso no projeto |
+|---|---|
+| EE | Emotion Engine/R5900, CPU principal convidada |
+| IOP | Processador R3000A e seus módulos/serviços |
+| IRX | Módulo executável/relocável do IOP |
+| VU | Unidades vetoriais e seus microprogramas |
+| VIF | Interface de comandos/uploads de dados e código VU |
+| GIF | Fluxo de comandos/dados para GS |
+| GS | Graphics Synthesizer, estado gráfico e VRAM |
+| AOT | Tradução compilada antes da execução final |
+| HLE | Implementação host de serviço sob contrato de efeitos |
+| Família | Estrutura compilada com variações de dados admitidas |
+| Banco concreto | Tradução dos bytes exatos de um corpus identificado |
+| Binding | Ligação entre entrada/estado e tradução/callback |
+| Proveniência | Origem, identidade e dependências de uma evidência |
+| Miss | Ausência de entrada/tradução admitida para o estado observado |
+| Fechamento | Cobertura justificada do domínio de código/versões; não equivale a um trecho sem miss |
+| Checkpoint completo | Estado suficiente para restaurar a máquina e suas dependências qualificadas |
+| Fixture | Input/percurso explícito para regressão |
+| Readback | Transferência de resultado da GPU para memória host |
+
+### Cobertura deste arquivo
+
+Todos os **32 documentos Markdown próprios rastreados além deste consolidado** estão incorporados integralmente. Os 31 já presentes no acervo foram comparados por conteúdo; `docs/STATUS_PC.md` atual está no Complemento A. As versões históricas continuam conservadas.
+
+O Complemento D registra caminho, tamanho, linhas e SHA-256 dos documentos consultados. O Complemento E inclui o inventário Git completo e a lista dos arquivos novos de implementação. O Complemento C conserva os recibos novos selecionados, sem inserir enormes manifests de famílias ou dados binários do jogo.
+
+O acervo anterior conservado tem **25.459 linhas** e **1.540.387 bytes**. Sua identidade registrada antes desta atualização é `4ce7cf176032e61e90f103b01b6b198b21e7666dc86b0fa83274ded38118910a`.
+
+Este arquivo é um snapshot técnico. O código, os manifests e o runner efetivamente executado continuam determinando o comportamento. Um plano completo ajuda a continuar o trabalho; não constitui a entrega dos componentes ainda pendentes.
+
+---
+
+<a id="ps2native-20261002-atual-anexo-a"></a>
+
+# Complemento A — status PC posterior ao acervo anterior
+
+Documento integral; seu snapshot das 10:02 antecede os novos recibos EE descritos na síntese.
+
+**Origem:** `docs/STATUS_PC.md`. **SHA-256:** `246d282542dc02172d19e5151092c6935653d695a25d4749e783874d152afa20`.
+
+# PS2Native — estado de execução no PC
+
+Atualização: 2026-10-02T10:02:40.505934-03:00.
+
+Plano vigente: [README.md](../README.md). Acervo completo: [README_GERAL_COMPLETO.md](../README_GERAL_COMPLETO.md), snapshot documental das 09:34. Esta atualização registra execução posterior ao acervo.
+
+## Avanço desta etapa
+
+- VIF passa a enviar bytes GIF originais quando o backend mantém stream contínua; o receptor CPU conserva o contrato legado.
+- Reset VIF feito pelo convidado limpa o parser e preserva a ligação ao receptor host. A regressão falhou antes da correção e passou depois.
+- Ponte GS exercitada na RX 6600 com registro TLS Granite e readback por worker host.
+- Runner atualizado relinkado em **11.359 s**, sem recompilar objetos originais do jogo.
+- Menus e cena 3D do livro/fotos reapareceram no percurso GPU; permanecem defeitos de imagem/geometria.
+
+## Resultados delimitados
+
+| Verificação | Resultado |
+|---|---|
+| C++ geral | 487/487; 4,675 s |
+| Snapshot de dispositivos | 14/14 |
+| Captura VIF | 16/16 |
+| VIF bytes originais | GREEN; contrato legado falha no controle negativo |
+| VIF reset do convidado | RED → GREEN, receptor host preservado |
+| Device/frontend GS físicos | GREEN na AMD Radeon RX 6600 (RADV NAVI23) |
+| Percurso do jogo | 361.459 s; timeout delimitado, sem aprovação de campanha |
+| Screenshots | 156 arquivos; 157 tentativas |
+| Capturas de cena | 4 snapshots RAM/contexto/GS/VU, sem restore completo |
+| Novo miss EE nesse percurso | 0 |
+| Diagnóstico de thread Granite | 0 ocorrências no log novo |
+| Cards/processos | Cinco cards restaurados por SHA-256; runner/Xvfb próprios encerrados |
+
+O último contador acumulado registra 1.325.299 primitivas GPU, 50.856 passes e 18.186.502.144 bytes de readback. Esses números confirmam trabalho gráfico; não são FPS nem medida de fidelidade.
+
+## Perfil e limites
+
+- Linux x86-64 experimental: EE concreto/famílias e biblioteca IOP nativa reutilizada; VU ainda diagnóstico.
+- `raster_backend=parallel-vulkan`; `present_backend=opengl-readback`. Apresentação Vulkan direta e redução de readback integral permanecem pendentes.
+- O classificador baseado nas antigas imagens CPU manteve `logos` mesmo nos menus e na cena. Navegação adicional Left+X e Start foi enviada pelo helper ao display próprio; isso não demonstra conversão automática por jogo.
+- A tentativa tardia de W falhou porque o runner já havia encerrado; D não foi enviado. Labels do roteiro como `after-w-input` não comprovam aplicação do comando.
+- Nenhuma resposta causal de personagem/câmera, áudio audível, save/reload, 60 FPS, campanha, pacote final nativo ou Android foi aprovada.
+- M6, M7, M8 e M9 seguem abertos. O snapshot CTest 78/78 anterior não substitui os testes por revisão descritos aqui.
+
+## Evidência e reprodução
+
+Job: `build/lab/gs-stream-corrected-1790945198323964871`.
+
+- `progress.json`, `inputs.json`, `source-manifest.json`: escopo, revisão e identidades.
+- `vif-reset-red.json` / `.log`, `vif-reset-green.json` / `.log`: regressão de reset.
+- `cpp-tests.json`, `device-snapshots-after-reset.json`, `vif-captures-after-reset.json`, `gpu-device.json`, `gpu-frontend.json`: testes exercitados.
+- `relink-reset.json`: comando, objetos substituídos, flags e identidade do runner.
+- `game-run/launch-record.json`, `headless-test.json`, `cleanup.json`, inputs e capturas: percurso delimitado e restauração.
+
+Runner SHA-256: `4f26fd9cc841b46ed114e24ea284f32fe786c692d9a72551ec80fe9ba21a3ffd`.
+
+O wrapper usa um destino `game-run` novo e recusa repetir no mesmo diretório. Uma próxima execução deve criar outro job e conservar os registros anteriores. ISOs, assets, RAM/VRAM, capturas e binários continuam locais em build; não fazem parte do pacote fonte do projeto.
+
+## Próxima ação
+
+Classificar a cena 3D e reduzir a primeira divergência de geometria/estado com as quatro capturas existentes. Comparar VU/VIF/GIF e efeitos nativos antes de ampliar o catálogo, pois não houve novo miss EE. Fazer o próximo experimento de controles dentro do orçamento, com baseline e inputs registrados; a fixture atual precisa de navegação adequada ao renderer. Depois da imagem e controle, concluir apresentação Vulkan, VU AOT e auditoria do pacote integrado.
+
+---
+
+<a id="ps2native-20261002-atual-anexo-b"></a>
+
+# Complemento B — implementação local posterior ao HEAD
+
+Diff integral dos seis arquivos rastreados de implementação e conteúdo integral dos dois arquivos novos. Nenhum desses deltas foi commitado durante a montagem deste README.
+
+## B.1 — Diff dos arquivos rastreados
+
+```diff
+diff --git a/lab/discover_ee_data_families.py b/lab/discover_ee_data_families.py
+index 4bbdb48..421c1c7 100644
+--- a/lab/discover_ee_data_families.py
++++ b/lab/discover_ee_data_families.py
+@@ -278,12 +278,16 @@ def discover(cases, *, minimum_variants=2, operand_policy='observed',
+             'counts': counts, 'families': sorted(families, key=lambda family: family['shape_sha256'])}
+
+
++class PublicationBudgetExceeded(ValueError):
++    pass
++
++
+ def encoded_json(value,limit,*,compact=False):
+     encoded=io.StringIO();total=1
+     encoder=json.JSONEncoder(separators=(',',':')) if compact else json.JSONEncoder(indent=2)
+     for chunk in encoder.iterencode(value):
+         total+=len(chunk)
+-        if total>limit:raise ValueError('candidate report exceeds its publication budget')
++        if total>limit:raise PublicationBudgetExceeded('candidate report exceeds its publication budget')
+         encoded.write(chunk)
+     encoded.write('\n')
+     return encoded.getvalue().encode('ascii')
+@@ -344,8 +348,30 @@ def compact_report(report):
+     return summary,shards
+
+
++def pack_compact_masks(report):
++    """Losslessly encode the two admitted masks as one bit per instruction.
++
++    Version three is used only when the ordinary v2 publication exceeds its
++    byte budget. Guard words and hash-identified provenance remain unchanged.
++    """
++    if report.get('schema_version')!=2:
++        raise ValueError('mask packing requires a compact v2 report')
++    families=[]
++    for family in report['families']:
++        masks=family.get('guard_masks');words=family.get('guard_words')
++        if not isinstance(masks,list) or not isinstance(words,list) or \
++                not 1<=len(words)<=128 or len(words)!=len(masks) or \
++                any(not integer(mask) or mask not in (0xffffffff,0xffff0000) for mask in masks):
++            raise ValueError('invalid mask packing dimensions')
++        bits=sum((mask==0xffff0000)<<index for index,mask in enumerate(masks))
++        families.append({**{key:value for key,value in family.items() if key!='guard_masks'},
++            'guard_mask_bits_le':bits.to_bytes((len(words)+7)//8,'little').hex()})
++    return {**report,'schema_version':3,'guard_mask_encoding':'typed-mask-bits-le-v1',
++            'families':families}
++
++
+ def read_report(path,*,observations=False,expected_sha256=None):
+-    """Read v1 or validate bounded v2 provenance before any conversion work."""
++    """Read v1 or validate bounded v2/v3 provenance before conversion work."""
+     path=ordinary_path(path);data=bounded_bytes(path,MAX_REPORT_BYTES)
+     if expected_sha256 is not None and (not isinstance(expected_sha256,str) or
+             not re.fullmatch('[0-9a-f]{64}',expected_sha256) or
+@@ -353,7 +379,7 @@ def read_report(path,*,observations=False,expected_sha256=None):
+         raise ValueError('candidate report identity differs')
+     report=json.loads(data)
+     if not isinstance(report,dict):raise ValueError('candidate report must be an object')
+-    if type(report.get('schema_version')) is not int or report['schema_version'] not in (1,2):
++    if type(report.get('schema_version')) is not int or report['schema_version'] not in (1,2,3):
+         raise ValueError('unsupported candidate schema')
+     if report['schema_version']==1:return report
+     families=report.get('families');provenance=report.get('provenance')
+@@ -361,6 +387,23 @@ def read_report(path,*,observations=False,expected_sha256=None):
+             report.get('closure_proved') is not False or not isinstance(families,list) or \
+             not 1<=len(families)<=MAX_CANDIDATES or not isinstance(provenance,dict):
+         raise ValueError('invalid compact candidate publication')
++    if report['schema_version']==3:
++        if report.get('guard_mask_encoding')!='typed-mask-bits-le-v1':
++            raise ValueError('unsupported guard mask encoding')
++        decoded=[]
++        for family in families:
++            words=family.get('guard_words') if isinstance(family,dict) else None
++            packed=family.get('guard_mask_bits_le') if isinstance(family,dict) else None
++            if not isinstance(words,list) or not 1<=len(words)<=128 or \
++                    'guard_masks' in family or not isinstance(packed,str) or \
++                    not re.fullmatch('[0-9a-f]{'+str(2*((len(words)+7)//8))+'}',packed):
++                raise ValueError('invalid packed mask dimensions')
++            bits=int.from_bytes(bytes.fromhex(packed),'little')
++            if bits>>len(words):raise ValueError('nonzero unused packed mask bits')
++            decoded.append({**{key:value for key,value in family.items() if key!='guard_mask_bits_le'},
++                'guard_masks':[0xffff0000 if bits&(1<<index) else 0xffffffff
++                               for index in range(len(words))]})
++        families=report['families']=decoded
+     origins=provenance.get('origins');shards=provenance.get('shards')
+     if not isinstance(origins,list) or not 1<=len(origins)<=MAX_CASES or \
+             not isinstance(shards,list) or not 1<=len(shards)<=MAX_PROVENANCE_SHARDS:
+@@ -446,7 +489,12 @@ def write_report(cases, output, **policy):
+     canonical=policy.get('region_policy')=='canonical-v1'
+     shards=[]
+     if canonical:report,shards=compact_report(report)
+-    encoded=encoded_json(report,MAX_REPORT_BYTES,compact=canonical)
++    try:
++        encoded=encoded_json(report,MAX_REPORT_BYTES,compact=canonical)
++    except PublicationBudgetExceeded:
++        if not canonical:raise
++        report=pack_compact_masks(report)
++        encoded=encoded_json(report,MAX_REPORT_BYTES,compact=True)
+     for row,data in shards:
+         path=ordinary_path(output.parent/row['name'])
+         if path.exists():
+diff --git a/lab/generate_ee_family_catalog.py b/lab/generate_ee_family_catalog.py
+index 1f93ecb..ca347ba 100644
+--- a/lab/generate_ee_family_catalog.py
++++ b/lab/generate_ee_family_catalog.py
+@@ -103,7 +103,7 @@ def generate(report_path, generator, output, *, cases=(), only_shapes=(), entry_
+     generator = ordinary_path(generator)
+     report_bytes = bounded_bytes(report_path, 64 * 1024 * 1024)
+     report = read_report(report_path,expected_sha256=hashlib.sha256(report_bytes).hexdigest())
+-    if not isinstance(report, dict) or report.get('schema_version') not in (1,2) or \
++    if not isinstance(report, dict) or report.get('schema_version') not in (1,2,3) or \
+             type(report['schema_version']) is not int or report.get('status') != 'CANDIDATES_LABORATORY' or \
+             report.get('strict_approval') is not False:
+         raise ValueError('expected a laboratory candidate report')
+diff --git a/lab/prepare_ee_family_batch.py b/lab/prepare_ee_family_batch.py
+index 77d2e82..69e1483 100644
+--- a/lab/prepare_ee_family_batch.py
++++ b/lab/prepare_ee_family_batch.py
+@@ -28,6 +28,27 @@ def case_identity(metadata,image):
+                   len(image).to_bytes(8,'little')+image)
+
+
++def discover_captures(root,*,limit=16):
++    """Collect owned miss directories without copying individual guest PCs."""
++    root=ordinary_path(root)
++    if not root.is_dir() or type(limit) is not int or not 1<=limit<=16:
++        raise ValueError('invalid capture directory or budget')
++    found=[];entries=0
++    for path in root.iterdir():
++        entries+=1
++        if entries>1024:raise ValueError('capture directory inventory budget exceeded')
++        if not path.name.startswith('ee-miss-'):continue
++        if not re.fullmatch('ee-miss-[0-9]{6}',path.name) or not ordinary_path(path).is_dir():
++            raise ValueError('invalid EE miss directory identity')
++        for name in ['request.json','snapshot.bin','ee-ram.bin']:
++            if not ordinary_path(path/name).is_file():
++                raise ValueError('incomplete EE miss capture')
++        found.append(path)
++        if len(found)>limit:raise ValueError('EE capture batch budget exceeded')
++    if not found:raise ValueError('capture root contains no EE misses')
++    return sorted(found)
++
++
+ def owned_batch_cases(directory):
+     directory=ordinary_path(directory)
+     report=json.loads(bounded_bytes(directory/'report.json',8*1024*1024))
+@@ -172,6 +193,8 @@ def main():
+     parser=argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--case',type=Path,action='append',default=[])
+     parser.add_argument('--capture',type=Path,action='append',default=[])
++    parser.add_argument('--capture-root',type=Path,
++                        help='Collect all owned EE misses from this runtime capture directory')
+     parser.add_argument('--catalog',type=Path)
+     parser.add_argument('--previous-batch',type=Path)
+     parser.add_argument('--previous-family-catalog',type=Path,
+@@ -185,6 +208,8 @@ def main():
+     parser.add_argument('--region-policy',choices=['canonical-v1','metadata-terminal'],default='canonical-v1')
+     args=parser.parse_args()
+     try:
++        if args.capture_root:
++            args.capture+=discover_captures(args.capture_root)
+         report=prepare_batch(args.output,args.family_generator,cases=args.case,captures=args.capture,
+             catalog=args.catalog,previous_batch=args.previous_batch,overlay_generator=args.overlay_generator,
+             workers=args.workers,families_per_source=args.families_per_source,source_buckets=args.source_buckets,
+diff --git a/lab/tests/test_ee_data_families.py b/lab/tests/test_ee_data_families.py
+index e3f6946..78ce88d 100644
+--- a/lab/tests/test_ee_data_families.py
++++ b/lab/tests/test_ee_data_families.py
+@@ -159,6 +159,48 @@ class EeDataFamilyTests(unittest.TestCase):
+         return self.tool.discover(cases,minimum_variants=1,operand_policy='typed',
+                                   root_only=True,region_policy='canonical-v1')
+
++    def test_packed_masks_roundtrip_exactly_with_observation_provenance(self):
++        case=self.case('packed',[0x24420001]*125+[0x03e00008,0])
++        report=self.canonical([case]);compact,shards=self.tool.compact_report(report)
++        packed=self.tool.pack_compact_masks(compact)
++        self.assertEqual(packed['schema_version'],3)
++        self.assertNotIn('guard_masks',packed['families'][0])
++        self.assertEqual(compact['schema_version'],2)
++        self.assertIn('guard_masks',compact['families'][0])
++        for row,data in shards:(self.root/row['name']).write_bytes(data)
++        path=self.root/'packed.json'
++        path.write_bytes(self.tool.encoded_json(packed,1024*1024,compact=True))
++        restored=self.tool.read_report(path,observations=True)
++        self.assertEqual(restored['families'],report['families'])
++        self.assertEqual(restored['provenance'],compact['provenance'])
++
++    def test_publication_packs_repeated_masks_before_raising_size_budget(self):
++        case=self.case('bounded',[0x24420001]*125+[0x03e00008,0])
++        compact,_=self.tool.compact_report(self.canonical([case]))
++        old_size=len(self.tool.encoded_json(compact,1024*1024,compact=True))
++        self.tool.MAX_REPORT_BYTES=old_size-1
++        path=self.root/'bounded.json'
++        result=self.tool.write_report([case],path,minimum_variants=1,
++            operand_policy='typed',root_only=True,region_policy='canonical-v1')
++        self.assertEqual(result['schema_version'],3)
++        self.assertLess(path.stat().st_size,old_size)
++        restored=self.tool.read_report(path,observations=True)
++        self.assertEqual(restored['families'],self.canonical([case])['families'])
++
++    def test_packed_masks_reject_unused_bits_invalid_hex_and_mixed_encodings(self):
++        case=self.case('invalid-packed',[0x24420001,0x03e00008,0])
++        compact,shards=self.tool.compact_report(self.canonical([case]))
++        packed=self.tool.pack_compact_masks(compact)
++        for row,data in shards:(self.root/row['name']).write_bytes(data)
++        path=self.root/'invalid.json'
++        for change in [{'guard_mask_bits_le':'81'},{'guard_mask_bits_le':'0000'},
++                       {'guard_mask_bits_le':'zz'},{'guard_mask_bits_le':True},
++                       {'guard_masks':[0xffff0000,0xffffffff,0xffffffff]}]:
++            mutated=json.loads(json.dumps(packed));mutated['families'][0].update(change)
++            path.write_text(json.dumps(mutated))
++            with self.subTest(change=change),self.assertRaisesRegex(ValueError,'mask'):
++                self.tool.read_report(path)
++
+     def test_canonical_regions_cross_metadata_linear_boundaries(self):
+         case=self.case('split',[0x3c020001,0x24420002,0xac820000,
+                                 0x24420003,0x03e00008,0])
+diff --git a/lab/tests/test_prepare_ee_family_batch.py b/lab/tests/test_prepare_ee_family_batch.py
+index 32cb633..ea021d5 100644
+--- a/lab/tests/test_prepare_ee_family_batch.py
++++ b/lab/tests/test_prepare_ee_family_batch.py
+@@ -75,6 +75,27 @@ class FamilyBatchTests(unittest.TestCase):
+         self.assertTrue(result['manifest_published'])
+         self.assertFalse(result['closure_proved'])
+
++    def test_capture_root_collects_completed_misses_in_order_without_addresses(self):
++        root=self.root/'misses';root.mkdir()
++        for name in ['ee-miss-000002','ee-miss-000001']:
++            capture=root/name;capture.mkdir()
++            for file in ['request.json','snapshot.bin','ee-ram.bin']:
++                (capture/file).write_bytes(b'owned input')
++        self.assertEqual([p.name for p in batch.discover_captures(root)],
++                         ['ee-miss-000001','ee-miss-000002'])
++        self.assertFalse((self.root/'output').exists())
++
++    def test_capture_root_rejects_empty_incomplete_linked_and_over_budget_inputs(self):
++        root=self.root/'misses';root.mkdir()
++        with self.assertRaises(ValueError):batch.discover_captures(root)
++        capture=root/'ee-miss-000001';capture.mkdir()
++        with self.assertRaises(ValueError):batch.discover_captures(root)
++        for name in ['request.json','snapshot.bin','ee-ram.bin']:(capture/name).write_bytes(b'x')
++        link=root/'ee-miss-000002';link.symlink_to(capture,target_is_directory=True)
++        with self.assertRaises(ValueError):batch.discover_captures(root)
++        link.unlink()
++        with self.assertRaises(ValueError):batch.discover_captures(root,limit=0)
++
+     def test_failed_frontend_leaves_receipt_and_no_catalog_manifest(self):
+         case=self.case('a');self.family.write_text('#!/usr/bin/env python3\nraise SystemExit(2)\n')
+         with self.assertRaises(ValueError):self.run_batch(cases=[case])
+diff --git a/tools/ps2native/cli.py b/tools/ps2native/cli.py
+index c48c1ac..05c3285 100644
+--- a/tools/ps2native/cli.py
++++ b/tools/ps2native/cli.py
+@@ -7,6 +7,7 @@ from pathlib import Path
+
+ from . import __version__
+ from .pipeline import PipelineError, inspect_image, run_build, verify_package
++from .native_recovery import run_recovery
+
+
+ def create_parser() -> argparse.ArgumentParser:
+@@ -38,6 +39,18 @@ def create_parser() -> argparse.ArgumentParser:
+     verify_parser = subparsers.add_parser("verify", help="verify a built package against its file hashes")
+     verify_parser.add_argument("--package", required=True, type=Path, help="package directory to verify")
+
++    recovery = subparsers.add_parser("recover-ee", help="recover captured EE code and build an incremental catalog")
++    recovery.add_argument("--capture-root", type=Path, required=True)
++    recovery.add_argument("--previous-batch", type=Path, required=True)
++    recovery.add_argument("--previous-family-catalog", type=Path)
++    recovery.add_argument("--family-generator")
++    recovery.add_argument("--overlay-generator")
++    recovery.add_argument("--out", type=Path, required=True)
++    recovery.add_argument("--native-build", type=Path, help="existing CMake build for the native family catalog")
++    recovery.add_argument("--cmake")
++    recovery.add_argument("--workers", type=int, default=4)
++    recovery.add_argument("--timeout", type=int, default=3600)
++
+     return parser
+
+
+@@ -48,6 +61,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+ def main(argv: list[str] | None = None) -> int:
+     args = parse_args(argv)
+     try:
++        if args.command == "recover-ee":
++            result = run_recovery(args)
++            print(f"EE catalog: {result['status']}")
++            print(f"Families:   {result['family_count']}")
++            print(f"Manifest:   {result['family_manifest']}")
++            return 0
+         if args.command == "inspect":
+             raw, report = inspect_image(args.iso, args.inspector)
+             if args.json_output:
+```
+
+## B.2 — `tools/ps2native/native_recovery.py` completo
+
+**SHA-256:** `a04ae3828b965d2e46c6f154257ac20db0dc15e3b8211bba519582146275c561`. **Bytes:** 5887.
+
+```python
+"""Recover captured EE code and build its incremental native family catalog."""
+from pathlib import Path
+import json
+import sys
+import time
+
+from .pipeline import (PipelineError, _ensure_output_outside_sources, _find_tool,
+                       _run, _write_json, repo_root, sha256_file)
+
+
+def ordinary(path):
+    path=Path(path).expanduser().absolute()
+    if any(parent.is_symlink() for parent in (path,*path.parents)):
+        raise PipelineError('recovery paths cannot contain symlinks')
+    return path.resolve()
+
+
+def cmake_source(build):
+    cache=ordinary(build/'CMakeCache.txt')
+    if not cache.is_file() or cache.stat().st_size>2*1024*1024:
+        raise PipelineError('native build requires an existing bounded CMake cache')
+    values=[line.removeprefix('CMAKE_HOME_DIRECTORY:INTERNAL=')
+            for line in cache.read_text().splitlines()
+            if line.startswith('CMAKE_HOME_DIRECTORY:INTERNAL=')]
+    if len(values)!=1:
+        raise PipelineError('native build cache has no unique source directory')
+    source=ordinary(values[0])
+    if not (source/'CMakeLists.txt').is_file():
+        raise PipelineError('native build source project is unavailable')
+    return source
+
+
+def run_recovery(args):
+    root=repo_root();out=ordinary(args.out);captures=ordinary(args.capture_root)
+    previous=ordinary(args.previous_batch)
+    if type(args.workers) is not int or not 1<=args.workers<=16 or \
+            type(args.timeout) is not int or not 1<=args.timeout<=86400:
+        raise ValueError('invalid recovery worker/timeout budget')
+    if out.exists() or not captures.is_dir() or not previous.is_dir():
+        raise PipelineError('recovery requires existing inputs and a fresh output directory')
+    _ensure_output_outside_sources(out,root)
+    if any(out.is_relative_to(p) or p.is_relative_to(out) for p in (captures,previous)):
+        raise PipelineError('recovery output overlaps an input directory')
+    build=ordinary(args.native_build) if args.native_build else None
+    source=cmake_source(build) if build else None
+    family=_find_tool(args.family_generator,'PS2NATIVE_FAMILY_GENERATOR',
+                      ['ps2_native_data_family'],root)
+    overlay=_find_tool(args.overlay_generator,'PS2NATIVE_OVERLAY_GENERATOR',
+                       ['ps2_native_overlay'],root)
+    cmake=_find_tool(args.cmake,'PS2NATIVE_CMAKE',['cmake'],root) if build else None
+    compiled_catalog=ordinary(args.previous_family_catalog) if args.previous_family_catalog else None
+    if compiled_catalog and (not compiled_catalog.is_file() or out.is_relative_to(compiled_catalog.parent)):
+        raise PipelineError('previous family catalog is unavailable or overlaps output')
+    out.mkdir(parents=True)
+    receipt={'schema_version':1,'status':'preparing','strict_approval':False,
+             'closure_proved':False,'gameplay_approved':False,'capture_root':str(captures),
+             'previous_batch':str(previous),'steps':[],
+             'scope':'offline EE recovery and incremental catalog build; no gameplay or full native approval'}
+
+    def execute(name,command):
+        step={'name':name,'command':[str(x) for x in command],'status':'running'}
+        receipt['steps'].append(step);_write_json(out/'recovery.json',receipt)
+        started=time.monotonic()
+        try:
+            _run(step['command'],out/(name+'.log'),root,args.timeout)
+            step['status']='complete'
+        except Exception:
+            step['status']='failed'
+            raise
+        finally:
+            step['seconds']=time.monotonic()-started
+            _write_json(out/'recovery.json',receipt)
+
+    try:
+        command=[sys.executable,root/'lab/prepare_ee_family_batch.py',
+                 '--capture-root',captures,'--previous-batch',previous,
+                 '--family-generator',family,'--overlay-generator',overlay,
+                 '--output',out/'batch','--workers',str(args.workers)]
+        if compiled_catalog:
+            command+=['--previous-family-catalog',compiled_catalog]
+        execute('prepare',command)
+        report_path=out/'batch/report.json'
+        if not report_path.is_file() or report_path.stat().st_size>8*1024*1024:
+            raise PipelineError('EE recovery has no bounded batch receipt')
+        report=json.loads(report_path.read_text());manifest=out/'batch/catalog/catalog.json'
+        if not isinstance(report,dict) or report.get('status')!='PUBLISHED_LABORATORY' or \
+                report.get('manifest_published') is not True or report.get('strict_approval') is not False or \
+                report.get('closure_proved') is not False or not manifest.is_file() or \
+                report.get('family_catalog_sha256')!=sha256_file(manifest) or \
+                any(type(report.get(name)) is not int or report[name]<minimum
+                    for name,minimum in [('owned_cases',1),('family_count',1),('reused_body_sources',0)]):
+            raise PipelineError('EE recovery did not publish an identified laboratory catalog')
+        receipt.update(status='generated',family_manifest=str(manifest),
+                       family_manifest_sha256=sha256_file(manifest),
+                       owned_cases=report['owned_cases'],family_count=report['family_count'],
+                       reused_body_sources=report['reused_body_sources'])
+        if build:
+            execute('configure',[cmake,'-S',source,'-B',build,
+                                '-DNEXO_EE_FAMILY_MANIFEST='+str(manifest)])
+            execute('build',[cmake,'--build',build,'--target','ps2_ee_compiled_families',
+                            '--parallel',str(args.workers)])
+            receipt['status']='built';receipt['native_build']=str(build)
+        return receipt
+    except Exception as error:
+        receipt['status']='failed';receipt['error_type']=type(error).__name__
+        raise
+    finally:
+        _write_json(out/'recovery.json',receipt)
+```
+
+## B.3 — `tools/ps2native/tests/test_native_recovery.py` completo
+
+**SHA-256:** `13fcc257553a27799ea32d2972fe33ca5cd32a4d187a1cd08fc3eb64c9463f10`. **Bytes:** 7567.
+
+```python
+import json
+import hashlib
+import struct
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest import mock
+
+from tools.ps2native.cli import parse_args
+from tools.ps2native import native_recovery
+from tools.ps2native.pipeline import PipelineError
+
+
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
+        self.captures=self.root/'misses';self.captures.mkdir()
+        self.tool=self.root/'generator';self.tool.write_bytes(b'identified executable')
+        self.previous=self.root/'previous';self.previous.mkdir()
+        self.project=self.root/'project';self.project.mkdir()
+        (self.project/'CMakeLists.txt').write_text('project(fixture)')
+        self.build=self.root/'native-build';self.build.mkdir()
+        (self.build/'CMakeCache.txt').write_text('CMAKE_HOME_DIRECTORY:INTERNAL='+str(self.project)+'\n')
+        self.args=SimpleNamespace(capture_root=self.captures,previous_batch=self.previous,
+            previous_family_catalog=None,family_generator=str(self.tool),
+            overlay_generator=str(self.tool),out=self.root/'recovered',workers=4,
+            timeout=60,native_build=self.build,cmake=str(self.tool))
+
+    def tearDown(self):self.temp.cleanup()
+
+    def fake_run(self,command,log_path,cwd,timeout):
+        log_path.write_text('bounded fixture output')
+        if '--capture-root' in command:
+            batch=self.args.out/'batch';(batch/'catalog').mkdir(parents=True)
+            (batch/'catalog/catalog.json').write_text('{}')
+            (batch/'report.json').write_text(json.dumps({'status':'PUBLISHED_LABORATORY',
+                'manifest_published':True,'strict_approval':False,'closure_proved':False,
+                'owned_cases':2,'family_count':1,'reused_body_sources':1,
+                'family_catalog_sha256':hashlib.sha256(b'{}').hexdigest()}))
+        return ''
+
+    def test_cli_has_recovery_without_any_game_name_or_pc_parameter(self):
+        args=parse_args(['recover-ee','--capture-root','misses','--previous-batch','batch',
+                         '--family-generator','family','--overlay-generator','overlay','--out','recovered'])
+        self.assertEqual(args.command,'recover-ee')
+        self.assertEqual(args.capture_root,Path('misses'))
+        self.assertIsNone(args.native_build)
+
+    def test_recovery_collects_batch_then_configures_and_builds_the_delta(self):
+        with mock.patch.object(native_recovery,'_run',side_effect=self.fake_run) as run:
+            result=native_recovery.run_recovery(self.args)
+        commands=[call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(commands),3)
+        self.assertIn('--capture-root',commands[0])
+        self.assertIn('--previous-batch',commands[0])
+        self.assertIn('-DNEXO_EE_FAMILY_MANIFEST='+str(self.args.out/'batch/catalog/catalog.json'),commands[1])
+        self.assertEqual(commands[2][-4:],['--target','ps2_ee_compiled_families','--parallel','4'])
+        self.assertEqual(result['status'],'built')
+        self.assertFalse(result['strict_approval'])
+        self.assertFalse(result['closure_proved'])
+        receipt=json.loads((self.args.out/'recovery.json').read_text())
+        self.assertEqual(receipt['status'],'built')
+        self.assertEqual(len(receipt['steps']),3)
+
+    def test_failed_batch_never_starts_a_build_and_preserves_failed_receipt(self):
+        with mock.patch.object(native_recovery,'_run',side_effect=PipelineError('frontend failed')) as run:
+            with self.assertRaises(PipelineError):native_recovery.run_recovery(self.args)
+        self.assertEqual(run.call_count,1)
+        receipt=json.loads((self.args.out/'recovery.json').read_text())
+        self.assertEqual(receipt['status'],'failed')
+        self.assertFalse(receipt['strict_approval'])
+
+    def test_invalid_budget_existing_destination_or_missing_cache_fail_before_tools(self):
+        for updates in [{'workers':True},{'workers':17},{'timeout':0},
+                        {'native_build':self.root/'missing'}]:
+            args=SimpleNamespace(**{**vars(self.args),**updates})
+            with self.subTest(updates=updates),mock.patch.object(native_recovery,'_run') as run:
+                with self.assertRaises((ValueError,PipelineError)):native_recovery.run_recovery(args)
+                run.assert_not_called()
+        self.args.out.mkdir()
+        with mock.patch.object(native_recovery,'_run') as run:
+            with self.assertRaises((ValueError,PipelineError)):native_recovery.run_recovery(self.args)
+            run.assert_not_called()
+
+    def test_cli_recovers_a_real_synthetic_capture_with_existing_offline_tools(self):
+        root=Path(__file__).resolve().parents[3]
+        self.tool.write_text('#!/usr/bin/env python3\nimport pathlib,sys\n'
+            'pathlib.Path(sys.argv[3]).write_text("void ps2native_data_family(uint8_t*,R5900Context*,PS2Runtime*,uint32_t){}\\n")\n')
+        self.tool.chmod(0o700)
+        overlay=self.root/'overlay'
+        overlay.write_text('#!/usr/bin/env python3\nimport pathlib,sys\n'
+            'base,entry=int(sys.argv[2]),int(sys.argv[3])\n'
+            'pathlib.Path(sys.argv[4]).write_text(f"{{0x{entry:x}u,ps2native_block_{entry:x},0x{base:x}u,0xcu,snapshot+0x0u}},\\n")\n')
+        overlay.chmod(0o700)
+        case=self.root/'case';case.mkdir();image=struct.pack('<3I',0x3c020001,0x03e00008,0)
+        (case/'snapshot.bin').write_bytes(image)
+        (case/'bank.json').write_text(json.dumps({'schema_version':1,'base':0x10000,
+            'entry':0x10000,'image_bytes':12,'image_sha256':hashlib.sha256(image).hexdigest(),
+            'bindings':[{'address':0x10000,'source_begin':0x10000,'source_bytes':12}]}))
+        self.previous.rmdir()
+        previous=subprocess.run([sys.executable,str(root/'lab/prepare_ee_family_batch.py'),
+            '--case',str(case),'--family-generator',str(self.tool),'--output',str(self.previous)],
+            capture_output=True,text=True,cwd=root)
+        self.assertEqual(previous.returncode,0,previous.stderr)
+        capture=self.captures/'ee-miss-000001';capture.mkdir();ram=bytearray(32*1024*1024)
+        ram[0x10000:0x1000c]=image
+        (capture/'ee-ram.bin').write_bytes(ram);(capture/'snapshot.bin').write_bytes(image)
+        (capture/'ee-context.bin').write_bytes(b'')
+        (capture/'request.json').write_text(json.dumps({'schema_version':1,'processor':'EE',
+            'window_base':0x10000,'window_bytes':12,'target_pc':0x10000,'ee_model_profile':1,
+            'runtime_admission':'missing','complete':True,'ram_captured':True,
+            'context_captured':False,'module_owns_address':False,'complete_machine_checkpoint':False,
+            'quiescence_qualified':False,'overlay_lookup_status':'MissingEntry'}))
+        result=subprocess.run([sys.executable,'-m','tools.ps2native','recover-ee',
+            '--capture-root',str(self.captures),'--previous-batch',str(self.previous),
+            '--family-generator',str(self.tool),'--overlay-generator',str(overlay),
+            '--out',str(self.args.out)],capture_output=True,text=True,cwd=root)
+        self.assertEqual(result.returncode,0,result.stderr)
+        report=json.loads((self.args.out/'recovery.json').read_text())
+        self.assertEqual(report['status'],'generated')
+        self.assertEqual(report['family_count'],1)
+        self.assertEqual(report['reused_body_sources'],1)
+        self.assertFalse(report['gameplay_approved'])
+
+
+if __name__=='__main__':unittest.main()
+```
+
+---
+
+<a id="ps2native-20261002-atual-anexo-c"></a>
+
+# Complemento C — recibos completos selecionados
+
+Os caminhos são locais. Cada bloco conserva os bytes textuais do recibo identificado; os resultados mantêm o perfil e escopo originais. Não são uma nova rodada de testes.
+
+## C.01 — `build/lab/gs-stream-corrected-1790945198323964871/source-manifest.json`
+
+**Bytes:** 869. **SHA-256:** `f28787946aa62b6bd28660abb670907ff87607f3cb9dc79d8090a0f0a42d86eb`.
+
+```json
+[
+  {
+    "path": "lab/tests/vif_gif_stream_tests.cpp",
+    "sha256": "42f7be2381005ef5089300aff111e202e9f365fb705b31a490a5686ce8daf2ec"
+  },
+  {
+    "path": "ps2xRuntime/src/lib/ps2_memory.cpp",
+    "sha256": "3e824e403a7d94a9a3f8ea5f64f05d98ff45570d13295c6c06de015060dd617e"
+  },
+  {
+    "path": "ps2xRuntime/src/lib/ps2_runtime.cpp",
+    "sha256": "c79be0c3f2d5a984058642204983ecaa42ed44532127ecfe7df0e9372a44745a"
+  },
+  {
+    "path": "ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp",
+    "sha256": "3ad2b5d3cf0e5d32c394ccb6319c29aa3acf30ce9e6a208cf85ff56c55313f3f"
+  },
+  {
+    "path": "ps2xRuntime/src/lib/gs/gs_parallel_device.cpp",
+    "sha256": "38036b327a22bd82f390412eb1d3fad1c9bd5c6e31b714201e9cb7e48927c0cd"
+  },
+  {
+    "path": "lab/tests/gs_parallel_device_tests.cpp",
+    "sha256": "3e2ff1df6b595571164bf0985a75ef9f830f8412d621e5963b1c29f9612466b5"
+  }
+]
+```
+
+## C.02 — `build/lab/gs-stream-corrected-1790945198323964871/cpp-tests.json`
+
+**Bytes:** 106. **SHA-256:** `c6821e6a59dc262f53e548af1c1edc92fc73d5b02556321c782216ff245cdddc`.
+
+```json
+{
+  "command": [
+    "build/ps2xTest/ps2x_tests"
+  ],
+  "seconds": 4.674583710000661,
+  "returncode": 0
+}
+```
+
+## C.03 — `build/lab/gs-stream-corrected-1790945198323964871/device-snapshots-after-reset.json`
+
+**Bytes:** 118. **SHA-256:** `957b07bdc27c53a97a34d360dd0c34f767b6ac7170c373509d03e50481ef5bf9`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_device_snapshot_tests"
+  ],
+  "seconds": 2.7428858610001043,
+  "returncode": 0
+}
+```
+
+## C.04 — `build/lab/gs-stream-corrected-1790945198323964871/vif-captures-after-reset.json`
+
+**Bytes:** 114. **SHA-256:** `8a15b3eb16d5a2dc0201e6d4f44f638e35b873c3139b15a73dead6c3df4a9df2`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_vif_capture_tests"
+  ],
+  "seconds": 2.7728494209995915,
+  "returncode": 0
+}
+```
+
+## C.05 — `build/lab/gs-stream-corrected-1790945198323964871/vif-legacy-negative.json`
+
+**Bytes:** 171. **SHA-256:** `f5827db50080ccd72ea5248df1995062103da9a7312d1bf05dfcbf8819ff6116`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_vif_gif_stream_tests",
+    "--legacy-negative"
+  ],
+  "seconds": 0.03154298400022526,
+  "returncode": 1,
+  "expected_returncode": 1
+}
+```
+
+## C.06 — `build/lab/gs-stream-corrected-1790945198323964871/vif-raw-positive.json`
+
+**Bytes:** 146. **SHA-256:** `0cbceee698e7ee59b734705700492f8a02bf8ea626e0db0ff479f70ff567b487`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_vif_gif_stream_tests"
+  ],
+  "seconds": 0.03174556100020709,
+  "returncode": 0,
+  "expected_returncode": 0
+}
+```
+
+## C.07 — `build/lab/gs-stream-corrected-1790945198323964871/vif-reset-red.json`
+
+**Bytes:** 119. **SHA-256:** `a2df52e546c48b8abced1720d53bd524a7dd1435359a61f3457ba88def151075`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_vif_gif_stream_tests"
+  ],
+  "seconds": 0.030385662000298908,
+  "returncode": 1
+}
+```
+
+## C.08 — `build/lab/gs-stream-corrected-1790945198323964871/vif-reset-green.json`
+
+**Bytes:** 119. **SHA-256:** `f8bfda4349b35a41d24cff1a0162e8210e91958dca6370c7d086351029cd5988`.
+
+```json
+{
+  "command": [
+    "build/lab/nexo_vif_gif_stream_tests"
+  ],
+  "seconds": 0.030467798999779916,
+  "returncode": 0
+}
+```
+
+## C.09 — `build/lab/gs-stream-corrected-1790945198323964871/gpu-device.json`
+
+**Bytes:** 156. **SHA-256:** `e29de443345587799b1c633ab4edfc188c35ec1553420cf4add19ba161823970`.
+
+```json
+{
+  "command": [
+    "build/gs-parallel-probe/ps2_gs_parallel_tests"
+  ],
+  "seconds": 0.12069966399940313,
+  "returncode": 0,
+  "expected_returncode": 0
+}
+```
+
+## C.10 — `build/lab/gs-stream-corrected-1790945198323964871/gpu-frontend.json`
+
+**Bytes:** 165. **SHA-256:** `0a830ef8a41242ce4c42abebccb50c8eac577e5b52dd5c626fc043cc98745f11`.
+
+```json
+{
+  "command": [
+    "build/gs-parallel-probe/ps2_gs_parallel_frontend_tests"
+  ],
+  "seconds": 0.12017735600056767,
+  "returncode": 0,
+  "expected_returncode": 0
+}
+```
+
+## C.11 — `build/lab/gs-stream-corrected-1790945198323964871/relink-reset.json`
+
+**Bytes:** 4988. **SHA-256:** `ed8c4a25b962e5e734c9df16ce3728fa7c4b6c844396d591bbdbba1e23af4220`.
+
+```json
+{
+  "command": [
+    "/usr/bin/c++",
+    "-fno-lto",
+    "-O1",
+    "-DNDEBUG",
+    "-Wl,--export-dynamic",
+    "@CMakeFiles/ps2EntryRunner.dir/objects1.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects2.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects3.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects4.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects5.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects6.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects7.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects8.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects9.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects10.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects11.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects12.rsp",
+    "-o",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-stream-corrected-1790945198323964871/native-gpu-stream-reset-runner",
+    "-Wl,--start-group",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-stream-corrected-1790945198323964871/libps2_runtime_gpu_stream_reset.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRuntime/libps2_ee_compiled_catalog.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xIOP/libps2_iop_compiled_catalog.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xIOP/libps2_iop.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native/libps2_ee_compiled_families.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel_backend.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel_backend.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/gs/libparallel-gs.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/vulkan/libgranite-vulkan.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/third_party/libgranite-volk.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/util/libgranite-util.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/math/libgranite-math.a",
+    "-Wl,--end-group",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/_deps/raylib-build/raylib/libraylib.a",
+    "-lm",
+    "-lpthread",
+    "/usr/lib/libOpenGL.so",
+    "/usr/lib/libGLX.so",
+    "/usr/lib/libGLU.so",
+    "/usr/lib/librt.a",
+    "-lm",
+    "/usr/lib/libavformat.so",
+    "/usr/lib/libavcodec.so",
+    "/usr/lib/libswresample.so",
+    "/usr/lib/libswscale.so",
+    "/usr/lib/libavutil.so",
+    "-ldl"
+  ],
+  "cwd": "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2native/monster-house-br-usa-t2.0-www.romsportugues.com-cb596f3249f4/run-d99723de6164/desktop-project/build/ps2x-source/ps2xRuntime",
+  "seconds": 11.358622433999699,
+  "returncode": 0,
+  "original_game_compilations": 0,
+  "replaced_objects": [
+    {
+      "path": "build/gs-parallel-probe/CMakeFiles/ps2_gs_frontend_probe.dir/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/src/lib/gs/gs_frontend.cpp.o",
+      "sha256": "1fa9b12f92dc101aea46b7c880117ef8d411f7459417fb2664e2580bae93c582"
+    },
+    {
+      "path": "build/gs-parallel-probe/CMakeFiles/ps2_gs_frontend_probe.dir/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp.o",
+      "sha256": "dd650f46219577c49062f4b107b1631403f7c090ac6e75c301cae5e1d9bd4e77"
+    },
+    {
+      "path": "build/gs-parallel-probe/CMakeFiles/ps2_gs_frontend_probe.dir/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp.o",
+      "sha256": "beaa8c8b9776c486b8a6a0db8b9fa5c2e928023a36a45b16cb2c3dd687be7e0a"
+    },
+    {
+      "path": "build/gs-parallel-probe/CMakeFiles/ps2_gs_frontend_probe.dir/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp.o",
+      "sha256": "243a9501a4b62216d323d341a3108f0e7fe00c97fd4ebbcce13c66bcb2879b1f"
+    },
+    {
+      "path": "build/ps2xRuntime/CMakeFiles/ps2_runtime.dir/src/lib/ps2_runtime.cpp.o",
+      "sha256": "290454359334ccec7fc8bbbf491434f7ca83321a8f40b2f2e098c4918889fcb7"
+    },
+    {
+      "path": "build/ps2xRuntime/CMakeFiles/ps2_runtime.dir/src/lib/ps2_vif1_interpreter.cpp.o",
+      "sha256": "718359bdf581e5a59f23612dab9f8e01bdf1d6f17859fa9a8e1fe9663158eada"
+    },
+    {
+      "path": "build/ps2xRuntime/CMakeFiles/ps2_runtime.dir/src/lib/ps2_memory.cpp.o",
+      "sha256": "dcf6ab92d19e55c632685e97c279c77cf9b7569d807c17daf76d8e164ba82abe"
+    }
+  ],
+  "runtime_sha256": "856a268b142945e84d606b7445aabdd53c07e57b209f04ef581b9178df5f42e9",
+  "vif_guest_reset_preserves_host_binding": true,
+  "strict_approval": false,
+  "runner_sha256": "4f26fd9cc841b46ed114e24ea284f32fe786c692d9a72551ec80fe9ba21a3ffd"
+}
+```
+
+## C.12 — `build/lab/gs-stream-corrected-1790945198323964871/game-run/headless-test.json`
+
+**Bytes:** 317. **SHA-256:** `84700dd80ca49ccd3bdb5db5b470ffce8b3c1d895732e4bc6a1dada9cc588c0a`.
+
+```json
+{
+  "helper_returncode": 0,
+  "seconds": 361.4590645239996,
+  "frames": 157,
+  "final_phase": "logos",
+  "bounded_route_timeout": true,
+  "scope": "Owned Monster House GPU raster diagnosis; OpenGL readback presentation, VU diagnostic, no gameplay approval.",
+  "screenshot_attempts": 157,
+  "screenshot_files": 156
+}
+```
+
+## C.13 — `build/lab/gs-stream-corrected-1790945198323964871/game-run/cleanup.json`
+
+**Bytes:** 177. **SHA-256:** `af4a1f746e985f755ead438c40c861c823dffdd52daf639f038280764888a54e`.
+
+```json
+{
+  "scope": "owned menu regression; no campaign qualification",
+  "driver_returncode": 0,
+  "card_files_restored": 5,
+  "card_hashes_restored": true,
+  "cards_changed": true
+}
+```
+
+## C.14 — `build/lab/ee-load-native-recovery-1790948588452292506/inputs.json`
+
+**Bytes:** 469. **SHA-256:** `ee0b5006e5f42e4afe4936404fb8b95a703047d6b78b45206e6d0c3ad3959d22`.
+
+```json
+{
+  "previous_batch": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch",
+  "previous_family_catalog": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/reuse-catalog/catalog.json",
+  "capture": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/game-run/misses/ee-miss-000001",
+  "strict_approval": false
+}
+```
+
+## C.15 — `build/lab/ee-load-native-recovery-1790948588452292506/discovery-error.json`
+
+**Bytes:** 115. **SHA-256:** `0e96fdf04c34ef9bc052a78d935254558166cf299174dd9c9dd67274f761c7fe`.
+
+```json
+{"type": "ValueError", "detail": "candidate report exceeds its publication budget", "seconds": 13.915257684999233}
+```
+
+## C.16 — `build/lab/ee-load-native-recovery-1790948588452292506/prepare-packed.json`
+
+**Bytes:** 1053. **SHA-256:** `cdb412aec7316c42b2f3b9e53cb60187ba513b4ee80a11a6ed91a39aaf28c94b`.
+
+```json
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/lab/prepare_ee_family_batch.py",
+    "--previous-batch",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch",
+    "--previous-family-catalog",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/reuse-catalog/catalog.json",
+    "--case",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch/captured/0",
+    "--family-generator",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_data_family",
+    "--overlay-generator",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_overlay",
+    "--output",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed",
+    "--workers",
+    "8"
+  ],
+  "returncode": 0,
+  "seconds": 62.67995144499946,
+  "strict_approval": false
+}
+```
+
+## C.17 — `build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/report.json`
+
+**Bytes:** 20767. **SHA-256:** `359f9ef35bfcafe0547ba5e9d26a6d75c507026b8702914abd8ff68460d38504`.
+
+```json
+{
+  "schema_version": 1,
+  "status": "PUBLISHED_LABORATORY",
+  "strict_approval": false,
+  "closure_proved": false,
+  "complete_machine_checkpoint": false,
+  "scope": "offline finite captured byte structures; producer/fetch/alias/timing/gameplay unqualified",
+  "manifest_published": true,
+  "prepared_captures": 0,
+  "owned_cases": 40,
+  "duplicate_cases": 0,
+  "case_records": [
+    {
+      "key": "7cb8f68de4d4ae688bc736a5481df20863be80d2ef53859b421a78adcc4d286e",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch/captured/0",
+      "metadata_sha256": "a5359f8bcdadd77c1db4318f3a05b5e6574f706b11994e6be4677ec33762dcd5",
+      "image_sha256": "c98fcd453bf149291868648b0590b6fb4e0513cc3d121ec4e6ba52d1adbf46f1"
+    },
+    {
+      "key": "986f290f752dc53c65a46fe4c2beb2b7713ae7ca21ca9e10be7d99f5322949f8",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/986f290f752dc53c65a46fe4c2beb2b7713ae7ca21ca9e10be7d99f5322949f8",
+      "metadata_sha256": "d626684d9e3b41e2052a96aae4fa845677c3a713c7f5ecbe691f8bb05dea61e6",
+      "image_sha256": "03c4a33433b3bdcd8fd19ad05574d9e794020627b5c2d49152af9d912628e2a5"
+    },
+    {
+      "key": "d08d08308d65b5c3e2c3e655d2dfc6d62c7b6f791fa0ee315e4a54174c8178f7",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/d08d08308d65b5c3e2c3e655d2dfc6d62c7b6f791fa0ee315e4a54174c8178f7",
+      "metadata_sha256": "2cebedb27a43bda8a8275010328f0aa3197e93a36de9b2462cca6deba1996511",
+      "image_sha256": "07a2327f8f95a4ea150037127ade41d78c3d2ac4271543c1356767bf42912806"
+    },
+    {
+      "key": "b7062435f923a5f8b8710d098f983e3527f2bdb7de7d897f1afd2317ba3742e4",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/b7062435f923a5f8b8710d098f983e3527f2bdb7de7d897f1afd2317ba3742e4",
+      "metadata_sha256": "2f4da70c1eee3585b0bbb7a62708dfdcab35be400db9e288cf7a098e9cb0a0e2",
+      "image_sha256": "b027b899da86f61039501e6e467a675bebe251e483e475fbd8254b659e291bc4"
+    },
+    {
+      "key": "5359799d0ca5130549ae52021498b1dfca49b9b500237a19cd9ac1fdb9cea265",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/5359799d0ca5130549ae52021498b1dfca49b9b500237a19cd9ac1fdb9cea265",
+      "metadata_sha256": "e9ed5793cbc3f52fa56284b26d24cbbb903e253ae2144a962d916d60fa489540",
+      "image_sha256": "ff7fa4c6739178f8363f72168d96459ab98e252951fecbd8f44211ccbaf757a0"
+    },
+    {
+      "key": "1da217032c51abddf98bcf2f94ae495e79c199bf3d7d48a8ada201c44a2439d0",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/1da217032c51abddf98bcf2f94ae495e79c199bf3d7d48a8ada201c44a2439d0",
+      "metadata_sha256": "38ea9eb157731cc54f7397ac469692dbdc963ef48799c2eb3b02e42a40229cce",
+      "image_sha256": "9c908b9a79a664d8d0a84b92a13d8e656960ea4bf5c96cad04a9fa197f69f753"
+    },
+    {
+      "key": "d0c662af754e466c593bafa10c3e3fc32c6a4dc832d4c4b8bd323cfbdcb78462",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/d0c662af754e466c593bafa10c3e3fc32c6a4dc832d4c4b8bd323cfbdcb78462",
+      "metadata_sha256": "b279410030f67fae92b4e81c4f2de7aaca4296ab2c99e3cc09f58877363c246d",
+      "image_sha256": "97b6337fb3296179a5a75f4f704eba3d9584a5d2e1a0d7c91d0675bf884b0ff5"
+    },
+    {
+      "key": "ecda0be264b55d35b56eafb6fee989146d7fea7e278fc6769f7a58311b55ca84",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/ecda0be264b55d35b56eafb6fee989146d7fea7e278fc6769f7a58311b55ca84",
+      "metadata_sha256": "a22c7782eac5c2ce7414d19597a23061fcbdd700eede7eab5a47f53e467760c4",
+      "image_sha256": "a4f75cbbe48739550fe2b08cb5c6d480f064f76ac991dc53d8d3971b8082aa9f"
+    },
+    {
+      "key": "b9fcb0801190ac72ab4be14f6e9f27b4a17942ce46c00d5784e5de9ffdd53dd7",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/b9fcb0801190ac72ab4be14f6e9f27b4a17942ce46c00d5784e5de9ffdd53dd7",
+      "metadata_sha256": "b65c7d5fe536ff9c35df8b8dcf54d016e9126c9778cd348d5e1c3caba1a2b23b",
+      "image_sha256": "b7c1ad859d7a2e14dc4ad5a62e82009981116ec32f792f36a5ee69532d8e79a2"
+    },
+    {
+      "key": "00f3a16f2515e018a862e8aaf8204ae3bdec64d119eda83f2e26b4165d2180f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/00f3a16f2515e018a862e8aaf8204ae3bdec64d119eda83f2e26b4165d2180f9",
+      "metadata_sha256": "98f5f1d175a0ed14f57c39d1f49575ce2a505225197d14abd84edf4ad4358638",
+      "image_sha256": "2f012719157ec412d8f9792745f13ced0871b42db6d09681894655c46a176c53"
+    },
+    {
+      "key": "07fb91cee9279de54f43740d30d620a0f4271c52d8a8927a03f425852fdd39a5",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/07fb91cee9279de54f43740d30d620a0f4271c52d8a8927a03f425852fdd39a5",
+      "metadata_sha256": "ff042af20467ab550cb19450b6b522b3516310d3b5fbf1fc578f2f93ab701b5b",
+      "image_sha256": "f346e5cab114ed82e343ca2093508f8e6da0eebb059b62b2b8e42fcbd6273222"
+    },
+    {
+      "key": "03a8011c6e2f390eff3171783b44215f879b7a7a26020f33692d5108b77710d5",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/03a8011c6e2f390eff3171783b44215f879b7a7a26020f33692d5108b77710d5",
+      "metadata_sha256": "416b42a8b9c694e0b2e887c8aff3fc1a712e32e925aae001801cff9d01b005aa",
+      "image_sha256": "e77055b9e0d379ccbe03dd6e07cf6ecd6d42db59e39b09671eddb5765d48447d"
+    },
+    {
+      "key": "e87d43625181eef946d3493bd2b055b2238b50d13404fafb37352145ca8999aa",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/e87d43625181eef946d3493bd2b055b2238b50d13404fafb37352145ca8999aa",
+      "metadata_sha256": "e95981061d97109ca184950949355de526a2700c4a0ecc31d49a564864d724d8",
+      "image_sha256": "3fdbb6cfe7b9d9f062d33045986d4e66ab5fdc0d5ec0366714d848dd49546f59"
+    },
+    {
+      "key": "a8bfac794bd05d55704cd94e3b187dfccd7e9c780cf4e546c22642e7a39f292f",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/a8bfac794bd05d55704cd94e3b187dfccd7e9c780cf4e546c22642e7a39f292f",
+      "metadata_sha256": "32e63bb0e461140685031bedd3cc17fdf640ae88ecfac65d0b7c304bb1406707",
+      "image_sha256": "e255562260403dbb5f6e3d120ae0955e9e0167eb1d697f254337a65d90e84b8e"
+    },
+    {
+      "key": "d59fbac4ea28732e8a9a182c8ad3b9a426c6162bed1572610bd6580036493ffa",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/d59fbac4ea28732e8a9a182c8ad3b9a426c6162bed1572610bd6580036493ffa",
+      "metadata_sha256": "7a832bcf089fd0affc0e3faeae9ad2f4daf6852e63eb067d65e80617b427eb7d",
+      "image_sha256": "81800c91bb5a311efa2fc314e11aa8319aa48d9d2b8ba207bcdbfad3a0752279"
+    },
+    {
+      "key": "0036f85d92432db92d44af4564af2dca216f015238c9e5832a5d66c1f3ff88b6",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/0036f85d92432db92d44af4564af2dca216f015238c9e5832a5d66c1f3ff88b6",
+      "metadata_sha256": "905df29a9d82b352c02f5d829733bb359ae552274d02781ba0110271e595ee4b",
+      "image_sha256": "698020ca1b689713c94a06affd2b59820d4e21d789fcea7f60c5fddde8500f83"
+    },
+    {
+      "key": "5f98795daf1b35e9a503238c72f696421e53be20b4145cf4e868e691e054ec7d",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/5f98795daf1b35e9a503238c72f696421e53be20b4145cf4e868e691e054ec7d",
+      "metadata_sha256": "a0378e12de7d9eea8b9ddc508dc5a20c9c3e89eaddfff938fb74ab9c07b2937c",
+      "image_sha256": "2a24859cf32691c8a85b283662e6ec4ddb378bee20b81daded24ab32b801c669"
+    },
+    {
+      "key": "79f4c71cf5c47e2caf662cfc42ea86d4ea8273456138325016c41fd15ef868e2",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/79f4c71cf5c47e2caf662cfc42ea86d4ea8273456138325016c41fd15ef868e2",
+      "metadata_sha256": "fc9c927d074234af5b50535b7e41e83c03da084ae60a4ce3ef805710a8d03f89",
+      "image_sha256": "3fa8f27b3c52204917f7696e1319d1cae855d021e7a6ae5c22b3d723017172e0"
+    },
+    {
+      "key": "4dba773da727fcdd50f6c44f549be88e5ce9b9fd26ac1160d23fc34dc04b7979",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/4dba773da727fcdd50f6c44f549be88e5ce9b9fd26ac1160d23fc34dc04b7979",
+      "metadata_sha256": "0baaef265757e246d4078b4ad8fab05b0024e9a1b502fb544cab75211d28f15c",
+      "image_sha256": "631aa323b4d275abb2e2184b8074c684f467705b6463ef854e4361ee2bce8790"
+    },
+    {
+      "key": "f65834baf86d247208be5f8dad4a557cd0bfa2d564513a089ec3b6a0e071ac3c",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/f65834baf86d247208be5f8dad4a557cd0bfa2d564513a089ec3b6a0e071ac3c",
+      "metadata_sha256": "3e524dd4469dde308069971a9a076c8dfdac0793bcba631f32e6e485f5351773",
+      "image_sha256": "8e5d0e8a9d23ab754cc8842503574a4d04bef55ae616a3f30f36aacca0e4e122"
+    },
+    {
+      "key": "6d379bd10ea3218e3cc3a246e4887b3938332b909b6f4b01c664e7ab0954a82a",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/6d379bd10ea3218e3cc3a246e4887b3938332b909b6f4b01c664e7ab0954a82a",
+      "metadata_sha256": "240df174c9bc14da9b18fdcf6985ecfecd2237608e807dade002ee5218cbbe7c",
+      "image_sha256": "6796d4c3a8fcbe412be5d3e95811e764c17dae3a1629b254fedfba5bed47375a"
+    },
+    {
+      "key": "be4e45e5f5757638762b94da8ef56e92c5c30b48df14969cd6a190055f26f4f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/be4e45e5f5757638762b94da8ef56e92c5c30b48df14969cd6a190055f26f4f9",
+      "metadata_sha256": "13fd97ae17413d1321b2600c44a0a8e6b7fb5c1d5c8ffabd2f37199fc2e6bed3",
+      "image_sha256": "8406054ba9b389732511a73313959c04fd7d6bd3c74d56787593518aa36e668b"
+    },
+    {
+      "key": "8c9ccdfa135fe5a457cf12e57145523412baa3d1027a1a87a7a047a9453732f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/8c9ccdfa135fe5a457cf12e57145523412baa3d1027a1a87a7a047a9453732f9",
+      "metadata_sha256": "1b6bfee1fa1f70edac307f94a3db18a30d0e4232b898243d72a3ec6533ae2e53",
+      "image_sha256": "930c48d36ed40b103abcf15ba9118bc65d4beb769bb6c62c3e2d88401b474dd6"
+    },
+    {
+      "key": "214bc5d7c9ad10ca5dd8fdf2bf56a91cd228c01880390e4437b4fc3e8d935c9b",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/214bc5d7c9ad10ca5dd8fdf2bf56a91cd228c01880390e4437b4fc3e8d935c9b",
+      "metadata_sha256": "0c3b8f262c7d0a950e825289abb878aab5de7763e40561e4c5684a013471c037",
+      "image_sha256": "86d4b85e30bbe42ce336e5fe13289e8147096b82e1352af5dd9138ae8528b823"
+    },
+    {
+      "key": "f00db933a7bdb28cb122f39a6267766c2223df40076bf539b2c1137e860beea2",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/f00db933a7bdb28cb122f39a6267766c2223df40076bf539b2c1137e860beea2",
+      "metadata_sha256": "6387c406bd2285eb030503a4501659b7b1de0649844c5d07f8100803fb13720c",
+      "image_sha256": "c766d9fa9f90486aee63b65920744c1593ec0629930aa86e0cfb905015ef1e78"
+    },
+    {
+      "key": "a0e36f4f985873498a837ba8c9f84b0eb7378bad5d513ee4545654e83fa24dc9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/a0e36f4f985873498a837ba8c9f84b0eb7378bad5d513ee4545654e83fa24dc9",
+      "metadata_sha256": "cb870adfe965534f28728530fdd164f7ab85a30efbda0d85d087732469e591e2",
+      "image_sha256": "2449675f9d67537c57accd49c51bb31cb8e5e4562f933f3d6f681b72d51861c3"
+    },
+    {
+      "key": "ff9e707b4b7e675e35ec1901e933ef19ae57bff026d5ccb521315fd7177ccdd9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/ff9e707b4b7e675e35ec1901e933ef19ae57bff026d5ccb521315fd7177ccdd9",
+      "metadata_sha256": "68aa3f57ce6e7900e9b5e5e0bcee5cf4b04aa4c1bd8cf6b352d5dd63a1c80cce",
+      "image_sha256": "db170312af52daf1f2208b729d107869f11bae19b38452eecc29cf75821dc319"
+    },
+    {
+      "key": "4f10b7312964353a96e0a7b35384174fdb5561ffd0146a56be08cfafcce85a70",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/4f10b7312964353a96e0a7b35384174fdb5561ffd0146a56be08cfafcce85a70",
+      "metadata_sha256": "145db9f2239006b282e9dab311d9432948a07c58073d62c34734e8324177315b",
+      "image_sha256": "10a9dd5d77c335edd338f762af21c2e1da90cd3d641266a28f2687a6c262523c"
+    },
+    {
+      "key": "4b86406614eb06f62fa20a8e5d29ce886464261a7cfe2c4cae123c8fc64a166e",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/4b86406614eb06f62fa20a8e5d29ce886464261a7cfe2c4cae123c8fc64a166e",
+      "metadata_sha256": "33cb659b0e6cc4115ad9376b2be69437f6c5b236c5ff5dd3b6daf698099e93f5",
+      "image_sha256": "01281070c1e2e20366b6da8b76b953afb86c62a9e543a35b5ee2ea622f73c6ff"
+    },
+    {
+      "key": "a1e6fd383595c3ee9e8014e63bc90e367253d6cb243968c4ba05ed43405ec084",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/a1e6fd383595c3ee9e8014e63bc90e367253d6cb243968c4ba05ed43405ec084",
+      "metadata_sha256": "75633e2aa156d20ab8a2c15cefc4462f18458bf8739b84e1aff63290f573fd85",
+      "image_sha256": "497f6f03d3917939c6ca0c33abd52ccbb3ea636ea6466300fd9667e37e523c89"
+    },
+    {
+      "key": "ef57e450e7404635fbeaffd877b32e350371f415ba24b994b02033473d299a87",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/ef57e450e7404635fbeaffd877b32e350371f415ba24b994b02033473d299a87",
+      "metadata_sha256": "5e5f3631a1376a16287c1954e59f52bf7370edceab37276315bbbb460e3e2079",
+      "image_sha256": "e5c9be0fe22b444bb8e2ecc5331f56bcc42b9bcf5af1bc4cbf1b24e96fd8f446"
+    },
+    {
+      "key": "807740f855652dd0b4d852aec193fc74496fe892d5ec0d5daf56853849e74909",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/807740f855652dd0b4d852aec193fc74496fe892d5ec0d5daf56853849e74909",
+      "metadata_sha256": "6dbc64356a9b317b760f6096d51b5c28b6ad0b7ce17f3ff6983f3619afd76748",
+      "image_sha256": "4167147437a9838fc52bb6faf5b1264278ce5ae9ca937c75daf8ac41239193c0"
+    },
+    {
+      "key": "85b78a8b69cc410a35e1fc309d6c445360267deabe4076b0d410abcd814bcf79",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/85b78a8b69cc410a35e1fc309d6c445360267deabe4076b0d410abcd814bcf79",
+      "metadata_sha256": "398f6e0910ddb02358334330cafc95f4b8440ed0ed6941e49a2976b2b7ba4c2d",
+      "image_sha256": "67e88525abd1b5fd940449ca9a199eaa1514c61b36b858e5180c91a86f32d38d"
+    },
+    {
+      "key": "2bef95f7c4ff8e1c96a8d44e30781617ae64efdbfcd46a943d14327fbbe7c571",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/2bef95f7c4ff8e1c96a8d44e30781617ae64efdbfcd46a943d14327fbbe7c571",
+      "metadata_sha256": "67fe367c4a381422cef77fa1c05ca7de2f60fbd3585c6078c451e1dcf8b8ad19",
+      "image_sha256": "931ba1771475d2a0cdde2234d9ed5f6e8eee77d76fce893d8d5ee3de3bec7f70"
+    },
+    {
+      "key": "b4c6527732db46e454fdc6d5b8371d1d08676ff306c79d4cecfb04b17ceb6521",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/b4c6527732db46e454fdc6d5b8371d1d08676ff306c79d4cecfb04b17ceb6521",
+      "metadata_sha256": "10be3d370c2d0783ad8f837c1aa8194f35efdf1ac8c933060e8893c0d55c313e",
+      "image_sha256": "19bc0c82982723658df198198e7e3375e79ad2f443911d66726df2203f65f0e0"
+    },
+    {
+      "key": "ee3439672a57afa8f04474ab903cfc79d094803045b6f0c4a3b44322f707a6c4",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/ee3439672a57afa8f04474ab903cfc79d094803045b6f0c4a3b44322f707a6c4",
+      "metadata_sha256": "a27ee713adfea3a4bfd468fbf14d7bd2610bd3b7431f7f48d11cc3a67b70fbc8",
+      "image_sha256": "73a62f3305118922d6d05861bd977ad171c69bf4eb599a2495ee9b51304b286d"
+    },
+    {
+      "key": "1b76e4ad9aff73193805a3a6ddc84d4ed147c9d67489f10b92b4e55126df028f",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/1b76e4ad9aff73193805a3a6ddc84d4ed147c9d67489f10b92b4e55126df028f",
+      "metadata_sha256": "85d4bf43864883d68c77c69ee4ce5b105fd6d3da0c3aff7ec8a40e7f90321e5c",
+      "image_sha256": "3a542354a059bd580deca497ccad5c1fbe076c4b44f2da46917afd5b2791c8d1"
+    },
+    {
+      "key": "3ba47751d5819a4d5eb2f25038019811e4154ed8f6bcb9a392ff53ba043c3272",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/3ba47751d5819a4d5eb2f25038019811e4154ed8f6bcb9a392ff53ba043c3272",
+      "metadata_sha256": "287b96e535416e184d590b74448b7600c32202db7689d52f0553b292656e4cf7",
+      "image_sha256": "4fe97630289ed4de0bd49086cd9c1a2c0d8ddc4a2be6988c741a2f62414339f2"
+    },
+    {
+      "key": "0aed45cbf3b800783964ddd20b99970e0cf4f0e1113533fc3757e11a2374d1a9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/0aed45cbf3b800783964ddd20b99970e0cf4f0e1113533fc3757e11a2374d1a9",
+      "metadata_sha256": "9cd7b7f830833459f36b4c6272f4333e131290d0228554f0f95746a425d86ba2",
+      "image_sha256": "1627184d32f83a10ec58a06732b58c2f87894da943bc8eed8b7cca7870c57a80"
+    },
+    {
+      "key": "334355c1f44f94dcba6e53213435b505530ae07f57d5c3f61d405be0e9483f97",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-next-continuations-1790915279940576004/expanded-batch/cases/334355c1f44f94dcba6e53213435b505530ae07f57d5c3f61d405be0e9483f97",
+      "metadata_sha256": "e63d938e1e0fd080a9a56398dad4309ccedffa72fd98cc506a95f3f5b0976160",
+      "image_sha256": "2153b437bf36c73cbeadc8822c3425cf6fa71af346560e3ff1f4b108286b9fbd"
+    }
+  ],
+  "family_generator_sha256": "0b5a28dc5fe55d9695c25b3892433eb03fafa45a4879956040e57ebebcb24e42",
+  "overlay_generator_sha256": null,
+  "orchestrator_sha256": "cbd2a84493c9bfad4db4758209f1993335375850fd12d5fb14832f50563ec14f",
+  "candidate_count": 63196,
+  "discovery_policy": {
+    "minimum_variants": 1,
+    "operand_policy": "typed",
+    "root_only": true,
+    "terminal_only": false,
+    "region_policy": "canonical-v1"
+  },
+  "discovery_counts": {
+    "cases": 40,
+    "bindings": 613362,
+    "regions": 175836,
+    "scanned_words": 6049107,
+    "oversized_regions_skipped": 0,
+    "nonroot_bindings_skipped": 465611,
+    "nonterminal_regions_skipped": 0,
+    "canonical_linear_regions": 32170,
+    "canonical_terminal_regions": 143297,
+    "canonical_successor_roots": 28085,
+    "canonical_external_successors": 37478,
+    "truncated_linear_regions_skipped": 364,
+    "truncated_terminal_regions_skipped": 5
+  },
+  "family_count": 17622,
+  "source_count": 786,
+  "declined_structures": 45574,
+  "reused_body_sources": 646,
+  "reused_families": 14395,
+  "previous_family_catalog_sha256": "b5ebb2afe6da11a291be84a83004b5dbf9fee0401d9849cf82d708d62401ffc4",
+  "family_catalog_sha256": "14839ca67b40c5008edc6d64a71288f6b97966d487277f043f7987d8b1966d18",
+  "seconds": 62.30366569800026
+}
+```
+
+## C.18 — `build/lab/ee-load-native-recovery-1790948588452292506/native-family-build.json`
+
+**Bytes:** 808. **SHA-256:** `47d1bec30e5fce1b1ada42900b64534c97508ff940d9c95cc940a43961a93681`.
+
+```json
+{
+  "configure": {
+    "command": [
+      "cmake",
+      "-S",
+      "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/native-ee-family-project",
+      "-B",
+      "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DNEXO_EE_FAMILY_MANIFEST=/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/catalog/catalog.json"
+    ],
+    "seconds": 6.7914728929990815,
+    "returncode": 0
+  },
+  "build": {
+    "command": [
+      "cmake",
+      "--build",
+      "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+      "--target",
+      "ps2_ee_compiled_families",
+      "--parallel",
+      "4"
+    ],
+    "seconds": 569.1402198609994,
+    "returncode": -2
+  }
+}
+```
+
+## C.19 — `build/lab/ee-load-native-recovery-1790948588452292506/build-concurrency-change.json`
+
+**Bytes:** 210. **SHA-256:** `7588e0391c5d383c4dd5165d51c0c418287a93f9a485619cd395cf58822eaad3`.
+
+```json
+{
+  "reason": "Increase owned build concurrency from four to ten after observing 12 CPU affinity and completed-object progress",
+  "cmake_pid": 240423,
+  "signal": "SIGINT",
+  "time_unix": 1790949620.6714263
+}
+```
+
+## C.20 — `build/lab/ee-load-native-recovery-1790948588452292506/native-family-resume.json`
+
+**Bytes:** 354. **SHA-256:** `7782cfd15c2364275a6a866967922faa36f29d3325d65f3b119bffd118d0a49a`.
+
+```json
+{
+  "command": [
+    "cmake",
+    "--build",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+    "--target",
+    "ps2_ee_compiled_families",
+    "--parallel",
+    "10"
+  ],
+  "returncode": 0,
+  "seconds": 102.46293603000049,
+  "reason": "owned concurrency increase; completed objects retained",
+  "strict_approval": false
+}
+```
+
+## C.21 — `build/lab/ee-load-native-recovery-1790948588452292506/relink.json`
+
+**Bytes:** 3236. **SHA-256:** `f1c823c250435ca07f0542ba02f85c4d70adcf805bf38f2f04abb4ae6d114c29`.
+
+```json
+{
+  "command": [
+    "/usr/bin/c++",
+    "-fno-lto",
+    "-O1",
+    "-DNDEBUG",
+    "-Wl,--export-dynamic",
+    "@CMakeFiles/ps2EntryRunner.dir/objects1.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects2.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects3.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects4.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects5.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects6.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects7.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects8.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects9.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects10.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects11.rsp",
+    "@CMakeFiles/ps2EntryRunner.dir/objects12.rsp",
+    "-o",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/native-gpu-stream-reset-runner",
+    "-Wl,--start-group",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-stream-corrected-1790945198323964871/libps2_runtime_gpu_stream_reset.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRuntime/libps2_ee_compiled_catalog.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xIOP/libps2_iop_compiled_catalog.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xIOP/libps2_iop.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/expanded-families.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel_backend.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel_backend.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/libps2_gs_parallel.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/gs/libparallel-gs.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/vulkan/libgranite-vulkan.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/third_party/libgranite-volk.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/util/libgranite-util.a",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/gs-parallel-probe/parallel-gs-dependency/Granite/math/libgranite-math.a",
+    "-Wl,--end-group",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/_deps/raylib-build/raylib/libraylib.a",
+    "-lm",
+    "-lpthread",
+    "/usr/lib/libOpenGL.so",
+    "/usr/lib/libGLX.so",
+    "/usr/lib/libGLU.so",
+    "/usr/lib/librt.a",
+    "-lm",
+    "/usr/lib/libavformat.so",
+    "/usr/lib/libavcodec.so",
+    "/usr/lib/libswresample.so",
+    "/usr/lib/libswscale.so",
+    "/usr/lib/libavutil.so",
+    "-ldl"
+  ],
+  "cwd": "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2native/monster-house-br-usa-t2.0-www.romsportugues.com-cb596f3249f4/run-d99723de6164/desktop-project/build/ps2x-source/ps2xRuntime",
+  "returncode": 0,
+  "seconds": 14.431978040998729,
+  "strict_approval": false,
+  "original_game_compilations": 0,
+  "runner_sha256": "b473269ea17c815a55244826be864965f1d1f70fe6041e5e8e5d58626dc423fc"
+}
+```
+
+## C.22 — `build/lab/ee-load-native-recovery-1790948588452292506/public-cli.json`
+
+**Bytes:** 1138. **SHA-256:** `2430cb8e31d87a15efc22d889ed45719f549364628fd5c8f0ddb4c937f9820ac`.
+
+```json
+{
+  "command": [
+    "/usr/bin/python3",
+    "-m",
+    "tools.ps2native",
+    "recover-ee",
+    "--capture-root",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/game-run/misses",
+    "--previous-batch",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed",
+    "--previous-family-catalog",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/catalog/catalog.json",
+    "--family-generator",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_data_family",
+    "--overlay-generator",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_overlay",
+    "--out",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery",
+    "--native-build",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+    "--workers",
+    "8"
+  ],
+  "returncode": 0,
+  "seconds": 96.58135960899926,
+  "strict_approval": false
+}
+```
+
+## C.23 — `build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/recovery.json`
+
+**Bytes:** 3014. **SHA-256:** `950aa715145d82f4252d992e2b4e1fed91148dc2dd2e461c4c99b531858851e2`.
+
+```json
+{
+  "capture_root": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/game-run/misses",
+  "closure_proved": false,
+  "family_count": 17622,
+  "family_manifest": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/batch/catalog/catalog.json",
+  "family_manifest_sha256": "918206b8a5bd2fdf825db2cdf1df32a46ed62b6542de2b8aa3257588d893e96c",
+  "gameplay_approved": false,
+  "native_build": "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+  "owned_cases": 40,
+  "previous_batch": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed",
+  "reused_body_sources": 785,
+  "schema_version": 1,
+  "scope": "offline EE recovery and incremental catalog build; no gameplay or full native approval",
+  "status": "built",
+  "steps": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/lab/prepare_ee_family_batch.py",
+        "--capture-root",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/game-run/misses",
+        "--previous-batch",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed",
+        "--family-generator",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_data_family",
+        "--overlay-generator",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_overlay",
+        "--output",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/batch",
+        "--workers",
+        "8",
+        "--previous-family-catalog",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/catalog/catalog.json"
+      ],
+      "name": "prepare",
+      "seconds": 86.98954591899928,
+      "status": "complete"
+    },
+    {
+      "command": [
+        "/usr/bin/cmake",
+        "-S",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/native-ee-family-project",
+        "-B",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+        "-DNEXO_EE_FAMILY_MANIFEST=/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/batch/catalog/catalog.json"
+      ],
+      "name": "configure",
+      "seconds": 7.874419096000565,
+      "status": "complete"
+    },
+    {
+      "command": [
+        "/usr/bin/cmake",
+        "--build",
+        "/home/pedrohs/Downloads/ps2-native-recompiler/build/ee-families-native",
+        "--target",
+        "ps2_ee_compiled_families",
+        "--parallel",
+        "8"
+      ],
+      "name": "build",
+      "seconds": 1.6185752380006306,
+      "status": "complete"
+    }
+  ],
+  "strict_approval": false
+}
+```
+
+## C.24 — `build/lab/ee-load-native-recovery-1790948588452292506/public-cli-recovery/batch/report.json`
+
+**Bytes:** 20896. **SHA-256:** `856b74687019be9d41ec020af90f0697cc5a9649aa08ac6e1f96e922aac9a45d`.
+
+```json
+{
+  "schema_version": 1,
+  "status": "PUBLISHED_LABORATORY",
+  "strict_approval": false,
+  "closure_proved": false,
+  "complete_machine_checkpoint": false,
+  "scope": "offline finite captured byte structures; producer/fetch/alias/timing/gameplay unqualified",
+  "manifest_published": true,
+  "prepared_captures": 1,
+  "owned_cases": 40,
+  "duplicate_cases": 1,
+  "case_records": [
+    {
+      "key": "7cb8f68de4d4ae688bc736a5481df20863be80d2ef53859b421a78adcc4d286e",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/7cb8f68de4d4ae688bc736a5481df20863be80d2ef53859b421a78adcc4d286e",
+      "metadata_sha256": "a5359f8bcdadd77c1db4318f3a05b5e6574f706b11994e6be4677ec33762dcd5",
+      "image_sha256": "c98fcd453bf149291868648b0590b6fb4e0513cc3d121ec4e6ba52d1adbf46f1"
+    },
+    {
+      "key": "986f290f752dc53c65a46fe4c2beb2b7713ae7ca21ca9e10be7d99f5322949f8",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/986f290f752dc53c65a46fe4c2beb2b7713ae7ca21ca9e10be7d99f5322949f8",
+      "metadata_sha256": "d626684d9e3b41e2052a96aae4fa845677c3a713c7f5ecbe691f8bb05dea61e6",
+      "image_sha256": "03c4a33433b3bdcd8fd19ad05574d9e794020627b5c2d49152af9d912628e2a5"
+    },
+    {
+      "key": "d08d08308d65b5c3e2c3e655d2dfc6d62c7b6f791fa0ee315e4a54174c8178f7",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/d08d08308d65b5c3e2c3e655d2dfc6d62c7b6f791fa0ee315e4a54174c8178f7",
+      "metadata_sha256": "2cebedb27a43bda8a8275010328f0aa3197e93a36de9b2462cca6deba1996511",
+      "image_sha256": "07a2327f8f95a4ea150037127ade41d78c3d2ac4271543c1356767bf42912806"
+    },
+    {
+      "key": "b7062435f923a5f8b8710d098f983e3527f2bdb7de7d897f1afd2317ba3742e4",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/b7062435f923a5f8b8710d098f983e3527f2bdb7de7d897f1afd2317ba3742e4",
+      "metadata_sha256": "2f4da70c1eee3585b0bbb7a62708dfdcab35be400db9e288cf7a098e9cb0a0e2",
+      "image_sha256": "b027b899da86f61039501e6e467a675bebe251e483e475fbd8254b659e291bc4"
+    },
+    {
+      "key": "5359799d0ca5130549ae52021498b1dfca49b9b500237a19cd9ac1fdb9cea265",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/5359799d0ca5130549ae52021498b1dfca49b9b500237a19cd9ac1fdb9cea265",
+      "metadata_sha256": "e9ed5793cbc3f52fa56284b26d24cbbb903e253ae2144a962d916d60fa489540",
+      "image_sha256": "ff7fa4c6739178f8363f72168d96459ab98e252951fecbd8f44211ccbaf757a0"
+    },
+    {
+      "key": "1da217032c51abddf98bcf2f94ae495e79c199bf3d7d48a8ada201c44a2439d0",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/1da217032c51abddf98bcf2f94ae495e79c199bf3d7d48a8ada201c44a2439d0",
+      "metadata_sha256": "38ea9eb157731cc54f7397ac469692dbdc963ef48799c2eb3b02e42a40229cce",
+      "image_sha256": "9c908b9a79a664d8d0a84b92a13d8e656960ea4bf5c96cad04a9fa197f69f753"
+    },
+    {
+      "key": "d0c662af754e466c593bafa10c3e3fc32c6a4dc832d4c4b8bd323cfbdcb78462",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/d0c662af754e466c593bafa10c3e3fc32c6a4dc832d4c4b8bd323cfbdcb78462",
+      "metadata_sha256": "b279410030f67fae92b4e81c4f2de7aaca4296ab2c99e3cc09f58877363c246d",
+      "image_sha256": "97b6337fb3296179a5a75f4f704eba3d9584a5d2e1a0d7c91d0675bf884b0ff5"
+    },
+    {
+      "key": "ecda0be264b55d35b56eafb6fee989146d7fea7e278fc6769f7a58311b55ca84",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/ecda0be264b55d35b56eafb6fee989146d7fea7e278fc6769f7a58311b55ca84",
+      "metadata_sha256": "a22c7782eac5c2ce7414d19597a23061fcbdd700eede7eab5a47f53e467760c4",
+      "image_sha256": "a4f75cbbe48739550fe2b08cb5c6d480f064f76ac991dc53d8d3971b8082aa9f"
+    },
+    {
+      "key": "b9fcb0801190ac72ab4be14f6e9f27b4a17942ce46c00d5784e5de9ffdd53dd7",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/b9fcb0801190ac72ab4be14f6e9f27b4a17942ce46c00d5784e5de9ffdd53dd7",
+      "metadata_sha256": "b65c7d5fe536ff9c35df8b8dcf54d016e9126c9778cd348d5e1c3caba1a2b23b",
+      "image_sha256": "b7c1ad859d7a2e14dc4ad5a62e82009981116ec32f792f36a5ee69532d8e79a2"
+    },
+    {
+      "key": "00f3a16f2515e018a862e8aaf8204ae3bdec64d119eda83f2e26b4165d2180f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/00f3a16f2515e018a862e8aaf8204ae3bdec64d119eda83f2e26b4165d2180f9",
+      "metadata_sha256": "98f5f1d175a0ed14f57c39d1f49575ce2a505225197d14abd84edf4ad4358638",
+      "image_sha256": "2f012719157ec412d8f9792745f13ced0871b42db6d09681894655c46a176c53"
+    },
+    {
+      "key": "07fb91cee9279de54f43740d30d620a0f4271c52d8a8927a03f425852fdd39a5",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/07fb91cee9279de54f43740d30d620a0f4271c52d8a8927a03f425852fdd39a5",
+      "metadata_sha256": "ff042af20467ab550cb19450b6b522b3516310d3b5fbf1fc578f2f93ab701b5b",
+      "image_sha256": "f346e5cab114ed82e343ca2093508f8e6da0eebb059b62b2b8e42fcbd6273222"
+    },
+    {
+      "key": "03a8011c6e2f390eff3171783b44215f879b7a7a26020f33692d5108b77710d5",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/03a8011c6e2f390eff3171783b44215f879b7a7a26020f33692d5108b77710d5",
+      "metadata_sha256": "416b42a8b9c694e0b2e887c8aff3fc1a712e32e925aae001801cff9d01b005aa",
+      "image_sha256": "e77055b9e0d379ccbe03dd6e07cf6ecd6d42db59e39b09671eddb5765d48447d"
+    },
+    {
+      "key": "e87d43625181eef946d3493bd2b055b2238b50d13404fafb37352145ca8999aa",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/e87d43625181eef946d3493bd2b055b2238b50d13404fafb37352145ca8999aa",
+      "metadata_sha256": "e95981061d97109ca184950949355de526a2700c4a0ecc31d49a564864d724d8",
+      "image_sha256": "3fdbb6cfe7b9d9f062d33045986d4e66ab5fdc0d5ec0366714d848dd49546f59"
+    },
+    {
+      "key": "a8bfac794bd05d55704cd94e3b187dfccd7e9c780cf4e546c22642e7a39f292f",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/a8bfac794bd05d55704cd94e3b187dfccd7e9c780cf4e546c22642e7a39f292f",
+      "metadata_sha256": "32e63bb0e461140685031bedd3cc17fdf640ae88ecfac65d0b7c304bb1406707",
+      "image_sha256": "e255562260403dbb5f6e3d120ae0955e9e0167eb1d697f254337a65d90e84b8e"
+    },
+    {
+      "key": "d59fbac4ea28732e8a9a182c8ad3b9a426c6162bed1572610bd6580036493ffa",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/d59fbac4ea28732e8a9a182c8ad3b9a426c6162bed1572610bd6580036493ffa",
+      "metadata_sha256": "7a832bcf089fd0affc0e3faeae9ad2f4daf6852e63eb067d65e80617b427eb7d",
+      "image_sha256": "81800c91bb5a311efa2fc314e11aa8319aa48d9d2b8ba207bcdbfad3a0752279"
+    },
+    {
+      "key": "0036f85d92432db92d44af4564af2dca216f015238c9e5832a5d66c1f3ff88b6",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/0036f85d92432db92d44af4564af2dca216f015238c9e5832a5d66c1f3ff88b6",
+      "metadata_sha256": "905df29a9d82b352c02f5d829733bb359ae552274d02781ba0110271e595ee4b",
+      "image_sha256": "698020ca1b689713c94a06affd2b59820d4e21d789fcea7f60c5fddde8500f83"
+    },
+    {
+      "key": "5f98795daf1b35e9a503238c72f696421e53be20b4145cf4e868e691e054ec7d",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/5f98795daf1b35e9a503238c72f696421e53be20b4145cf4e868e691e054ec7d",
+      "metadata_sha256": "a0378e12de7d9eea8b9ddc508dc5a20c9c3e89eaddfff938fb74ab9c07b2937c",
+      "image_sha256": "2a24859cf32691c8a85b283662e6ec4ddb378bee20b81daded24ab32b801c669"
+    },
+    {
+      "key": "79f4c71cf5c47e2caf662cfc42ea86d4ea8273456138325016c41fd15ef868e2",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/79f4c71cf5c47e2caf662cfc42ea86d4ea8273456138325016c41fd15ef868e2",
+      "metadata_sha256": "fc9c927d074234af5b50535b7e41e83c03da084ae60a4ce3ef805710a8d03f89",
+      "image_sha256": "3fa8f27b3c52204917f7696e1319d1cae855d021e7a6ae5c22b3d723017172e0"
+    },
+    {
+      "key": "4dba773da727fcdd50f6c44f549be88e5ce9b9fd26ac1160d23fc34dc04b7979",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/4dba773da727fcdd50f6c44f549be88e5ce9b9fd26ac1160d23fc34dc04b7979",
+      "metadata_sha256": "0baaef265757e246d4078b4ad8fab05b0024e9a1b502fb544cab75211d28f15c",
+      "image_sha256": "631aa323b4d275abb2e2184b8074c684f467705b6463ef854e4361ee2bce8790"
+    },
+    {
+      "key": "f65834baf86d247208be5f8dad4a557cd0bfa2d564513a089ec3b6a0e071ac3c",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/f65834baf86d247208be5f8dad4a557cd0bfa2d564513a089ec3b6a0e071ac3c",
+      "metadata_sha256": "3e524dd4469dde308069971a9a076c8dfdac0793bcba631f32e6e485f5351773",
+      "image_sha256": "8e5d0e8a9d23ab754cc8842503574a4d04bef55ae616a3f30f36aacca0e4e122"
+    },
+    {
+      "key": "6d379bd10ea3218e3cc3a246e4887b3938332b909b6f4b01c664e7ab0954a82a",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/6d379bd10ea3218e3cc3a246e4887b3938332b909b6f4b01c664e7ab0954a82a",
+      "metadata_sha256": "240df174c9bc14da9b18fdcf6985ecfecd2237608e807dade002ee5218cbbe7c",
+      "image_sha256": "6796d4c3a8fcbe412be5d3e95811e764c17dae3a1629b254fedfba5bed47375a"
+    },
+    {
+      "key": "be4e45e5f5757638762b94da8ef56e92c5c30b48df14969cd6a190055f26f4f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/be4e45e5f5757638762b94da8ef56e92c5c30b48df14969cd6a190055f26f4f9",
+      "metadata_sha256": "13fd97ae17413d1321b2600c44a0a8e6b7fb5c1d5c8ffabd2f37199fc2e6bed3",
+      "image_sha256": "8406054ba9b389732511a73313959c04fd7d6bd3c74d56787593518aa36e668b"
+    },
+    {
+      "key": "8c9ccdfa135fe5a457cf12e57145523412baa3d1027a1a87a7a047a9453732f9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/8c9ccdfa135fe5a457cf12e57145523412baa3d1027a1a87a7a047a9453732f9",
+      "metadata_sha256": "1b6bfee1fa1f70edac307f94a3db18a30d0e4232b898243d72a3ec6533ae2e53",
+      "image_sha256": "930c48d36ed40b103abcf15ba9118bc65d4beb769bb6c62c3e2d88401b474dd6"
+    },
+    {
+      "key": "214bc5d7c9ad10ca5dd8fdf2bf56a91cd228c01880390e4437b4fc3e8d935c9b",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/214bc5d7c9ad10ca5dd8fdf2bf56a91cd228c01880390e4437b4fc3e8d935c9b",
+      "metadata_sha256": "0c3b8f262c7d0a950e825289abb878aab5de7763e40561e4c5684a013471c037",
+      "image_sha256": "86d4b85e30bbe42ce336e5fe13289e8147096b82e1352af5dd9138ae8528b823"
+    },
+    {
+      "key": "f00db933a7bdb28cb122f39a6267766c2223df40076bf539b2c1137e860beea2",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/f00db933a7bdb28cb122f39a6267766c2223df40076bf539b2c1137e860beea2",
+      "metadata_sha256": "6387c406bd2285eb030503a4501659b7b1de0649844c5d07f8100803fb13720c",
+      "image_sha256": "c766d9fa9f90486aee63b65920744c1593ec0629930aa86e0cfb905015ef1e78"
+    },
+    {
+      "key": "a0e36f4f985873498a837ba8c9f84b0eb7378bad5d513ee4545654e83fa24dc9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/a0e36f4f985873498a837ba8c9f84b0eb7378bad5d513ee4545654e83fa24dc9",
+      "metadata_sha256": "cb870adfe965534f28728530fdd164f7ab85a30efbda0d85d087732469e591e2",
+      "image_sha256": "2449675f9d67537c57accd49c51bb31cb8e5e4562f933f3d6f681b72d51861c3"
+    },
+    {
+      "key": "ff9e707b4b7e675e35ec1901e933ef19ae57bff026d5ccb521315fd7177ccdd9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/ff9e707b4b7e675e35ec1901e933ef19ae57bff026d5ccb521315fd7177ccdd9",
+      "metadata_sha256": "68aa3f57ce6e7900e9b5e5e0bcee5cf4b04aa4c1bd8cf6b352d5dd63a1c80cce",
+      "image_sha256": "db170312af52daf1f2208b729d107869f11bae19b38452eecc29cf75821dc319"
+    },
+    {
+      "key": "4f10b7312964353a96e0a7b35384174fdb5561ffd0146a56be08cfafcce85a70",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/4f10b7312964353a96e0a7b35384174fdb5561ffd0146a56be08cfafcce85a70",
+      "metadata_sha256": "145db9f2239006b282e9dab311d9432948a07c58073d62c34734e8324177315b",
+      "image_sha256": "10a9dd5d77c335edd338f762af21c2e1da90cd3d641266a28f2687a6c262523c"
+    },
+    {
+      "key": "4b86406614eb06f62fa20a8e5d29ce886464261a7cfe2c4cae123c8fc64a166e",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/4b86406614eb06f62fa20a8e5d29ce886464261a7cfe2c4cae123c8fc64a166e",
+      "metadata_sha256": "33cb659b0e6cc4115ad9376b2be69437f6c5b236c5ff5dd3b6daf698099e93f5",
+      "image_sha256": "01281070c1e2e20366b6da8b76b953afb86c62a9e543a35b5ee2ea622f73c6ff"
+    },
+    {
+      "key": "a1e6fd383595c3ee9e8014e63bc90e367253d6cb243968c4ba05ed43405ec084",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/a1e6fd383595c3ee9e8014e63bc90e367253d6cb243968c4ba05ed43405ec084",
+      "metadata_sha256": "75633e2aa156d20ab8a2c15cefc4462f18458bf8739b84e1aff63290f573fd85",
+      "image_sha256": "497f6f03d3917939c6ca0c33abd52ccbb3ea636ea6466300fd9667e37e523c89"
+    },
+    {
+      "key": "ef57e450e7404635fbeaffd877b32e350371f415ba24b994b02033473d299a87",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/ef57e450e7404635fbeaffd877b32e350371f415ba24b994b02033473d299a87",
+      "metadata_sha256": "5e5f3631a1376a16287c1954e59f52bf7370edceab37276315bbbb460e3e2079",
+      "image_sha256": "e5c9be0fe22b444bb8e2ecc5331f56bcc42b9bcf5af1bc4cbf1b24e96fd8f446"
+    },
+    {
+      "key": "807740f855652dd0b4d852aec193fc74496fe892d5ec0d5daf56853849e74909",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/807740f855652dd0b4d852aec193fc74496fe892d5ec0d5daf56853849e74909",
+      "metadata_sha256": "6dbc64356a9b317b760f6096d51b5c28b6ad0b7ce17f3ff6983f3619afd76748",
+      "image_sha256": "4167147437a9838fc52bb6faf5b1264278ce5ae9ca937c75daf8ac41239193c0"
+    },
+    {
+      "key": "85b78a8b69cc410a35e1fc309d6c445360267deabe4076b0d410abcd814bcf79",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/85b78a8b69cc410a35e1fc309d6c445360267deabe4076b0d410abcd814bcf79",
+      "metadata_sha256": "398f6e0910ddb02358334330cafc95f4b8440ed0ed6941e49a2976b2b7ba4c2d",
+      "image_sha256": "67e88525abd1b5fd940449ca9a199eaa1514c61b36b858e5180c91a86f32d38d"
+    },
+    {
+      "key": "2bef95f7c4ff8e1c96a8d44e30781617ae64efdbfcd46a943d14327fbbe7c571",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/2bef95f7c4ff8e1c96a8d44e30781617ae64efdbfcd46a943d14327fbbe7c571",
+      "metadata_sha256": "67fe367c4a381422cef77fa1c05ca7de2f60fbd3585c6078c451e1dcf8b8ad19",
+      "image_sha256": "931ba1771475d2a0cdde2234d9ed5f6e8eee77d76fce893d8d5ee3de3bec7f70"
+    },
+    {
+      "key": "b4c6527732db46e454fdc6d5b8371d1d08676ff306c79d4cecfb04b17ceb6521",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/b4c6527732db46e454fdc6d5b8371d1d08676ff306c79d4cecfb04b17ceb6521",
+      "metadata_sha256": "10be3d370c2d0783ad8f837c1aa8194f35efdf1ac8c933060e8893c0d55c313e",
+      "image_sha256": "19bc0c82982723658df198198e7e3375e79ad2f443911d66726df2203f65f0e0"
+    },
+    {
+      "key": "ee3439672a57afa8f04474ab903cfc79d094803045b6f0c4a3b44322f707a6c4",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/ee3439672a57afa8f04474ab903cfc79d094803045b6f0c4a3b44322f707a6c4",
+      "metadata_sha256": "a27ee713adfea3a4bfd468fbf14d7bd2610bd3b7431f7f48d11cc3a67b70fbc8",
+      "image_sha256": "73a62f3305118922d6d05861bd977ad171c69bf4eb599a2495ee9b51304b286d"
+    },
+    {
+      "key": "1b76e4ad9aff73193805a3a6ddc84d4ed147c9d67489f10b92b4e55126df028f",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/1b76e4ad9aff73193805a3a6ddc84d4ed147c9d67489f10b92b4e55126df028f",
+      "metadata_sha256": "85d4bf43864883d68c77c69ee4ce5b105fd6d3da0c3aff7ec8a40e7f90321e5c",
+      "image_sha256": "3a542354a059bd580deca497ccad5c1fbe076c4b44f2da46917afd5b2791c8d1"
+    },
+    {
+      "key": "3ba47751d5819a4d5eb2f25038019811e4154ed8f6bcb9a392ff53ba043c3272",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/3ba47751d5819a4d5eb2f25038019811e4154ed8f6bcb9a392ff53ba043c3272",
+      "metadata_sha256": "287b96e535416e184d590b74448b7600c32202db7689d52f0553b292656e4cf7",
+      "image_sha256": "4fe97630289ed4de0bd49086cd9c1a2c0d8ddc4a2be6988c741a2f62414339f2"
+    },
+    {
+      "key": "0aed45cbf3b800783964ddd20b99970e0cf4f0e1113533fc3757e11a2374d1a9",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/0aed45cbf3b800783964ddd20b99970e0cf4f0e1113533fc3757e11a2374d1a9",
+      "metadata_sha256": "9cd7b7f830833459f36b4c6272f4333e131290d0228554f0f95746a425d86ba2",
+      "image_sha256": "1627184d32f83a10ec58a06732b58c2f87894da943bc8eed8b7cca7870c57a80"
+    },
+    {
+      "key": "334355c1f44f94dcba6e53213435b505530ae07f57d5c3f61d405be0e9483f97",
+      "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/batch-packed/cases/334355c1f44f94dcba6e53213435b505530ae07f57d5c3f61d405be0e9483f97",
+      "metadata_sha256": "e63d938e1e0fd080a9a56398dad4309ccedffa72fd98cc506a95f3f5b0976160",
+      "image_sha256": "2153b437bf36c73cbeadc8822c3425cf6fa71af346560e3ff1f4b108286b9fbd"
+    }
+  ],
+  "family_generator_sha256": "0b5a28dc5fe55d9695c25b3892433eb03fafa45a4879956040e57ebebcb24e42",
+  "overlay_generator_sha256": "ab2a45bcc7cd1d918da32c9868ff15e709749ad0fe4ffa297cf03f9c5935dace",
+  "orchestrator_sha256": "83fc805cc9108f222d6df21adffa0b7b812964e1b5f840e425369c2d2ac5f364",
+  "candidate_count": 63196,
+  "discovery_policy": {
+    "minimum_variants": 1,
+    "operand_policy": "typed",
+    "root_only": true,
+    "terminal_only": false,
+    "region_policy": "canonical-v1"
+  },
+  "discovery_counts": {
+    "cases": 40,
+    "bindings": 613362,
+    "regions": 175836,
+    "scanned_words": 6049107,
+    "oversized_regions_skipped": 0,
+    "nonroot_bindings_skipped": 465611,
+    "nonterminal_regions_skipped": 0,
+    "canonical_linear_regions": 32170,
+    "canonical_terminal_regions": 143297,
+    "canonical_successor_roots": 28085,
+    "canonical_external_successors": 37478,
+    "truncated_linear_regions_skipped": 364,
+    "truncated_terminal_regions_skipped": 5
+  },
+  "family_count": 17622,
+  "source_count": 786,
+  "declined_structures": 45574,
+  "reused_body_sources": 785,
+  "reused_families": 17622,
+  "previous_family_catalog_sha256": "14839ca67b40c5008edc6d64a71288f6b97966d487277f043f7987d8b1966d18",
+  "family_catalog_sha256": "918206b8a5bd2fdf825db2cdf1df32a46ed62b6542de2b8aa3257588d893e96c",
+  "seconds": 86.41460634299983
+}
+```
+
+## C.25 — `build/lab/ee-load-native-recovery-1790948588452292506/route.json`
+
+**Bytes:** 272. **SHA-256:** `4b5de7b769d01a9f05cccbaa058a8a9060dc762f447b9cc9d7fa95cf6f3c0d1e`.
+
+```json
+{
+  "command": [
+    "/usr/bin/python3",
+    "-u",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/run-menu-with-card-restore.py"
+  ],
+  "returncode": 0,
+  "seconds": 98.29194984300011,
+  "strict_approval": false
+}
+```
+
+## C.26 — `build/lab/ee-load-native-recovery-1790948588452292506/game-run/headless-test.json`
+
+**Bytes:** 312. **SHA-256:** `6c6cdc13cdc3579776e6ff9521db0d71b417dd22f1badc2301fedf461dd9738a`.
+
+```json
+{
+  "helper_returncode": 0,
+  "seconds": 98.01103755599979,
+  "frames": 31,
+  "final_phase": "file",
+  "bounded_route_timeout": false,
+  "scope": "Owned existing-save route on GPU; explicit template fixture, VU diagnostic, no complete gameplay approval.",
+  "screenshot_attempts": 31,
+  "screenshot_files": 29
+}
+```
+
+## C.27 — `build/lab/ee-load-native-recovery-1790948588452292506/game-run/cleanup.json`
+
+**Bytes:** 178. **SHA-256:** `6ebb25d54339fb1e5ffcf753e1716e4a15fa4577dbdabb743626e9412daa88ad`.
+
+```json
+{
+  "scope": "owned menu regression; no campaign qualification",
+  "driver_returncode": 0,
+  "card_files_restored": 5,
+  "card_hashes_restored": true,
+  "cards_changed": false
+}
+```
+
+## C.28 — `build/lab/ee-load-native-recovery-1790948588452292506/game-run/misses/ee-miss-000001/request.json`
+
+**Bytes:** 706. **SHA-256:** `dd42003b128e9e8dc8fd549e42a61bc8cd28e42c26cdf553c8ba321007e75ee2`.
+
+```json
+{"schema_version":1,"processor":"EE","runtime_admission":"missing","target_pc":20584836,"source_pc":20584836,"branch_kind":0,"operation":"EE scheduler","operation_truncated":false,"module_owns_address":false,"module_key":"","module_key_truncated":false,"aot_directory_available":true,"overlay_lookup_status":"MissingEntry","versions_checked":0,"ram_captured":true,"context_captured":true,"ee_model_profile":1,"window_base":20578304,"window_bytes":65536,"quiescence_qualified":false,"complete_machine_checkpoint":false,"candidates":[],"complete":true,"scope":"guard diagnosis from captured RAM and optional EE model context; fetch, writer quiescence, kernel/device state, closure and fidelity unqualified"}
+```
+
+## C.29 — `build/lab/ee-load-native-recovery-1790948588452292506/next-prepare.json`
+
+**Bytes:** 554. **SHA-256:** `3b09d9eb06fc4cb509d440b28918133cfc37a798366df9d58f387cf52b0d4a30`.
+
+```json
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/lab/prepare_ee_miss.py",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/game-run/misses/ee-miss-000001",
+    "--generator",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/ps2xRecomp/ps2_native_overlay",
+    "--output",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/next-case"
+  ],
+  "returncode": 0,
+  "seconds": 0.22916826800064882
+}
+```
+
+## C.30 — `build/lab/ee-load-native-recovery-1790948588452292506/next-discovery-measurement.json`
+
+**Bytes:** 124. **SHA-256:** `7c4bcd60e96240432f9ef679ec9862ccda5468cffcf949b488e8a841f75b9f2d`.
+
+```json
+{
+  "old": 63196,
+  "next_case_proposals": 11408,
+  "new_shapes": 10673,
+  "union": 73869,
+  "seconds": 4.070796203999635
+}
+```
+
+## C.31 — `build/lab/ee-load-native-recovery-1790948588452292506/vu-compile.json`
+
+**Bytes:** 1339. **SHA-256:** `070c5ead798437a74f378a1710fc63d736fa931d6a84b73834b1ddc125389baa`.
+
+```json
+{
+  "command": [
+    "/usr/bin/c++",
+    "-DAGRESSIVE_LOGS=1",
+    "-DGRAPHICS_API_OPENGL_33",
+    "-DPLATFORM_DESKTOP",
+    "-DPS2X_ENABLE_IOP_RPC_TRACE=1",
+    "-DPS2_FUNCTION_LOG_TRACKER=1",
+    "-DPS2_RUNTIME_LOGS=1",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/generated",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/lab/include",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/include",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/ps2xRuntime/src/lib/Kernel",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/build/_deps/raylib-src/src",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/build/_deps/raylib-src/src/external/glfw/include",
+    "-I/home/pedrohs/Downloads/ps2-native-recompiler/ps2xIOP/include",
+    "-O3",
+    "-DNDEBUG",
+    "-O1",
+    "-fno-lto",
+    "-msse4.1",
+    "-o",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/ee-load-native-recovery-1790948588452292506/vu-prologue-bank.o",
+    "-c",
+    "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/vu-prologue-bank.cpp"
+  ],
+  "returncode": 0,
+  "seconds": 22.264643313001216,
+  "source": "/home/pedrohs/Downloads/ps2-native-recompiler/build/lab/gs-load-existing-save-1790946973205664734/vu-prologue-bank.cpp",
+  "strict_approval": false
+}
+```
+
+
+---
+
+<a id="ps2native-20261002-atual-anexo-d"></a>
+
+# Complemento D — identidade dos documentos atuais
+
+Arquivos próprios rastreados, além deste consolidado. Conteúdo integral preservado no acervo ou no Complemento A. A conferência usa o conteúdo completo, não somente títulos.
+
+| Documento | Linhas | Bytes | SHA-256 | Local integral |
+|---|---:|---:|---|---|
+| `PROJECT_SPEC.md` | 156 | 12572 | `ae42f29ca50b459bce0f9854acc41f577404f594f72bf0efbf60be7182152468` | Acervo anterior integral |
+| `README.md` | 582 | 33574 | `bef2d52b24f226abc9722719c45a57e2a50d2b0300c9ba74a19b4d0385ae9b37` | Acervo anterior integral |
+| `README_AUTOMACAO_UNIVERSAL.md` | 2756 | 146446 | `378861bf8d2ad2308eaf69b278073d0fe0e2ab4dbf51071fafecaf60da1ee793` | Acervo anterior integral |
+| `RELATORIO_PS2NATIVE_ESTADO_ATUAL.md` | 582 | 52228 | `cb4eceb264c56f20b5bd37391f61cb17c4f4a19ffc077cf09c474691e52b5936` | Acervo anterior integral |
+| `android/README.md` | 41 | 2012 | `7ed9c4f1ef5c1eef258b3d00265f73b839dba6f22fcf851f24c8825299e20968` | Acervo anterior integral |
+| `docs/ANDROID_PIPELINE.md` | 188 | 20388 | `d2939d7c41d614fd89124e571b3d72441f6ea85339f7e8405879b4e6e5513a28` | Acervo anterior integral |
+| `docs/FAST_NATIVE_ITERATION.md` | 654 | 37581 | `86f38a0272f3aef1074ed5560787663947d9738d6fd507875a9adc1a6be588ca` | Acervo anterior integral |
+| `docs/NATIVE_HANDOFF.md` | 116 | 9526 | `16e1a4f5362fceb004757ec4dc2611f1c3ec375877ae1b07baba44ed9d97698a` | Acervo anterior integral |
+| `docs/RECOMPILER_GAPS.md` | 74 | 16480 | `167fe59ac6decdf2bcddeb5b00f4ed95ca64fac1a2d997c6bf841277c79b4067` | Acervo anterior integral |
+| `docs/STATUS_PC.md` | 59 | 4287 | `246d282542dc02172d19e5151092c6935653d695a25d4749e783874d152afa20` | Complemento A |
+| `lab/PCSX2_VU_REFERENCE.md` | 214 | 11967 | `28787716badabb6f98df3fce3cb908c6eb52c7baf4d651ade8daf7b258823114` | Acervo anterior integral |
+| `lab/README.md` | 1123 | 70422 | `1cd8dd7482e0746ba67320b1ee574ae533023634dcbf501006ec0e907fda36d7` | Acervo anterior integral |
+| `ps2xAnalyzer/Readme.md` | 85 | 4169 | `ced2830b4973818cf959210d4ac03971c000f8634177b39b88bec93b69ce877a` | Acervo anterior integral |
+| `ps2xIOP/README.md` | 134 | 7274 | `3675db68978b2d72b3ecdaeebeea07a8eee2700446a48c8b50ae9f389aa5e521` | Acervo anterior integral |
+| `ps2xRuntime/Readme.md` | 77 | 2869 | `82120aefb2db56b10af603502a834b82a5d9ebd8fa2237946744855b358ed2d4` | Acervo anterior integral |
+| `schemas/nexo-device-state-v1.md` | 152 | 8377 | `9c72b971ddc33a0092266eda044ca38bbeab38ccdd4adfac327c234b01db3ad5` | Acervo anterior integral |
+| `schemas/nexo-ee-aot-v0.md` | 119 | 6666 | `7ee40403e17ddb6d80d4afbde5822ddf0c8a30af72b8fe164a29b5f4a0388013` | Acervo anterior integral |
+| `schemas/nexo-ee-data-family-candidates-v1.md` | 169 | 10087 | `1aab6783925093cf52327ef70339478bf22e820f87cd0b783cf1d657867250f8` | Acervo anterior integral |
+| `schemas/nexo-ee-entry-dependencies-v1.md` | 115 | 6831 | `8fcfb8417aa7aa3574da0bd5f02897eeeb6e74a29af4e565ad50d6174e2864fa` | Acervo anterior integral |
+| `schemas/nexo-ee-family-catalog-v0.md` | 185 | 11366 | `272b4989d3f69a4aea530a90ccd68ca0592d8392d14c7c90a2bc1f95c33483db` | Acervo anterior integral |
+| `schemas/nexo-ee-miss-batch-v1.md` | 57 | 3507 | `cc6a0ad21a278af94197d5c09fb3f6431f79fa49f51eedb766367ff879c38130` | Acervo anterior integral |
+| `schemas/nexo-ee-miss-v1.md` | 153 | 8983 | `3d3d8d63da039d7c22ac8c85fca319e81f47cd605591a09c8d1581fd6d1597cd` | Acervo anterior integral |
+| `schemas/nexo-ee-native-data-family-v0.md` | 147 | 8353 | `ece26e06e53361cf886c0b9dead99b2703c1f61d9c753d63b249d287a8074b82` | Acervo anterior integral |
+| `schemas/nexo-iop-aot-v0.md` | 194 | 11397 | `3aacfbeda31b6efbf21775b190a32caefb34a3e7f0bfad1c303d46514ca49eda` | Acervo anterior integral |
+| `schemas/nexo-observed-vif-case-v1.md` | 162 | 8881 | `b0634250b441d47d7948fc6b16bf3e6e5030ca1ee575eccf3c1666dca83944df` | Acervo anterior integral |
+| `schemas/nexo-vu-aot-v0.md` | 40 | 2487 | `f5e0d68e2efbda53342b9a1bd0cdd39cb8fcefbea355932932457d209af1a1ae` | Acervo anterior integral |
+| `schemas/nexo-vu-capture-v1.md` | 48 | 2573 | `e7511d58280ccf6f30171964938a130b062d90654e0549ad011a8e603958744e` | Acervo anterior integral |
+| `schemas/nexo-vu-runtime-binding-v0.md` | 60 | 3367 | `fb3deec03d25387f6e18c19f355fc6e7f859f863be8c1bcaab5e4a2400154819` | Acervo anterior integral |
+| `schemas/nexo-vu-state-v1.md` | 88 | 4834 | `3d49bc5660b3acada362420204adcd076a55bfce94364afdd29bf02ea118d9f1` | Acervo anterior integral |
+| `schemas/nexo-vu-state-v2.md` | 45 | 2466 | `a39f4d146a41485aa31e8c3308ddf55f273e4b4a7ed63f95a862befeb3351a4e` | Acervo anterior integral |
+| `tools/iso_inspect/README.md` | 42 | 4794 | `b1fe117b795523561161cda37fc90635e51205a35bd275737d38589cca804473` | Acervo anterior integral |
+| `tools/ps2native/README.md` | 124 | 7562 | `625434f1bd747291c79364e9a316d637db0ef2ff1152a0992670687f5c323727` | Acervo anterior integral |
+
+## D.1 — Identidade das fontes locais descritas
+
+| Arquivo | SHA-256 |
+|---|---|
+| `lab/discover_ee_data_families.py` | `0cd3b1c49370de93ef9eeeb36833990a54860cb7248074725c28703578eda547` |
+| `lab/generate_ee_family_catalog.py` | `46fb5d764a24bccd7819ff4d495ece504461cb10c4cbf8fddb32dd0fa1913dac` |
+| `lab/prepare_ee_family_batch.py` | `83fc805cc9108f222d6df21adffa0b7b812964e1b5f840e425369c2d2ac5f364` |
+| `lab/tests/test_ee_data_families.py` | `d6e814f19c78f91b5ce2995485a3b19016744461ee94d178f648195386de5f66` |
+| `lab/tests/test_prepare_ee_family_batch.py` | `4d354e8221266f6d087adbe6ec03a1446bea201290a1fc194caca422cf960514` |
+| `tools/ps2native/cli.py` | `296e4762355a8810722642ef8597d631aa112235c7d3926bda11dea97f8ebcca` |
+| `tools/ps2native/native_recovery.py` | `a04ae3828b965d2e46c6f154257ac20db0dc15e3b8211bba519582146275c561` |
+| `tools/ps2native/tests/test_native_recovery.py` | `13fcc257553a27799ea32d2972fe33ca5cd32a4d187a1cd08fc3eb64c9463f10` |
+
+---
+
+<a id="ps2native-20261002-atual-anexo-e"></a>
+
+# Complemento E — inventário completo do checkout
+
+**HEAD:** `c4d5ea7ad3872f91604a7b30c77db5367fa746db`. **Branch:** `codex/ps2-native-recomp`. **Arquivos rastreados:** 493.
+
+Este inventário lista caminhos rastreados, sem incorporar binários, assets ou experimentos ignorados.
+
+```text
+.github/workflows/build.yml
+.gitignore
+CMakeLists.txt
+CMakeSettings.json
+LICENSE
+PROJECT_SPEC.md
+README.md
+README_AUTOMACAO_UNIVERSAL.md
+README_GERAL_COMPLETO.md
+RELATORIO_PS2NATIVE_ESTADO_ATUAL.md
+android/CMakeLists.txt
+android/README.md
+android/app/build.gradle
+android/app/src/main/AndroidManifest.xml
+android/app/src/main/java/com/ps2x/runner/Ps2PackageActivity.java
+android/build.gradle
+android/gradle.properties
+android/gradle/wrapper/gradle-wrapper.properties
+android/settings.gradle
+docs/ANDROID_PIPELINE.md
+docs/FAST_NATIVE_ITERATION.md
+docs/NATIVE_HANDOFF.md
+docs/RECOMPILER_GAPS.md
+docs/STATUS_PC.md
+lab/CMakeLists.txt
+lab/PCSX2_VU_REFERENCE.md
+lab/README.md
+lab/admit_ee_misses.py
+lab/compare_vu_issue_traces.py
+lab/discover_ee_data_families.py
+lab/extract_ee_overlay.py
+lab/generate_ee_bank_catalog.py
+lab/generate_ee_family_catalog.py
+lab/generate_iop_bank.py
+lab/generate_vif_banks.py
+lab/generate_vu_bank.py
+lab/generate_vu_semantics.py
+lab/include/nexo/canonical_binary.h
+lab/include/nexo/device_snapshot.h
+lab/include/nexo/ee_miss_capture.h
+lab/include/nexo/ee_snapshot.h
+lab/include/nexo/iop_capture.h
+lab/include/nexo/iop_lab_host.h
+lab/include/nexo/iop_lab_io.h
+lab/include/nexo/pcsx2_vu_reference.h
+lab/include/nexo/vif_capture.h
+lab/include/nexo/vif_parser_checkpoint.h
+lab/include/nexo/vu_native.h
+lab/include/nexo/vu_replay.h
+lab/include/nexo/vu_runtime_binding.h
+lab/include/nexo/vu_snapshot.h
+lab/prepare_ee_family_batch.py
+lab/prepare_ee_miss.py
+lab/prepare_pcsx2_reference.py
+lab/reference/pcsx2/Common.h
+lab/reference/pcsx2/GS.h
+lab/reference/pcsx2/Gif_Unit.h
+lab/reference/pcsx2/MTVU.h
+lab/reference/pcsx2/R5900.h
+lab/reference/pcsx2/Vif.h
+lab/src/device_snapshot.cpp
+lab/src/ee_family_probe_main.cpp
+lab/src/ee_miss_capture.cpp
+lab/src/ee_snapshot.cpp
+lab/src/gs_snapshot.cpp
+lab/src/iop_capture.cpp
+lab/src/iop_inspect_main.cpp
+lab/src/iop_native_probe_main.cpp
+lab/src/iop_runtime_probe_main.cpp
+lab/src/native_interpreter_traps.cpp
+lab/src/pcsx2_vu_reference.cpp
+lab/src/vif_capture.cpp
+lab/src/vif_case_internal.h
+lab/src/vif_issue_trace_main.cpp
+lab/src/vif_pcsx2_reference_main.cpp
+lab/src/vif_replay.cpp
+lab/src/vif_replay_main.cpp
+lab/src/vu_native.cpp
+lab/src/vu_native_inspect.cpp
+lab/src/vu_native_inspect_main.cpp
+lab/src/vu_replay.cpp
+lab/src/vu_replay_internal.h
+lab/src/vu_replay_main.cpp
+lab/src/vu_runtime_binding.cpp
+lab/src/vu_runtime_replay.cpp
+lab/src/vu_snapshot.cpp
+lab/tests/device_snapshot_tests.cpp
+lab/tests/ee_aot_tests.cpp
+lab/tests/ee_context_field_inventory.inc
+lab/tests/ee_data_family_codegen_tests.cpp
+lab/tests/ee_data_family_dispatch_tests.cpp
+lab/tests/ee_data_family_execution_tests.cpp
+lab/tests/ee_data_family_fixture.h
+lab/tests/ee_family_backend_tests.cpp
+lab/tests/ee_miss_capture_fixture.cpp
+lab/tests/ee_snapshot_tests.cpp
+lab/tests/empty_ee_table.cpp
+lab/tests/generate_ee_data_family_fixture.py
+lab/tests/gs_parallel_device_tests.cpp
+lab/tests/gs_parallel_frontend_tests.cpp
+lab/tests/iop_capture_fixture.cpp
+lab/tests/pcsx2_vu_reference_tests.cpp
+lab/tests/test_admit_ee_misses.py
+lab/tests/test_ee_bank_catalog.py
+lab/tests/test_ee_context_inventory.py
+lab/tests/test_ee_data_families.py
+lab/tests/test_ee_family_catalog.py
+lab/tests/test_ee_family_probe.py
+lab/tests/test_ee_miss_capture.py
+lab/tests/test_extract_ee_overlay.py
+lab/tests/test_iop_bank_codegen.py
+lab/tests/test_iop_capture_cli.py
+lab/tests/test_iop_catalog_codegen.py
+lab/tests/test_iop_inspect_cli.py
+lab/tests/test_iop_runtime_backend_build.py
+lab/tests/test_iop_runtime_probe_cli.py
+lab/tests/test_pcsx2_reference_source.py
+lab/tests/test_prepare_ee_family_batch.py
+lab/tests/test_prepare_ee_miss.py
+lab/tests/test_vif_bank_codegen.py
+lab/tests/test_vu_bank_codegen.py
+lab/tests/test_vu_semantics_codegen.py
+lab/tests/test_vu_timing_map.py
+lab/tests/vif_capture_tests.cpp
+lab/tests/vif_gif_stream_tests.cpp
+lab/tests/vu_native_tests.cpp
+lab/tests/vu_snapshot_tests.cpp
+ps2xAnalyzer/CMakeLists.txt
+ps2xAnalyzer/Readme.md
+ps2xAnalyzer/include/ps2recomp/analysis_passes.h
+ps2xAnalyzer/include/ps2recomp/elf_analysis_context.h
+ps2xAnalyzer/include/ps2recomp/elf_analyzer.h
+ps2xAnalyzer/include/ps2recomp/function_classifier.h
+ps2xAnalyzer/include/ps2recomp/sce_symbol_database_data.h
+ps2xAnalyzer/include/ps2recomp/sce_symbol_scanner.h
+ps2xAnalyzer/include/ps2recomp/toml_generator.h
+ps2xAnalyzer/src/analysis_passes.cpp
+ps2xAnalyzer/src/analyzer_main.cpp
+ps2xAnalyzer/src/elf_analysis_context.cpp
+ps2xAnalyzer/src/elf_analyzer.cpp
+ps2xAnalyzer/src/function_classifier.cpp
+ps2xAnalyzer/src/sce_symbol_scanner.cpp
+ps2xAnalyzer/src/toml_generator.cpp
+ps2xIOP/CMakeLists.txt
+ps2xIOP/README.md
+ps2xIOP/cmake/iop_native_catalog.cmake
+ps2xIOP/include/ps2x/iop/iop_host.h
+ps2xIOP/include/ps2x/iop/iop_subsystem.h
+ps2xIOP/include/ps2x/iop/iop_types.h
+ps2xIOP/include/ps2x/iop/ps2_path.h
+ps2xIOP/src/emulator/core/iop_cpu.cpp
+ps2xIOP/src/emulator/core/iop_cpu.h
+ps2xIOP/src/emulator/core/iop_cpu_interpreter.cpp
+ps2xIOP/src/emulator/core/iop_kernel.cpp
+ps2xIOP/src/emulator/core/iop_kernel.h
+ps2xIOP/src/emulator/core/iop_memory.cpp
+ps2xIOP/src/emulator/core/iop_memory.h
+ps2xIOP/src/emulator/core/iop_native.cpp
+ps2xIOP/src/emulator/core/iop_native.h
+ps2xIOP/src/emulator/imports/iop_cdvd.cpp
+ps2xIOP/src/emulator/imports/iop_cdvd.h
+ps2xIOP/src/emulator/imports/iop_heaplib.cpp
+ps2xIOP/src/emulator/imports/iop_heaplib.h
+ps2xIOP/src/emulator/imports/iop_imports.cpp
+ps2xIOP/src/emulator/imports/iop_imports.h
+ps2xIOP/src/emulator/imports/iop_intrman.cpp
+ps2xIOP/src/emulator/imports/iop_intrman.h
+ps2xIOP/src/emulator/imports/iop_ioman.cpp
+ps2xIOP/src/emulator/imports/iop_ioman.h
+ps2xIOP/src/emulator/imports/iop_loadcore.cpp
+ps2xIOP/src/emulator/imports/iop_loadcore.h
+ps2xIOP/src/emulator/imports/iop_stdio.cpp
+ps2xIOP/src/emulator/imports/iop_stdio.h
+ps2xIOP/src/emulator/imports/iop_sysclib.cpp
+ps2xIOP/src/emulator/imports/iop_sysclib.h
+ps2xIOP/src/emulator/imports/iop_sysmem.cpp
+ps2xIOP/src/emulator/imports/iop_sysmem.h
+ps2xIOP/src/emulator/imports/iop_timrman.cpp
+ps2xIOP/src/emulator/imports/iop_timrman.h
+ps2xIOP/src/emulator/imports/iop_vblank.cpp
+ps2xIOP/src/emulator/imports/iop_vblank.h
+ps2xIOP/src/emulator/iop_emulator.cpp
+ps2xIOP/src/emulator/iop_emulator.h
+ps2xIOP/src/emulator/iop_emulator_const.h
+ps2xIOP/src/emulator/services/iop_module_loader.cpp
+ps2xIOP/src/emulator/services/iop_module_loader.h
+ps2xIOP/src/emulator/services/iop_rpc.cpp
+ps2xIOP/src/emulator/services/iop_rpc.h
+ps2xIOP/src/iop_module_manager.cpp
+ps2xIOP/src/iop_module_manager.h
+ps2xIOP/src/iop_service.h
+ps2xIOP/src/iop_subsystem.cpp
+ps2xIOP/src/module_factories.h
+ps2xIOP/src/modules/cdvdfsv.cpp
+ps2xIOP/src/modules/dbcman.cpp
+ps2xIOP/src/modules/libsd.cpp
+ps2xIOP/src/modules/loadfile.cpp
+ps2xIOP/src/modules/mcserv.cpp
+ps2xIOP/src/ps2_path.cpp
+ps2xIOP/src/rpc_reply.h
+ps2xIOP/tests/iop_compat_test_support.h
+ps2xIOP/tests/iop_compatibility_tests.cpp
+ps2xIOP/tests/iop_emulator_tests.cpp
+ps2xIOP/tests/iop_import_tests.cpp
+ps2xIOP/tests/iop_import_version_tests.cpp
+ps2xIOP/tests/iop_native_family_tests.cpp
+ps2xIOP/tests/iop_native_import_tests.cpp
+ps2xIOP/tests/iop_native_rpc_words.json
+ps2xIOP/tests/iop_native_tests.cpp
+ps2xIOP/tests/iop_native_words.json
+ps2xRecomp/CMakeLists.txt
+ps2xRecomp/include/ps2recomp/Emitters/control_flow_emitter.h
+ps2xRecomp/include/ps2recomp/Emitters/function_emitter.h
+ps2xRecomp/include/ps2recomp/Emitters/function_table_emitter.h
+ps2xRecomp/include/ps2recomp/Translators/cop0_translator.h
+ps2xRecomp/include/ps2recomp/Translators/fpu_translator.h
+ps2xRecomp/include/ps2recomp/Translators/instruction_translator.h
+ps2xRecomp/include/ps2recomp/Translators/mmi_translator.h
+ps2xRecomp/include/ps2recomp/Translators/regimm_translator.h
+ps2xRecomp/include/ps2recomp/Translators/special_translator.h
+ps2xRecomp/include/ps2recomp/Translators/vu_translator.h
+ps2xRecomp/include/ps2recomp/code_generator.h
+ps2xRecomp/include/ps2recomp/codegen_helpers.h
+ps2xRecomp/include/ps2recomp/config_manager.h
+ps2xRecomp/include/ps2recomp/control_flow_analyzer.h
+ps2xRecomp/include/ps2recomp/control_flow_utils.h
+ps2xRecomp/include/ps2recomp/elf_parser.h
+ps2xRecomp/include/ps2recomp/gif_dma_kick_analyzer.h
+ps2xRecomp/include/ps2recomp/instructions.h
+ps2xRecomp/include/ps2recomp/native_data_family.h
+ps2xRecomp/include/ps2recomp/native_overlay.h
+ps2xRecomp/include/ps2recomp/ps2_recompiler.h
+ps2xRecomp/include/ps2recomp/r5900_decoder.h
+ps2xRecomp/include/ps2recomp/recompiler_reporter.h
+ps2xRecomp/include/ps2recomp/types.h
+ps2xRecomp/src/lib/code_generator.cpp
+ps2xRecomp/src/lib/config_manager.cpp
+ps2xRecomp/src/lib/control_flow_analyzer.cpp
+ps2xRecomp/src/lib/control_flow_emitter.cpp
+ps2xRecomp/src/lib/cop0_translator.cpp
+ps2xRecomp/src/lib/elf_parser.cpp
+ps2xRecomp/src/lib/fpu_translator.cpp
+ps2xRecomp/src/lib/function_emitter.cpp
+ps2xRecomp/src/lib/function_table_emitter.cpp
+ps2xRecomp/src/lib/gif_dma_kick_analyzer.cpp
+ps2xRecomp/src/lib/instruction_translator.cpp
+ps2xRecomp/src/lib/jump_table_switch_emitter.cpp
+ps2xRecomp/src/lib/mmi_translation_helpers.cpp
+ps2xRecomp/src/lib/mmi_translator.cpp
+ps2xRecomp/src/lib/native_data_family.cpp
+ps2xRecomp/src/lib/native_overlay.cpp
+ps2xRecomp/src/lib/ps2_recompiler.cpp
+ps2xRecomp/src/lib/r5900_decoder.cpp
+ps2xRecomp/src/lib/recompiler_reporter.cpp
+ps2xRecomp/src/lib/regimm_translator.cpp
+ps2xRecomp/src/lib/special_translator.cpp
+ps2xRecomp/src/lib/vu_translation_helpers.cpp
+ps2xRecomp/src/lib/vu_translator.cpp
+ps2xRecomp/src/runner/main.cpp
+ps2xRecomp/src/tools/native_data_family_main.cpp
+ps2xRecomp/src/tools/native_overlay_main.cpp
+ps2xRecomp/tools/ghidra/ExportPS2Functions.java
+ps2xRuntime/CMakeLists.txt
+ps2xRuntime/Readme.md
+ps2xRuntime/cmake/CopyFfmpegDlls.cmake
+ps2xRuntime/cmake/ReleaseMode.cmake
+ps2xRuntime/cmake/ee_family_catalog.cmake
+ps2xRuntime/cmake/ee_native_catalog.cmake
+ps2xRuntime/cmake/iop_runtime_backend.cmake
+ps2xRuntime/cmake/parallel_gs.cmake
+ps2xRuntime/cmake/parallel_gs_compat.cmake
+ps2xRuntime/include/ThreadNaming.h
+ps2xRuntime/include/game_overrides.h
+ps2xRuntime/include/games_database.h
+ps2xRuntime/include/ps2_call_list.h
+ps2xRuntime/include/ps2_debug_panel.h
+ps2xRuntime/include/ps2_guest_loop_optimization.h
+ps2xRuntime/include/ps2_guest_startup_args.h
+ps2xRuntime/include/ps2_host_backend.h
+ps2xRuntime/include/ps2_log.h
+ps2xRuntime/include/ps2_native_data_operands.h
+ps2xRuntime/include/ps2_native_overlay_abi.h
+ps2xRuntime/include/ps2_runtime.h
+ps2xRuntime/include/ps2_runtime_calls.h
+ps2xRuntime/include/ps2_runtime_macros.h
+ps2xRuntime/include/ps2_stubs.h
+ps2xRuntime/include/ps2_syscalls.h
+ps2xRuntime/include/runtime/ee_scheduler.h
+ps2xRuntime/include/runtime/gs/gs_backend.h
+ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+ps2xRuntime/include/runtime/gs/gs_frontend.h
+ps2xRuntime/include/runtime/gs/gs_parallel_backend.h
+ps2xRuntime/include/runtime/gs/gs_parallel_device.h
+ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h
+ps2xRuntime/include/runtime/gs/gs_types.h
+ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
+ps2xRuntime/include/runtime/gs/ps2_gs_common.h
+ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+ps2xRuntime/include/runtime/gs/ps2_gs_psmct16.h
+ps2xRuntime/include/runtime/gs/ps2_gs_psmct32.h
+ps2xRuntime/include/runtime/gs/ps2_gs_psmt4.h
+ps2xRuntime/include/runtime/gs/ps2_gs_psmt8.h
+ps2xRuntime/include/runtime/ps2_address.h
+ps2xRuntime/include/runtime/ps2_audio.h
+ps2xRuntime/include/runtime/ps2_memory.h
+ps2xRuntime/include/runtime/ps2_pad.h
+ps2xRuntime/include/runtime/ps2_rom_device.h
+ps2xRuntime/include/runtime/ps2_vfs.h
+ps2xRuntime/include/runtime/ps2_vu1.h
+ps2xRuntime/include/types.h
+ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Audio.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Audio.h
+ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/CD.h
+ps2xRuntime/src/lib/Kernel/Stubs/Common.h
+ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.h
+ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/DMA.h
+ps2xRuntime/src/lib/Kernel/Stubs/Deci2.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Deci2.h
+ps2xRuntime/src/lib/Kernel/Stubs/FileIO.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/FileIO.h
+ps2xRuntime/src/lib/Kernel/Stubs/Font.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Font.h
+ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/GS.h
+ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+ps2xRuntime/src/lib/Kernel/Stubs/IPU.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/IPU.h
+ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/LibC.h
+ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h
+ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.h
+ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Pad.h
+ps2xRuntime/src/lib/Kernel/Stubs/RPC.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/RPC.h
+ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/SIF.h
+ps2xRuntime/src/lib/Kernel/Stubs/System.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/System.h
+ps2xRuntime/src/lib/Kernel/Stubs/TTY.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/TTY.h
+ps2xRuntime/src/lib/Kernel/Stubs/Unimplemented.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/Unimplemented.h
+ps2xRuntime/src/lib/Kernel/Stubs/VU.cpp
+ps2xRuntime/src/lib/Kernel/Stubs/VU.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Common.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Deci2.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/Dispatcher.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/Dispatcher.h
+ps2xRuntime/src/lib/Kernel/Syscalls/FileIO.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/FileIO.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/Loader.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/Path.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/Runtime.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Interrupt.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/Interrupt.h
+ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/RPC.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Sync.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/Sync.h
+ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/System.h
+ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp
+ps2xRuntime/src/lib/Kernel/Syscalls/Thread.h
+ps2xRuntime/src/lib/game_overrides.cpp
+ps2xRuntime/src/lib/games_database.cpp
+ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+ps2xRuntime/src/lib/gs/gs_frontend.cpp
+ps2xRuntime/src/lib/gs/gs_parallel_backend.cpp
+ps2xRuntime/src/lib/gs/gs_parallel_device.cpp
+ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+ps2xRuntime/src/lib/ps2_android_runtime.cpp
+ps2xRuntime/src/lib/ps2_audio.cpp
+ps2xRuntime/src/lib/ps2_audio_vag.cpp
+ps2xRuntime/src/lib/ps2_debug_panel.cpp
+ps2xRuntime/src/lib/ps2_ee_aot.cpp
+ps2xRuntime/src/lib/ps2_ee_aot.h
+ps2xRuntime/src/lib/ps2_ee_aot_bank.h
+ps2xRuntime/src/lib/ps2_ee_data_family.cpp
+ps2xRuntime/src/lib/ps2_ee_data_family.h
+ps2xRuntime/src/lib/ps2_ee_overlay_backend.cpp
+ps2xRuntime/src/lib/ps2_ee_overlay_backend.h
+ps2xRuntime/src/lib/ps2_iop_backend.cpp
+ps2xRuntime/src/lib/ps2_iop_backend.h
+ps2xRuntime/src/lib/ps2_iop_host.cpp
+ps2xRuntime/src/lib/ps2_iop_host.h
+ps2xRuntime/src/lib/ps2_iop_transport.h
+ps2xRuntime/src/lib/ps2_memory.cpp
+ps2xRuntime/src/lib/ps2_native_overlay.cpp
+ps2xRuntime/src/lib/ps2_native_overlay.h
+ps2xRuntime/src/lib/ps2_pad.cpp
+ps2xRuntime/src/lib/ps2_pad_keyboard.h
+ps2xRuntime/src/lib/ps2_rom_device.cpp
+ps2xRuntime/src/lib/ps2_runtime.cpp
+ps2xRuntime/src/lib/ps2_scene_capture.h
+ps2xRuntime/src/lib/ps2_vfs.cpp
+ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+ps2xRuntime/src/lib/ps2_vita_runtime.cpp
+ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+ps2xRuntime/src/lib/vu/ps2_vu1_detail.h
+ps2xRuntime/src/lib/vu/ps2_vu1_diagnostics.h
+ps2xRuntime/src/lib/vu/ps2_vu1_lower.cpp
+ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
+ps2xRuntime/src/main.cpp
+ps2xRuntime/src/runner/register_functions.cpp
+ps2xRuntime/vita/module/libGL.suprx
+ps2xRuntime/vita/module/libGLESv2.suprx
+ps2xRuntime/vita/module/libIMGEGL.suprx
+ps2xRuntime/vita/module/libgpu_es4_ext.suprx
+ps2xRuntime/vita/module/libpvrPSP2_WSEGL.suprx
+ps2xStudio/CMakeLists.txt
+ps2xStudio/external/Font/Font_1.ttf
+ps2xStudio/external/Font/Font_2.ttf
+ps2xStudio/include/GUI.hpp
+ps2xStudio/include/StudioState.hpp
+ps2xStudio/include/ui/StyleManager.hpp
+ps2xStudio/src/GUI.cpp
+ps2xStudio/src/main.cpp
+ps2xStudio/src/ui/StyleManager.cpp
+ps2xTest/CMakeLists.txt
+ps2xTest/gs_cache/CMakeLists.txt
+ps2xTest/gs_cache/gs_clut_cache_tests.cpp
+ps2xTest/gs_cache/gs_memory_cache_tests.cpp
+ps2xTest/gs_cache/gs_test_support.h
+ps2xTest/gs_cache/gs_texture_cache_tests.cpp
+ps2xTest/include/MiniTest.h
+ps2xTest/src/code_generator_tests.cpp
+ps2xTest/src/elf_analyzer_tests.cpp
+ps2xTest/src/main.cpp
+ps2xTest/src/native_overlay_tests.cpp
+ps2xTest/src/pad_input_tests.cpp
+ps2xTest/src/ps2_gs_tests.cpp
+ps2xTest/src/ps2_iop_tests.cpp
+ps2xTest/src/ps2_memory_tests.cpp
+ps2xTest/src/ps2_recompiler_tests.cpp
+ps2xTest/src/ps2_runtime_expansion_tests.cpp
+ps2xTest/src/ps2_runtime_interrupt_tests.cpp
+ps2xTest/src/ps2_runtime_io_tests.cpp
+ps2xTest/src/ps2_runtime_kernel_tests.cpp
+ps2xTest/src/ps2_sif_dma_tests.cpp
+ps2xTest/src/ps2_sif_rpc_tests.cpp
+ps2xTest/src/ps2_vu1_tests.cpp
+ps2xTest/src/ps2_vu_tests.cpp
+ps2xTest/src/r5900_decoder_tests.cpp
+ps2xTest/src/test_function_table.cpp
+schemas/nexo-device-state-v1.md
+schemas/nexo-ee-aot-v0.md
+schemas/nexo-ee-data-family-candidates-v1.md
+schemas/nexo-ee-entry-dependencies-v1.md
+schemas/nexo-ee-family-catalog-v0.md
+schemas/nexo-ee-miss-batch-v1.md
+schemas/nexo-ee-miss-v1.md
+schemas/nexo-ee-native-data-family-v0.md
+schemas/nexo-iop-aot-v0.md
+schemas/nexo-observed-vif-case-v1.md
+schemas/nexo-vu-aot-v0.md
+schemas/nexo-vu-capture-v1.md
+schemas/nexo-vu-runtime-binding-v0.md
+schemas/nexo-vu-state-v1.md
+schemas/nexo-vu-state-v2.md
+tools/iso_inspect/CMakeLists.txt
+tools/iso_inspect/README.md
+tools/iso_inspect/include/iso_inspector.hpp
+tools/iso_inspect/src/iso_inspector.cpp
+tools/iso_inspect/src/main.cpp
+tools/iso_inspect/tests/check_cli_json.cmake
+tools/iso_inspect/tests/iso_inspector_tests.cpp
+tools/ps2native/README.md
+tools/ps2native/__init__.py
+tools/ps2native/__main__.py
+tools/ps2native/benchmark_vu_capture.cpp
+tools/ps2native/check_dispatch_fixture.py
+tools/ps2native/check_fpu_fixture.py
+tools/ps2native/check_mmi_fixture.py
+tools/ps2native/cli.py
+tools/ps2native/headless_native_test.py
+tools/ps2native/native_overlay_driver.py
+tools/ps2native/pipeline.py
+tools/ps2native/ps2native
+tools/ps2native/replay_vu_capture.cpp
+tools/ps2native/templates/desktop/CMakeLists.txt
+tools/ps2native/tests/test_cli.py
+tools/ps2native/tests/test_headless_native_test.py
+vita/build.sh
+vita/setup.sh
+```
+
+## E.1 — Fontes novos locais ainda não rastreados
+
+```text
+tools/ps2native/native_recovery.py
+tools/ps2native/tests/test_native_recovery.py
+```
+
+## E.2 — Commits recentes consultados
+
+```text
+c4d5ea7 2026-10-02T10:07:33-03:00 Consolidate complete project plans and current GPU execution evidence
+cd93ec6 2026-10-02T10:07:33-03:00 Integrate physical Vulkan GS transport and preserve VIF receiver resets
+522d96e 2026-10-02T10:07:33-03:00 Preserve compiled EE catalog units across canonical expansions
+abe2a2b 2026-10-01T22:51:40-03:00 Consolidate PS2Native plans and complete project state in one README
+d70a168 2026-10-01T22:17:25-03:00 Batch EE structure synthesis with bounded offline orchestration
+93c5cbb 2026-10-01T21:09:56-03:00 Scale guarded EE family synthesis with stable incremental catalogs
+518891d 2026-10-01T19:36:29-03:00 Admit finite native EE data families with guarded runtime rechecks
+c2d6bda 2026-10-01T18:42:34-03:00 Synthesize guarded native EE data families with relative PCs
+```
+
+---
+
+<a id="acervo-anterior-integral"></a>
+
+# Acervo anterior integral — snapshot histórico de 02/10/2026
+
+**ATENÇÃO À DATA:** a síntese e os anexos a partir deste ponto registram versões anteriores. Expressões como “atual”, “pendente”, “local” e “mais recente” pertencem ao levantamento original. A síntese ATUAL 01–36 e os Complementos A–E acima atualizam o estado posterior.
+
+**Origem:** README consolidado anterior. **Linhas:** 25459. **Bytes:** 1540387. **SHA-256:** `4ce7cf176032e61e90f103b01b6b198b21e7666dc86b0fa83274ded38118910a`.
+
+O corpo anterior está preservado integralmente abaixo, incluindo os dois planos completos, a arquitetura anterior e todos os 48 anexos.
+
+<!-- PS2NATIVE_PREVIOUS_README_BEGIN -->
 # PS2Native — README completo: planos, implementação, resultados e continuidade
 
 **Documento único do projeto inteiro.** Reúne o plano de automação universal anterior, a arquitetura NEXO anterior, o plano atual, os relatórios, os contratos, a documentação dos componentes, os experimentos e o estado verificado nesta atualização.
@@ -25457,3 +29254,5 @@ As versões anteriores contêm planos, timestamps, hipóteses e resultados de su
 <!-- PS2NATIVE_SOURCE_END:PS2Native@inventario-09h34 -->
 
 <!-- PS2NATIVE_DOCUMENTATION_APPENDICES_END -->
+
+<!-- PS2NATIVE_PREVIOUS_README_END -->

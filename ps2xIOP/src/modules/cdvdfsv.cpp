@@ -6,6 +6,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -16,7 +18,12 @@ namespace ps2x::iop::detail
     namespace
     {
         constexpr uint32_t kCdSearchSid = 0x80000597u;
+        constexpr uint32_t kCdDiskReadySid = 0x8000059Au;
+        constexpr uint32_t kCdDiskReadyAliasSid = 0x8000059Cu;
         constexpr uint32_t kSearchFileFunction = 0u;
+        constexpr uint32_t kDiskReadyFunction = 0u;
+        constexpr int32_t kCdComplete = 2;
+        constexpr int32_t kCdNotReady = 6;
         constexpr size_t kSearchNameBytes = 256u;
         constexpr size_t kLegacySearchPacketBytes = 292u;
         constexpr size_t kExtendedSearchPacketBytes = 296u;
@@ -57,6 +64,54 @@ namespace ps2x::iop::detail
 
             [[nodiscard]] RpcResult handleRpc(const RpcRequest &request) override
             {
+                if (request.sid == kCdDiskReadySid || request.sid == kCdDiskReadyAliasSid)
+                {
+                    int32_t resultCode = kCdNotReady;
+                    uint32_t mode = 0u;
+                    std::array<uint8_t, sizeof(uint32_t)> modeBytes{};
+                    std::array<uint8_t, sizeof(uint32_t)> replyProbe{};
+                    const bool replyBufferValid = request.receive.address != 0u &&
+                                                  request.receive.size >= replyProbe.size() &&
+                                                  m_host.readGuest(request.receive.address,
+                                                                   replyProbe.data(), replyProbe.size());
+                    const bool validSend = request.function == kDiskReadyFunction &&
+                                           request.send.address != 0u &&
+                                           request.send.size == modeBytes.size() &&
+                                           m_host.readGuest(request.send.address, modeBytes.data(), modeBytes.size());
+                    if (validSend)
+                    {
+                        mode = readU32Le(modeBytes.data());
+                    }
+
+                    // An invalid reply destination is malformed too. Do not
+                    // query CDVDMAN unless both guest buffers are addressable.
+                    if (replyBufferValid && validSend)
+                    {
+                        // Mode 0 is synchronous, mode 8 asks for raw drive status,
+                        // and other modes poll. CDVDMAN owns those semantics.
+                        // Pass every SDK mode through; in particular, mode 2 is valid.
+                        resultCode = m_host.cdDiskReady(mode);
+                    }
+
+                    static const bool traceDiskReady = std::getenv("PS2X_TRACE_IOP_RPC") != nullptr;
+                    if (traceDiskReady)
+                    {
+                        std::array<char, 144> message{};
+                        const bool malformed = !replyBufferValid || !validSend;
+                        std::snprintf(message.data(), message.size(),
+                                      "CDVDFSV DiskReady sid=0x%08X mode=0x%08X status=%d malformed=%u",
+                                      request.sid, mode, resultCode, malformed ? 1u : 0u);
+                        m_host.log(LogLevel::Debug, message.data());
+                    }
+
+                    if (replyBufferValid)
+                    {
+                        const std::array<uint32_t, 1> response{static_cast<uint32_t>(resultCode)};
+                        (void)writeRpcWords(m_host, request.receive, response);
+                    }
+                    return {true, request.receive.address};
+                }
+
                 if (request.sid != kCdSearchSid)
                     return {};
 
@@ -128,7 +183,8 @@ namespace ps2x::iop::detail
             }
 
         private:
-            inline static constexpr std::array<uint32_t, 1> kSids{kCdSearchSid};
+            inline static constexpr std::array<uint32_t, 3> kSids{
+                kCdSearchSid, kCdDiskReadySid, kCdDiskReadyAliasSid};
             inline static constexpr std::array<std::string_view, 2> kModuleAliases{"cdvdfsv", "xcdvdfsv"};
 
             IopHost &m_host;

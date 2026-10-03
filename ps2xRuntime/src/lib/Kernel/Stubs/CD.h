@@ -50,6 +50,7 @@ namespace ps2_stubs
     };
 
     CdDebugSnapshot getCdDebugSnapshot();
+    int32_t queryCdDiskReady(uint32_t mode);
     bool findCdFileForIop(std::string_view path, uint32_t layer, CdSearchResult &result);
     void sceCdRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceCdSync(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

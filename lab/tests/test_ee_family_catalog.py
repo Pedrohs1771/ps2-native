@@ -233,6 +233,72 @@ class FamilyCatalogTests(unittest.TestCase):
             with self.assertRaises(ValueError):self.generate()
         self.assertFalse((self.root/'catalog').exists())
 
+    def second_report(self, *, different=False, policy=None):
+        report=copy.deepcopy(self.report)
+        if different:
+            report['families'][0].update(shape_sha256='2'*64,
+                guard_words=[0x3c020000,0x03e00008,0])
+        if policy is not None:report['discovery_policy']=policy
+        path=self.root/'second-candidates.json'
+        path.write_text(json.dumps(report))
+        return path
+
+    def test_multiple_bounded_reports_admit_all_distinct_shapes(self):
+        second=self.second_report(different=True)
+        with patch.object(publisher,'MAX_CANDIDATES',1):
+            result=publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        self.assertEqual(result['candidate_count'],2)
+        self.assertEqual(result['family_count'],2)
+        self.assertEqual(len(result['candidate_reports']),2)
+        self.assertEqual([r['sha256'] for r in result['candidate_reports']],
+            [hashlib.sha256(p.read_bytes()).hexdigest() for p in [self.report_path,second]])
+        self.assertFalse(result['strict_approval'])
+        self.configure(self.root/'catalog',succeeds=True)
+
+    def test_multiple_reports_merge_normal_entries_without_duplicate_bodies(self):
+        self.family['normal_entry_offsets']=[0];self.write_report()
+        second=self.second_report()
+        report=json.loads(second.read_text());report['families'][0]['normal_entry_offsets']=[8]
+        second.write_text(json.dumps(report))
+        result=publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        self.assertEqual(result['candidate_count'],1)
+        self.assertEqual(result['family_count'],1)
+        self.assertEqual(result['families'][0]['normal_entry_offsets'],[0,8])
+
+    def test_multiple_reports_reject_policy_mismatch_before_publication(self):
+        second=self.second_report(policy={'region_policy':'metadata','operand_policy':'typed'})
+        with self.assertRaisesRegex(ValueError,'polic'):
+            publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        self.assertFalse((self.root/'catalog').exists())
+
+    def test_multiple_reports_keep_the_admitted_catalog_budget(self):
+        second=self.second_report(different=True)
+        with patch.object(publisher,'MAX_CANDIDATES',1),patch.object(publisher,'MAX_FAMILIES',1):
+            with self.assertRaisesRegex(ValueError,'admitted family budget'):
+                publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        self.assertFalse((self.root/'catalog').exists())
+
+    def test_report_collection_has_an_aggregate_byte_budget_and_unique_paths(self):
+        second=self.second_report()
+        with patch.object(publisher,'MAX_AGGREGATE_REPORT_BYTES',1):
+            with self.assertRaisesRegex(ValueError,'aggregate candidate report'):
+                publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        with self.assertRaisesRegex(ValueError,'duplicate candidate report'):
+            publisher.generate([self.report_path,self.report_path],self.generator,self.root/'catalog')
+        self.assertFalse((self.root/'catalog').exists())
+
+    def test_later_report_identity_is_verified_before_any_catalog_is_published(self):
+        second=self.second_report(different=True);reader=publisher.read_report
+        def changed(path,**kwargs):
+            if path==second:
+                report=json.loads(path.read_text());report['families'][0]['guard_words'][0]=0x3c030000
+                path.write_text(json.dumps(report))
+            return reader(path,**kwargs)
+        with patch.object(publisher,'read_report',side_effect=changed):
+            with self.assertRaisesRegex(ValueError,'candidate report identity differs'):
+                publisher.generate([self.report_path,second],self.generator,self.root/'catalog')
+        self.assertFalse((self.root/'catalog').exists())
+
     def test_canonical_policy_cannot_mix_short_prefixes_or_extra_entries(self):
         self.report['discovery_policy']={'region_policy':'canonical-v1','operand_policy':'typed',
             'root_only':True,'terminal_only':False}

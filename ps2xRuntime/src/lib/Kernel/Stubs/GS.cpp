@@ -5,10 +5,24 @@
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/ee_scheduler.h"
 
+#include <cstdlib>
+
 namespace ps2_stubs
 {
     namespace
     {
+        bool gsImageTransferTraceEnabled()
+        {
+            const char *value = std::getenv("PS2X_GS_TRANSFER_TRACE");
+            return value && value[0] == '1' && value[1] == '\0';
+        }
+
+        uint64_t nextGsImageTransferSequence()
+        {
+            static uint64_t sequence = 0u;
+            return ++sequence;
+        }
+
         uint64_t makeClearPrim(bool useContext2)
         {
             return static_cast<uint64_t>(GS_PRIM_SPRITE) |
@@ -122,8 +136,8 @@ namespace ps2_stubs
             runtime->gs().writeRegister(static_cast<uint8_t>(clear.testb.reg & 0xFFu), clear.testb.value);
         }
 
-        void refreshPacketBuilderPendingCount(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr);
-        void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr);
+        void finalizePacketBuilderPendingCount(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, bool addPayload = false);
+        void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr, bool liveDmaCount = true);
 
         void initPacketBuilderState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
@@ -137,7 +151,7 @@ namespace ps2_stubs
                             sizeof(words));
         }
 
-        uint32_t terminatePacketBuilderState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+        uint32_t terminatePacketBuilderState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool liveDmaCount = true)
         {
             const uint32_t stateAddr = getRegU32(ctx, 4);
             uint32_t currentAddr = 0u;
@@ -157,7 +171,9 @@ namespace ps2_stubs
                 currentAddr += 4u;
             }
 
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr, liveDmaCount);
+            if (!liveDmaCount)
+                finalizePacketBuilderPendingCount(rdram, runtime, stateAddr, true);
             writeGuestBytes(rdram,
                             runtime,
                             stateAddr + 8u,
@@ -227,7 +243,7 @@ namespace ps2_stubs
                             sizeof(temp));
         }
 
-        void refreshPacketBuilderPendingCount(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr)
+        void finalizePacketBuilderPendingCount(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, bool addPayload)
         {
             uint32_t currentAddr = 0u;
             uint32_t pendingCountAddr = 0u;
@@ -252,17 +268,22 @@ namespace ps2_stubs
                 deltaQwords = (deltaBytes >> 4u) - 1u;
             }
 
-            countWord = (countWord & 0xFFFF0000u) | (deltaQwords & 0xFFFFu);
+            // libgif adds the appended payload when closing the DMA tag. Keep
+            // that timing: translated guest closes can follow HLE appends and
+            // would count it twice if each append had already patched QWC.
+            countWord = addPayload ? countWord + deltaQwords
+                                   : (countWord & 0xFFFF0000u) | (deltaQwords & 0xFFFFu);
             writeGuestU32(rdram, runtime, pendingCountAddr, countWord);
         }
 
-        void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr)
+        void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr, bool liveDmaCount)
         {
             writeGuestU32(rdram, runtime, stateAddr, currentAddr);
-            refreshPacketBuilderPendingCount(rdram, runtime, stateAddr);
+            if (liveDmaCount)
+                finalizePacketBuilderPendingCount(rdram, runtime, stateAddr);
         }
 
-        uint32_t reservePacketBuilderWords(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t wordCount)
+        uint32_t reservePacketBuilderWords(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t wordCount, bool liveDmaCount = true)
         {
             uint32_t currentAddr = 0u;
             if (!tryReadWordFromGuest(rdram, runtime, stateAddr, currentAddr))
@@ -272,7 +293,7 @@ namespace ps2_stubs
 
             const uint32_t reservedAddr = currentAddr;
             currentAddr += wordCount * 4u;
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr, liveDmaCount);
             return reservedAddr;
         }
 
@@ -280,7 +301,8 @@ namespace ps2_stubs
                                      PS2Runtime *runtime,
                                      uint32_t stateAddr,
                                      uint32_t alignMode,
-                                     uint32_t reserveWords)
+                                     uint32_t reserveWords,
+                                     bool liveDmaCount = true)
         {
             uint32_t currentAddr = 0u;
             if (!tryReadWordFromGuest(rdram, runtime, stateAddr, currentAddr))
@@ -304,14 +326,15 @@ namespace ps2_stubs
                 writeGuestU32(rdram, runtime, currentAddr, zero);
                 currentAddr += 4u;
             }
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr, liveDmaCount);
         }
 
         void openPacketGifTag(uint8_t *rdram,
                               R5900Context *ctx,
                               PS2Runtime *runtime,
                               uint32_t stateAddr,
-                              uint32_t openAddrOffset)
+                              uint32_t openAddrOffset,
+                              bool liveDmaCount = true)
         {
             uint32_t currentAddr = 0u;
             if (!tryReadWordFromGuest(rdram, runtime, stateAddr, currentAddr))
@@ -320,11 +343,11 @@ namespace ps2_stubs
             }
 
             writeGuestVec128(rdram, runtime, currentAddr, GPR_VEC(ctx, 5));
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u, liveDmaCount);
             writeGuestU32(rdram, runtime, stateAddr + openAddrOffset, currentAddr);
         }
 
-        void closePacketGifTag(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t openAddrOffset)
+        void closePacketGifTag(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t openAddrOffset, bool liveDmaCount = true)
         {
             uint32_t openAddr = 0u;
             uint32_t currentAddr = 0u;
@@ -366,7 +389,7 @@ namespace ps2_stubs
                 writeGuestU32(rdram, runtime, currentAddr, 0u);
                 currentAddr += 4u;
             }
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr, liveDmaCount);
         }
     }
 
@@ -383,7 +406,7 @@ namespace ps2_stubs
         const uint64_t regValue = static_cast<uint64_t>(getRegU32(ctx, 5));
         writeGuestU64(rdram, runtime, currentAddr, dataValue);
         writeGuestU64(rdram, runtime, currentAddr + 8u, regValue);
-        writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u);
+        writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u, false);
     }
 
     void sceGifPkAddGsData(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -396,13 +419,13 @@ namespace ps2_stubs
         }
 
         writeGuestU64(rdram, runtime, currentAddr, GPR_U64(ctx, 5));
-        writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 8u);
+        writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 8u, false);
     }
 
     void sceGifPkCloseGifTag(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)ctx;
-        closePacketGifTag(rdram, runtime, getRegU32(ctx, 4), 12u);
+        closePacketGifTag(rdram, runtime, getRegU32(ctx, 4), 12u, false);
     }
 
     void sceGifPkCnt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -411,7 +434,7 @@ namespace ps2_stubs
         const uint32_t countValue = getRegU32(ctx, 5);
         const uint32_t extraValue = getRegU32(ctx, 6);
         const uint32_t tagWord = getRegU32(ctx, 7) | 0x10000000u;
-        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
         const uint32_t words[4] = {tagWord, 0u, countValue, extraValue};
         const uint32_t nextAddr = packetAddr + 16u;
 
@@ -421,7 +444,7 @@ namespace ps2_stubs
                         packetAddr,
                         reinterpret_cast<const uint8_t *>(words),
                         sizeof(words));
-        writePacketBuilderCurrent(rdram, runtime, stateAddr, nextAddr);
+        writePacketBuilderCurrent(rdram, runtime, stateAddr, nextAddr, false);
     }
 
     void sceGifPkEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -430,7 +453,7 @@ namespace ps2_stubs
         const uint32_t countValue = getRegU32(ctx, 5);
         const uint32_t extraValue = getRegU32(ctx, 6);
         const uint32_t tagWord = getRegU32(ctx, 7) | 0x70000000u;
-        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
         const uint32_t words[4] = {tagWord, countValue, extraValue, 0u};
         const uint32_t nextAddr = packetAddr + 16u;
 
@@ -440,7 +463,7 @@ namespace ps2_stubs
                         packetAddr,
                         reinterpret_cast<const uint8_t *>(words),
                         sizeof(words));
-        writePacketBuilderCurrent(rdram, runtime, stateAddr, nextAddr);
+        writePacketBuilderCurrent(rdram, runtime, stateAddr, nextAddr, false);
     }
 
     void sceGifPkInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -450,7 +473,7 @@ namespace ps2_stubs
 
     void sceGifPkOpenGifTag(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        openPacketGifTag(rdram, ctx, runtime, getRegU32(ctx, 4), 12u);
+        openPacketGifTag(rdram, ctx, runtime, getRegU32(ctx, 4), 12u, false);
     }
 
     void sceGifPkRef(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -460,7 +483,7 @@ namespace ps2_stubs
         const uint32_t tagWord = getRegU32(ctx, 9) | getRegU32(ctx, 6) | 0x30000000u;
         const uint32_t extra0 = getRegU32(ctx, 7);
         const uint32_t extra1 = getRegU32(ctx, 8);
-        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+        const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
         const uint32_t words[4] = {tagWord, refAddr, extra0, extra1};
 
         writeGuestBytes(rdram,
@@ -468,7 +491,7 @@ namespace ps2_stubs
                         packetAddr,
                         reinterpret_cast<const uint8_t *>(words),
                         sizeof(words));
-        writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u);
+        writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u, false);
     }
 
     void sceGifPkRefLoadImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -486,7 +509,7 @@ namespace ps2_stubs
 
         // Open a 4-register A+D GIF tag and emit the GS load-image setup.
         {
-            const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+            const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
             const uint32_t words[4] = {0x10000000u, 0u, 0u, 0u};
             writeGuestU32(rdram, runtime, stateAddr + 8u, packetAddr);
             writeGuestBytes(rdram,
@@ -494,7 +517,7 @@ namespace ps2_stubs
                             packetAddr,
                             reinterpret_cast<const uint8_t *>(words),
                             sizeof(words));
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u, false);
 
             // Seed an open A+D tag (nloop=0, EOP clear): closePacketGifTag adds the true
             // appended qword count, so a pre-set nloop would double-count. Open variant
@@ -502,7 +525,7 @@ namespace ps2_stubs
             const uint64_t giftag[2] = {makeGiftagAplusDOpen(0u), 0xEULL};
             uint32_t currentAddr = packetAddr + 16u;
             writeGuestBytes(rdram, runtime, currentAddr, reinterpret_cast<const uint8_t *>(giftag), sizeof(giftag));
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr + 16u, false);
             writeGuestU32(rdram, runtime, stateAddr + 12u, currentAddr);
 
             const uint64_t bitbltbuf =
@@ -534,8 +557,8 @@ namespace ps2_stubs
                 writeGuestU64(rdram, runtime, addr, 0u);
                 writeGuestU64(rdram, runtime, addr + 8u, static_cast<uint64_t>(GS_REG_TRXDIR));
                 addr += 16u;
-                writePacketBuilderCurrent(rdram, runtime, stateAddr, addr);
-                closePacketGifTag(rdram, runtime, stateAddr, 12u);
+                writePacketBuilderCurrent(rdram, runtime, stateAddr, addr, false);
+                closePacketGifTag(rdram, runtime, stateAddr, 12u, false);
             }
         }
 
@@ -543,7 +566,7 @@ namespace ps2_stubs
         {
             const uint32_t chunkQwc = std::min<uint32_t>(qwcRemaining, 32767u);
 
-            const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+            const uint32_t packetAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
             const uint32_t words[4] = {0x10000000u, 0u, 0u, 0u};
             writeGuestU32(rdram, runtime, stateAddr + 8u, packetAddr);
             writeGuestBytes(rdram,
@@ -551,9 +574,9 @@ namespace ps2_stubs
                             packetAddr,
                             reinterpret_cast<const uint8_t *>(words),
                             sizeof(words));
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, packetAddr + 16u, false);
 
-            const uint32_t reservedAddr = reservePacketBuilderWords(rdram, runtime, stateAddr, 4u);
+            const uint32_t reservedAddr = reservePacketBuilderWords(rdram, runtime, stateAddr, 4u, false);
             const bool isLastChunk = (chunkQwc == qwcRemaining);
             const uint64_t gifTag =
                 static_cast<uint64_t>(chunkQwc) |
@@ -561,14 +584,14 @@ namespace ps2_stubs
             writeGuestU64(rdram, runtime, reservedAddr, gifTag);
             writeGuestU64(rdram, runtime, reservedAddr + 8u, 0u);
 
-            const uint32_t refPacketAddr = terminatePacketBuilderState(rdram, ctx, runtime);
+            const uint32_t refPacketAddr = terminatePacketBuilderState(rdram, ctx, runtime, false);
             const uint32_t refWords[4] = {0x30000000u | chunkQwc, dataAddr & 0x9FFFFFFFu, 0u, 0u};
             writeGuestBytes(rdram,
                             runtime,
                             refPacketAddr,
                             reinterpret_cast<const uint8_t *>(refWords),
                             sizeof(refWords));
-            writePacketBuilderCurrent(rdram, runtime, stateAddr, refPacketAddr + 16u);
+            writePacketBuilderCurrent(rdram, runtime, stateAddr, refPacketAddr + 16u, false);
 
             qwcRemaining -= chunkQwc;
             dataAddr += chunkQwc * 16u;
@@ -582,40 +605,51 @@ namespace ps2_stubs
 
     void sceGifPkReserve(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        setReturnU32(ctx, reservePacketBuilderWords(rdram, runtime, getRegU32(ctx, 4), getRegU32(ctx, 5)));
+        setReturnU32(ctx, reservePacketBuilderWords(rdram, runtime, getRegU32(ctx, 4), getRegU32(ctx, 5), false));
     }
 
     void sceGifPkTerminate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        setReturnU32(ctx, terminatePacketBuilderState(rdram, ctx, runtime));
+        setReturnU32(ctx, terminatePacketBuilderState(rdram, ctx, runtime, false));
     }
 
     void sceGsExecLoadImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        uint32_t imgAddr = getRegU32(ctx, 4);
-        uint32_t srcAddr = getRegU32(ctx, 5);
+        const uint32_t imgAddr = getRegU32(ctx, 4);
+        const uint32_t srcAddr = getRegU32(ctx, 5);
 
-        GsImageMem img{};
-        if (!runtime || !runtime->syncCoreSubsystems() || !readGsImage(rdram, imgAddr, img))
+        GsLoadImageDescriptorMem img{};
+        if (!runtime || !runtime->syncCoreSubsystems() ||
+            !readGsLoadImageDescriptor(rdram, imgAddr, img))
         {
             setReturnS32(ctx, -1);
             return;
         }
 
-        const uint32_t rowBytes = bytesForPixels(img.psm, static_cast<uint32_t>(img.width));
-        if (rowBytes == 0)
+        constexpr uint32_t headerQwc = 6u;
+        const uint32_t imageQwc = static_cast<uint32_t>(img.qword[10] & 0x7FFFu);
+        const uint32_t psm = static_cast<uint32_t>((img.qword[2] >> 56u) & 0x3Fu);
+        const uint32_t width = static_cast<uint32_t>(img.qword[6] & 0xFFFu);
+        const uint32_t height = static_cast<uint32_t>((img.qword[6] >> 32u) & 0xFFFu);
+        const uint32_t rowBytes = bytesForPixels(psm, width);
+        const uint64_t totalImageBytes = static_cast<uint64_t>(rowBytes) * height;
+        const uint64_t imagePayloadBytes = static_cast<uint64_t>(imageQwc) * 16u;
+        if (img.qword[0] != makeGiftagAplusD(4u) || img.qword[1] != 0xEull ||
+            img.qword[3] != 0x50ull || img.qword[5] != 0x51ull ||
+            img.qword[7] != 0x52ull || img.qword[9] != 0x53ull ||
+            ((img.qword[10] >> 58u) & 0x3u) != 0x2u ||
+            width == 0u || height == 0u || rowBytes == 0u || imageQwc == 0u ||
+            imagePayloadBytes < totalImageBytes ||
+            totalImageBytes > std::numeric_limits<uint32_t>::max())
         {
             setReturnS32(ctx, -1);
             return;
         }
 
-        uint32_t fbw = img.vram_width ? img.vram_width : std::max<uint32_t>(1, (img.width + 63) / 64);
-        const uint32_t totalImageBytes = rowBytes * static_cast<uint32_t>(img.height);
-        const uint32_t headerQwc = 6u;
-        const uint32_t imageQwc = (totalImageBytes + 15u) / 16u;
         const uint32_t totalQwc = headerQwc + imageQwc;
+        const uint32_t totalPacketBytes = totalQwc * 16u;
 
-        uint32_t pktAddr = runtime->guestMalloc(totalQwc * 16u, 16u);
+        const uint32_t pktAddr = runtime->guestMalloc(totalPacketBytes, 16u);
         if (pktAddr == 0)
         {
             setReturnS32(ctx, -1);
@@ -631,29 +665,8 @@ namespace ps2_stubs
             return;
         }
 
-        uint32_t dbp = (static_cast<uint32_t>(img.vram_addr) * 2048u) / 256u;
-        uint32_t dsax = static_cast<uint32_t>(img.x);
-        uint32_t dsay = static_cast<uint32_t>(img.y);
-
-        // Full messy
-        uint64_t *q = reinterpret_cast<uint64_t *>(pkt);
-        q[0] = makeGiftagAplusD(4u);
-        q[1] = 0xEULL;
-        q[2] = (static_cast<uint64_t>(img.psm & 0x3Fu) << 24) | (static_cast<uint64_t>(1u) << 16) |
-               (static_cast<uint64_t>(dbp & 0x3FFFu) << 32) | (static_cast<uint64_t>(fbw & 0x3Fu) << 48) |
-               (static_cast<uint64_t>(img.psm & 0x3Fu) << 56);
-        q[3] = 0x50ULL;
-        q[4] = (static_cast<uint64_t>(dsay & 0x7FFu) << 48) | (static_cast<uint64_t>(dsax & 0x7FFu) << 32);
-        q[5] = 0x51ULL;
-        q[6] = (static_cast<uint64_t>(img.height) << 32) | static_cast<uint64_t>(img.width);
-        q[7] = 0x52ULL;
-        q[8] = 0ULL;
-        q[9] = 0x53ULL;
-        q[10] = (static_cast<uint64_t>(2) << 58) | (static_cast<uint64_t>(imageQwc) & 0x7FFF) |
-                (1ULL << 15);
-        q[11] = 0ULL;
-
-        std::memcpy(pkt + headerQwc * 16u, src, totalImageBytes);
+        std::memcpy(pkt, img.qword, sizeof(img.qword));
+        std::memcpy(pkt + sizeof(img.qword), src, static_cast<size_t>(imagePayloadBytes));
 
         constexpr uint32_t GIF_CHANNEL = 0x1000A000;
         constexpr uint32_t CHCR_STR_MODE0 = 0x101u;
@@ -662,6 +675,44 @@ namespace ps2_stubs
         mem.writeIORegister(GIF_CHANNEL + 0x20u, totalQwc & 0xFFFFu);
         mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
         mem.processPendingTransfers();
+
+        if (gsImageTransferTraceEnabled())
+        {
+            const uint32_t dbp = static_cast<uint32_t>((img.qword[2] >> 32u) & 0x3FFFu);
+            const uint32_t dbw = static_cast<uint32_t>((img.qword[2] >> 48u) & 0x3Fu);
+            const uint32_t dstX = static_cast<uint32_t>((img.qword[4] >> 32u) & 0x7FFu);
+            const uint32_t dstY = static_cast<uint32_t>((img.qword[4] >> 48u) & 0x7FFu);
+            uint32_t compared = 0u;
+            uint32_t mismatches = 0u;
+            uint32_t source0 = 0u;
+            uint32_t vram0 = 0u;
+            if (psm == GS_PSM_CT32)
+            {
+                std::memcpy(&source0, src, sizeof(source0));
+                vram0 = runtime->gs().ReadVram(psm, dbp, dbw, dstX, dstY);
+                const uint32_t sampleWidth = std::min(width, 16u);
+                const uint32_t sampleHeight = std::min(height, 16u);
+                for (uint32_t y = 0; y < sampleHeight; ++y)
+                {
+                    for (uint32_t x = 0; x < sampleWidth; ++x)
+                    {
+                        uint32_t sourcePixel = 0u;
+                        std::memcpy(&sourcePixel, src + static_cast<size_t>(y) * rowBytes + x * 4u,
+                                    sizeof(sourcePixel));
+                        const uint32_t vramPixel = runtime->gs().ReadVram(psm, dbp, dbw, dstX + x, dstY + y);
+                        mismatches += sourcePixel != vramPixel ? 1u : 0u;
+                        ++compared;
+                    }
+                }
+            }
+            RUNTIME_LOG("[gs:image-load] seq=" << nextGsImageTransferSequence()
+                        << " dbp=" << dbp << " dbw=" << dbw << " psm=0x" << std::hex << psm << std::dec
+                        << " dst=" << dstX << ',' << dstY << " size=" << width << 'x' << height
+                        << " qwc=" << imageQwc << " compared_ct32=" << compared
+                        << " mismatches=" << mismatches << " src0=0x" << std::hex << source0
+                        << " vram0=0x" << vram0 << std::dec);
+        }
+
         runtime->guestFree(pktAddr);
 
         setReturnS32(ctx, 0);
@@ -669,25 +720,32 @@ namespace ps2_stubs
 
     void sceGsExecStoreImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        uint32_t imgAddr = getRegU32(ctx, 4);
-        uint32_t dstAddr = getRegU32(ctx, 5);
+        const uint32_t imgAddr = getRegU32(ctx, 4);
+        const uint32_t dstAddr = getRegU32(ctx, 5);
 
-        GsImageMem img{};
-        if (!runtime || !runtime->syncCoreSubsystems() || !readGsImage(rdram, imgAddr, img))
+        GsStoreImageDescriptorMem img{};
+        if (!runtime || !runtime->syncCoreSubsystems() ||
+            !readGsStoreImageDescriptor(rdram, imgAddr, img))
         {
             setReturnS32(ctx, -1);
             return;
         }
 
-        const uint32_t rowBytes = bytesForPixels(img.psm, static_cast<uint32_t>(img.width));
-        if (rowBytes == 0)
+        const uint64_t bitbltbuf = img.qword[2];
+        const uint32_t psm = static_cast<uint32_t>((bitbltbuf >> 24u) & 0x3Fu);
+        const uint32_t width = static_cast<uint32_t>(img.qword[6] & 0xFFFu);
+        const uint32_t height = static_cast<uint32_t>((img.qword[6] >> 32u) & 0xFFFu);
+        const uint32_t rowBytes = bytesForPixels(psm, width);
+        const uint64_t totalImageBytes = static_cast<uint64_t>(rowBytes) * height;
+        if (img.qword[0] != makeGiftagAplusD(4u) || img.qword[1] != 0xEull ||
+            img.qword[3] != 0x50ull || img.qword[5] != 0x51ull ||
+            img.qword[7] != 0x52ull || img.qword[9] != 0x53ull || img.qword[8] != 1ull ||
+            width == 0u || height == 0u || rowBytes == 0u ||
+            totalImageBytes > std::numeric_limits<uint32_t>::max())
         {
             setReturnS32(ctx, -1);
             return;
         }
-
-        uint32_t fbw = img.vram_width ? img.vram_width : std::max<uint32_t>(1, (img.width + 63) / 64);
-        const uint32_t totalImageBytes = rowBytes * static_cast<uint32_t>(img.height);
 
         uint8_t *dst = getMemPtr(rdram, dstAddr);
         if (!dst)
@@ -696,20 +754,8 @@ namespace ps2_stubs
             return;
         }
 
-        uint32_t sbp = (static_cast<uint32_t>(img.vram_addr) * 2048u) / 256u;
-        uint64_t bitbltbuf = (static_cast<uint64_t>(sbp & 0x3FFFu) << 0) |
-                             (static_cast<uint64_t>(fbw & 0x3Fu) << 16) |
-                             (static_cast<uint64_t>(img.psm & 0x3Fu) << 24) |
-                             (static_cast<uint64_t>(0u) << 32) |
-                             (static_cast<uint64_t>(1u) << 48) |
-                             (static_cast<uint64_t>(0u) << 56);
-        uint64_t trxpos = (static_cast<uint64_t>(img.x & 0x7FFu) << 0) |
-                          (static_cast<uint64_t>(img.y & 0x7FFu) << 16) |
-                          (static_cast<uint64_t>(0u) << 32) |
-                          (static_cast<uint64_t>(0u) << 48);
-        uint64_t trxreg = static_cast<uint64_t>(img.height) << 32 | static_cast<uint64_t>(img.width);
-
-        uint32_t pktAddr = runtime->guestMalloc(80u, 16u);
+        constexpr uint32_t headerBytes = sizeof(img.qword);
+        const uint32_t pktAddr = runtime->guestMalloc(headerBytes, 16u);
         if (pktAddr == 0)
         {
             setReturnS32(ctx, -1);
@@ -724,28 +770,56 @@ namespace ps2_stubs
             return;
         }
 
-        uint64_t *q = reinterpret_cast<uint64_t *>(pkt);
-        q[0] = makeGiftagAplusD(4u);
-        q[1] = 0xEULL;
-        q[2] = bitbltbuf;
-        q[3] = 0x50ULL;
-        q[4] = trxpos;
-        q[5] = 0x51ULL;
-        q[6] = trxreg;
-        q[7] = 0x52ULL;
-        q[8] = 1ULL;
-        q[9] = 0x53ULL;
+        std::memcpy(pkt, img.qword, sizeof(img.qword));
 
         constexpr uint32_t GIF_CHANNEL = 0x1000A000;
         constexpr uint32_t CHCR_STR_MODE0 = 0x101u;
         auto &mem = runtime->memory();
         mem.writeIORegister(GIF_CHANNEL + 0x10u, pktAddr);
-        mem.writeIORegister(GIF_CHANNEL + 0x20u, 5u);
+        mem.writeIORegister(GIF_CHANNEL + 0x20u, headerBytes / 16u);
         mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
         mem.processPendingTransfers();
 
-        ps2TraceGuestRangeWrite(rdram, dstAddr, totalImageBytes, "sceGsExecStoreImage", ctx);
-        runtime->gs().consumeLocalToHostBytes(dst, totalImageBytes);
+        ps2TraceGuestRangeWrite(rdram, dstAddr, static_cast<uint32_t>(totalImageBytes), "sceGsExecStoreImage", ctx);
+        runtime->gs().consumeLocalToHostBytes(dst, static_cast<uint32_t>(totalImageBytes));
+
+        if (gsImageTransferTraceEnabled())
+        {
+            const uint32_t sbp = static_cast<uint32_t>(bitbltbuf & 0x3FFFu);
+            const uint32_t sbw = static_cast<uint32_t>((bitbltbuf >> 16u) & 0x3Fu);
+            const uint32_t srcX = static_cast<uint32_t>(img.qword[4] & 0x7FFu);
+            const uint32_t srcY = static_cast<uint32_t>((img.qword[4] >> 16u) & 0x7FFu);
+            uint32_t compared = 0u;
+            uint32_t mismatches = 0u;
+            uint32_t vram0 = 0u;
+            uint32_t host0 = 0u;
+            if (psm == GS_PSM_CT32)
+            {
+                std::memcpy(&host0, dst, sizeof(host0));
+                vram0 = runtime->gs().ReadVram(psm, sbp, sbw, srcX, srcY);
+                const uint32_t sampleWidth = std::min(width, 16u);
+                const uint32_t sampleHeight = std::min(height, 16u);
+                for (uint32_t y = 0; y < sampleHeight; ++y)
+                {
+                    for (uint32_t x = 0; x < sampleWidth; ++x)
+                    {
+                        uint32_t hostPixel = 0u;
+                        const size_t offset = static_cast<size_t>(y) * rowBytes + x * 4u;
+                        std::memcpy(&hostPixel, dst + offset, sizeof(hostPixel));
+                        const uint32_t vramPixel = runtime->gs().ReadVram(psm, sbp, sbw, srcX + x, srcY + y);
+                        mismatches += hostPixel != vramPixel ? 1u : 0u;
+                        ++compared;
+                    }
+                }
+            }
+            RUNTIME_LOG("[gs:image-store] seq=" << nextGsImageTransferSequence()
+                        << " sbp=" << sbp << " sbw=" << sbw << " psm=0x" << std::hex << psm << std::dec
+                        << " src=" << srcX << ',' << srcY << " size=" << width << 'x' << height
+                        << " bytes=" << totalImageBytes << " compared_ct32=" << compared
+                        << " mismatches=" << mismatches << " vram0=0x" << std::hex << vram0
+                        << " host0=0x" << host0 << std::dec);
+        }
+
         runtime->guestFree(pktAddr);
 
         setReturnS32(ctx, 0);
@@ -1107,25 +1181,81 @@ namespace ps2_stubs
 
     void sceGsSetDefLoadImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        uint32_t imgAddr = getRegU32(ctx, 4);
+        const uint32_t imgAddr = getRegU32(ctx, 4);
         const GsSetDefImageArgs args = decodeGsSetDefImageArgs(rdram, ctx);
 
-        GsImageMem img{};
-        img.x = static_cast<uint16_t>(args.x);
-        img.y = static_cast<uint16_t>(args.y);
-        img.width = static_cast<uint16_t>(args.width);
-        img.height = static_cast<uint16_t>(args.height);
-        img.vram_addr = static_cast<uint16_t>(args.vramAddr);
-        img.vram_width = static_cast<uint8_t>(args.vramWidth);
-        img.psm = static_cast<uint8_t>(args.psm);
+        const uint32_t width = args.width & 0xFFFu;
+        const uint32_t height = args.height & 0xFFFu;
+        const uint32_t psm = args.psm & 0x3Fu;
+        const uint32_t rowBytes = bytesForPixels(psm, width);
+        const uint64_t imageBytes = static_cast<uint64_t>(rowBytes) * height;
+        const uint64_t imageQwc = (imageBytes + 15u) / 16u;
+        if (width == 0u || height == 0u || rowBytes == 0u || imageQwc == 0u || imageQwc > 0x7FFFu)
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
 
-        writeGsImage(rdram, imgAddr, img);
-        setReturnS32(ctx, 0);
+        GsLoadImageDescriptorMem img{};
+        img.qword[0] = makeGiftagAplusD(4u);
+        img.qword[1] = 0xEull;
+        img.qword[2] = (static_cast<uint64_t>(args.vramAddr & 0x3FFFu) << 32u) |
+                       (static_cast<uint64_t>(args.vramWidth & 0x3Fu) << 48u) |
+                       (static_cast<uint64_t>(psm) << 56u);
+        img.qword[3] = 0x50ull;
+        img.qword[4] = (static_cast<uint64_t>(args.y & 0x7FFu) << 48u) |
+                       (static_cast<uint64_t>(args.x & 0x7FFu) << 32u);
+        img.qword[5] = 0x51ull;
+        img.qword[6] = (static_cast<uint64_t>(height) << 32u) | width;
+        img.qword[7] = 0x52ull;
+        img.qword[8] = 0ull;
+        img.qword[9] = 0x53ull;
+        img.qword[10] = (2ull << 58u) | (1ull << 15u) | imageQwc;
+
+        if (!writeGsLoadImageDescriptor(rdram, imgAddr, img))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        setReturnS32(ctx, 6);
     }
 
     void sceGsSetDefStoreImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        sceGsSetDefLoadImage(rdram, ctx, runtime);
+        (void)runtime;
+        const uint32_t imgAddr = getRegU32(ctx, 4);
+        const GsSetDefImageArgs args = decodeGsSetDefImageArgs(rdram, ctx);
+
+        const uint32_t width = args.width & 0xFFFu;
+        const uint32_t height = args.height & 0xFFFu;
+        const uint32_t psm = args.psm & 0x3Fu;
+        if (width == 0u || height == 0u || bytesForPixels(psm, width) == 0u)
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+
+        GsStoreImageDescriptorMem img{};
+        img.qword[0] = makeGiftagAplusD(4u);
+        img.qword[1] = 0xEull;
+        img.qword[2] = static_cast<uint64_t>(args.vramAddr & 0x3FFFu) |
+                       (static_cast<uint64_t>(args.vramWidth & 0x3Fu) << 16u) |
+                       (static_cast<uint64_t>(psm) << 24u);
+        img.qword[3] = 0x50ull;
+        img.qword[4] = static_cast<uint64_t>(args.x & 0x7FFu) |
+                       (static_cast<uint64_t>(args.y & 0x7FFu) << 16u);
+        img.qword[5] = 0x51ull;
+        img.qword[6] = (static_cast<uint64_t>(height) << 32u) | width;
+        img.qword[7] = 0x52ull;
+        img.qword[8] = 1ull;
+        img.qword[9] = 0x53ull;
+
+        if (!writeGsStoreImageDescriptor(rdram, imgAddr, img))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        setReturnS32(ctx, 5);
     }
 
     void sceGsSwapDBuffDc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

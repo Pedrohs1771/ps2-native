@@ -102,6 +102,7 @@ namespace ps2x::iop::detail
 
         explicit Impl(IopHost &hostRef, const IopNativeProgram *program = nullptr)
             : host(hostRef),
+              memory(&hostRef),
               sysmem(host, memory),
               kernel(memory),
               cdvd(host, memory, kernel),

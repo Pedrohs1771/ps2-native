@@ -571,7 +571,9 @@ namespace ps2_syscalls
             guestA2 = sendSize;
             guestDefaultResult = server->buf != 0u ? server->buf : receiveBuffer;
         }
-        const bool serverDispatched = guestFunction != 0u && runtime->hasFunction(guestFunction);
+        const bool strictRecovery = runtime->missingFunctionPolicy() == PS2Runtime::MissingFunctionPolicy::Stop;
+        const bool serverDispatched = guestFunction != 0u &&
+            (strictRecovery || runtime->hasFunction(guestFunction));
 
         auto finishCall = [=](const R5900Context *guestResult, R5900Context &parent)
         {
@@ -655,12 +657,12 @@ namespace ps2_syscalls
             }
 
             uint32_t callbackFunction = endFunction;
-            if (!runtime->hasFunction(callbackFunction) && callbackFunction >= 0x10000u &&
+            if (!strictRecovery && !runtime->hasFunction(callbackFunction) && callbackFunction >= 0x10000u &&
                 runtime->hasFunction(callbackFunction - 0x10000u))
             {
                 callbackFunction -= 0x10000u;
             }
-            if (!runtime->hasFunction(callbackFunction))
+            if (!strictRecovery && !runtime->hasFunction(callbackFunction))
             {
                 (void)signalRpcCompletionSema(runtime, completionSemaphore);
                 completeClient(parent, false);

@@ -1,0 +1,83 @@
+Continue no checkout /home/pedrohs/Downloads/ps2-native-recompiler.
+Trabalhe sozinho: o usuário revogou workers, Luna, Hyper e sessões auxiliares.
+Não altere o modelo ou esforço da sessão atual. Preserve o diff e os insumos.
+
+Leia AGENTS.md, docs/BETA_V01.md e docs/ADAPTACAO_AUTONOMA_20261003.md.
+Leia o checkpoint mais recente em build/solo-audio-1791058142879897408/.
+Confira git status e processos antes de refazer uma tarefa. Os recibos novos
+prevalecem sobre os snapshots antigos em RETOMADA_MAHORAGA e no README.
+Não carregar nem reconsolidar README_GERAL_COMPLETO.md.
+
+Objetivo: ISO inédita → conversão automática → intro/menu, som e controles
+corretos sem IA durante a conversão ou edição humana de PCs/TOMLs por título.
+Gameplay 3D fica depois; menus podem usar VU/3D. Preservar PAL/NTSC e medir
+progresso convidado além dos 60 FPS host. Não transformar falha/timeout em
+Coming soon. Universalidade, 90%, novidade e natividade integral não estão
+provadas. Nenhum dos cinco menus locais está qualificado.
+
+A CLI convert já tem captura → geração → compilação offline → relink → replay,
+limites de progresso e memória privada por ISO/gerador/fontes, com byte guards.
+O desktop entregue não usa compilador ao vivo. Fixtures MIPS próprias provam
+recuperação e reuso, incluindo threads em KSEG0/KSEG1. Não refazer esse ciclo.
+IOP/VU integralmente nativos e conversão fria contínua comercial permanecem
+sem qualificação. O lote usa objetos convidados anteriores e seeds observados.
+
+Última rodada: build/solo-audio-1791058142879897408/menu-audio-v1/corpus.json.
+Metal Slug executou 120 s sem falta EE nova. 8.451.043 de 11.042.816 amostras
+são não nulas, pico 22.526, RMS 6.624,934. Start foi enviado aos 30/45/70 s,
+mas as imagens ainda mostram Ignition, sem menu ou resposta causal aprovada.
+Runner SHA256: 688b6631e8f9c4dc0a01069e23de4bb2344ec5c442fde9180b5221df638d5caa.
+Fontes SHA256: 8062aa8db4648ac0545a64509c029b4038554718a9488913ece0e7ce1a184746.
+Gerador SHA256: 754a375694e89189eef41975a76ac91be1a1b227a09f235a4705ebfad8633f3d.
+Catálogo seed SHA256: 89a83c30382f1692496c0e0e8971045eafcbdd65e28fb3ea5c2a884766ddf9ae.
+Essas identidades descrevem esse replay; conferir checkpoint posterior.
+
+Áudio: o diagnóstico antigo de produtor sempre zero era confundido por mute
+restaurado do PipeWire. trace-v4/v5 usam o MESMO runner; identidade de teste
+própria mudou a captura de zero para PCM real. Não alterar mute/volume da
+sessão desktop. O helper atual cria sink/display próprios e identidade Pulse
+única. As outras quatro gravações zero ainda precisam de reavaliação.
+SIF copiou PCM não nulo e leu de volta IOP com igualdade. AutoDMA e barramento
+SPU2 estão ligados; vozes SPU RAM/ADPCM, ADSR, reverb e DMA comum não fechados.
+PS2SDK sceSdTransToIOP recusa blocking=0 corretamente; não mudar isso.
+
+MPEG: corrigido quinto argumento n32 em r8, preservando null e ringSize=0;
+fallback de stack substituía null por lixo. Regressão RED real, 521/521 C++
+GREEN; 74/74 tools Python GREEN. 32 testes de recuperação/catalogo do checkpoint
+anterior passaram, não foram repetidos sem mudança nesse contrato.
+
+Delta mais recente, depois desse runner: rotação sem peer evita redispatch
+inútil, com preempção preservada. Comparativo pontual de 65 s: ciclos EE no
+host tick 3.600 passaram de 803.434.488 para 847.431.248; não é ganho universal.
+Transferência tipada agora termina na chamada runtime mais próxima e os callers
+propagam false, preservando contexto ativo, suspensão, callback e destrutores.
+Count é preservado quando a invocação muda; contexto removido não é lido depois.
+525/525 C++ passaram em transfer-green.log. Esse último delta ainda precisa de
+replay comercial; não reutilizar o SHA antigo como evidência dele.
+
+Próxima ação: perfil/reprodução de cadência. Inspecionar timing-v1 e os recibos
+antes de relançar. O scheduler cobra ciclos EE e roda IOP /8, com deadlines
+ciclo+host. O replay avançou ~1,55 bilhão de ciclos EE em 120 s; isso sugere
+cadência baixa, não autoriza saltar ciclos nem forçar VBlank pelo relógio host.
+O perfil histórico de scheduler e otimização revertida de 02/10 não provam a
+causa atual. Diagnóstico privado amostra PCs da GameThread sem modificar runner.
+Não descrever contadores de traces limitados como totais.
+
+Build incremental: FAST_ITERATION=ON, RELEASE_IPO=OFF, no máximo quatro jobs,
+preferir dois. Reutilizar fontes/objetos convidados e compilar só delta válido.
+Build root contém ps2x_tests, ps2_recomp, ps2_native_overlay e fixture de
+adaptação. Fixtures próprias antes/depois devem provar mudanças semânticas.
+Correções são por contrato compartilhado, nunca por PC/título.
+
+Corpus: Metal Slug 4 Europe, Monster House BR-USA, R-Type Final Taikenban,
+RoboCop Europe e Sega Ages 2500 Vol.21; hashes/metadados em
+build/beta-v01-20261003/corpus-build-v1/corpus.json. Não baixar ISOs.
+Não repetir load/gameplay Monster House: 18.193 famílias já estão compiladas
+em build/ee-families-native/libps2_ee_compiled_families.a; conferir recibos e
+ligação antes de usar. Biblioteca compilada não equivale a instalada.
+
+Não publicar ISOs, ELFs, assets, RAM/VRAM, cards ou fontes derivadas dos jogos.
+Preservar GPLv3 e créditos PS2Recomp. Não fazer commit/push sem instrução.
+Ao parar, deixar checkpoint com revisão/diff, comando, hashes, testes,
+resultado comercial e próximo contrato aberto. Manter a meta ativa enquanto
+não estiver concluída; não declarar universalidade para encerrar uma rodada.

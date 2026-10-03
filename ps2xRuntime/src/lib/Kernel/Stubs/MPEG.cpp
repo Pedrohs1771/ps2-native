@@ -777,28 +777,34 @@ namespace ps2_stubs
             return (value + 15u) & ~15u;
         }
 
-        uint32_t readStackArg(uint8_t *rdram, R5900Context *ctx, uint32_t offset)
-        {
-            if (!rdram || !ctx)
-            {
-                return 0u;
-            }
-            return FAST_READ32(getRegU32(ctx, 29) + offset);
-        }
-
-        uint32_t readAbiArg4(uint8_t *rdram, R5900Context *ctx)
-        {
-            const uint32_t regArg = getRegU32(ctx, 8);
-            if (regArg != 0u)
-            {
-                return regArg;
-            }
-            return readStackArg(rdram, ctx, 0x10u);
-        }
-
         MpegPlaybackState &getPlaybackState(uint32_t mpegAddr)
         {
             return g_mpeg_stub_state.playbackByMpeg[mpegAddr];
+        }
+
+        struct MpegCompletionState
+        {
+            bool producerEnded;
+            bool ended;
+            bool presentationComplete;
+        };
+
+        MpegCompletionState completionState(const MpegPlaybackState &playback,
+                                            const PS2Runtime *runtime)
+        {
+            // A sequence end alone does not close a buffered PSS stream.
+            const bool producerEnded =
+                g_mpeg_stub_state.currentCdStreamEofSeen &&
+                playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration;
+            const bool ended = producerEnded &&
+                (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
+            const uint64_t currentTickQ32 = runtime != nullptr
+                ? (runtime->eeScheduler().currentVSyncTick() << 32u)
+                : std::numeric_limits<uint64_t>::max();
+            const bool presentationComplete =
+                playback.presentationEndTickQ32 == std::numeric_limits<uint64_t>::max() ||
+                currentTickQ32 >= playback.presentationEndTickQ32;
+            return {producerEnded, ended, presentationComplete};
         }
 
         MpegPlaybackState makeFreshPlaybackState()
@@ -1585,7 +1591,9 @@ namespace ps2_stubs
                                          const MpegStreamCallbackEvent &event,
                                          const MpegRegisteredCallback &callback)
         {
-            if (!rdram || !callerCtx || !runtime || callback.func == 0u || !runtime->hasFunction(callback.func))
+            if (!rdram || !callerCtx || !runtime || callback.func == 0u ||
+                (runtime->missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop &&
+                 !runtime->hasFunction(callback.func)))
             {
                 return;
             }
@@ -1936,7 +1944,8 @@ namespace ps2_stubs
         const uint32_t streamType = getRegU32(ctx, 5);
         const uint32_t streamId = getRegU32(ctx, 6);
         const uint32_t callbackFunc = getRegU32(ctx, 7);
-        const uint32_t callbackData = readAbiArg4(rdram, ctx);
+        // EE n32 passes argument five in r8, including a null user pointer.
+        const uint32_t callbackData = getRegU32(ctx, 8);
 
         std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
         g_mpeg_stub_state.initialized = true;
@@ -2007,6 +2016,7 @@ namespace ps2_stubs
         const uint32_t innerSize = static_cast<uint32_t>(iVar2_signed) - 0x118u;
 
         mpegGuestWrite32(rdram, param_1 + 0x40, uVar3);
+        mpegGuestWrite32(rdram, uVar3, 0u);
 
         const uint32_t a1_init = uVar3 + 0x118u;
         mpegGuestWrite32(rdram, puVar4 + 0x0, a1_init);
@@ -2163,7 +2173,7 @@ namespace ps2_stubs
         const uint32_t dataAddr = getRegU32(ctx, 5);
         const uint32_t availableBytes = getRegU32(ctx, 6);
         const uint32_t ringBaseAddr = getRegU32(ctx, 7);
-        const uint32_t ringSize = readAbiArg4(rdram, ctx);
+        const uint32_t ringSize = getRegU32(ctx, 8);
 
         std::vector<MpegStreamCallbackEvent> callbackEvents;
         std::vector<uint32_t> completedMpegIds;
@@ -2288,6 +2298,7 @@ namespace ps2_stubs
         uint32_t height = kStubMovieHeight;
         uint32_t frameCount = 0u;
         bool haveFrame = false;
+        bool playbackComplete = false;
         MpegDecodedFrame frame;
         {
             std::unique_lock<std::mutex> lock(g_mpeg_stub_mutex);
@@ -2387,6 +2398,9 @@ namespace ps2_stubs
                 height = playback.height;
                 frameCount = playback.picturesServed;
             }
+            const MpegCompletionState completion = completionState(playback, runtime);
+            playbackComplete = completion.ended && playback.decodedFrames.empty() &&
+                               completion.presentationComplete;
         }
 
         mpegGuestWrite32(rdram, mpegAddr + 0x00u, width);
@@ -2398,6 +2412,11 @@ namespace ps2_stubs
             const uint32_t iVar1 = *reinterpret_cast<uint32_t *>(base + 0x40);
             if (uint8_t *inner = getMemPtr(rdram, iVar1))
             {
+                // The SDK's native IsEnd reads the first word of this work
+                // area. Keep that ABI visible when GetPicture is HLE but the
+                // caller retains a native IsEnd implementation.
+                if (iVar1 != 0u)
+                    *reinterpret_cast<uint32_t *>(inner) = playbackComplete ? 1u : 0u;
                 *reinterpret_cast<uint32_t *>(inner + 0xb0) = 1;
                 *reinterpret_cast<uint32_t *>(inner + 0xd8) = (getRegU32(ctx, 5) & 0x0FFFFFFFu) | 0x20000000u;
                 *reinterpret_cast<uint32_t *>(inner + 0xe4) = getRegU32(ctx, 6);
@@ -2455,38 +2474,25 @@ namespace ps2_stubs
         std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
         g_mpeg_stub_state.initialized = true;
         MpegPlaybackState &playback = getPlaybackState(mpegAddr);
-        // Only the producer/demux EOF is authoritative. A sequence_end_code can
-        // be observed while more PSS data is still buffered, and a decoder
-        // failure before producer EOF may still recover on a later sequence.
-        const bool producerEnded =
-            g_mpeg_stub_state.currentCdStreamEofSeen &&
-            playback.cdStreamGeneration == g_mpeg_stub_state.cdStreamGeneration;
-        const bool ended = producerEnded &&
-                           (playback.streamEnded || (playback.decoderFailed && playback.sawInput));
-        const uint64_t presentationEnd = playback.presentationEndTickQ32;
-        const uint64_t currentTickQ32 = runtime != nullptr
-                                            ? (runtime->eeScheduler().currentVSyncTick() << 32u)
-                                            : std::numeric_limits<uint64_t>::max();
-        const bool presentationComplete =
-            presentationEnd == std::numeric_limits<uint64_t>::max() ||
-            currentTickQ32 >= presentationEnd;
+        const MpegCompletionState completion = completionState(playback, runtime);
 
         if (g_mpeg_stub_state.isEndTraceCount < 16u)
         {
             PS2_IF_AGRESSIVE_LOGS({
                 std::cerr << "[MPEG:IsEnd] mpeg=0x" << std::hex << mpegAddr << std::dec
-                          << " ended=" << ended
-                          << " producerEof=" << producerEnded
+                          << " ended=" << completion.ended
+                          << " producerEof=" << completion.producerEnded
                           << " seqEnd=" << playback.sawSequenceEnd
                           << " streamEnded=" << playback.streamEnded
-                          << " presentationComplete=" << presentationComplete
+                          << " presentationComplete=" << completion.presentationComplete
                           << " frames=" << playback.decodedFrames.size()
                           << " sawInput=" << playback.sawInput << std::endl;
             });
             ++g_mpeg_stub_state.isEndTraceCount;
         }
 
-        setReturnS32(ctx, (ended && playback.decodedFrames.empty() && presentationComplete) ? 1 : 0);
+        setReturnS32(ctx, (completion.ended && playback.decodedFrames.empty() &&
+                          completion.presentationComplete) ? 1 : 0);
     }
 
     void sceMpegIsRefBuffEmpty(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

@@ -977,6 +977,64 @@ void register_ps2_runtime_kernel_tests()
                      "WEF_CLEAR_ALL should clear the entire event pattern");
         });
 
+        tc.Run("ready-queue rotation without a peer keeps the running context", [](TestCase &t)
+        {
+            for (const bool interruptSafe : {false, true})
+            {
+                TestEnv env;
+                EeScheduler &ee = env.runtime.eeScheduler();
+                ee.reset(env.rdram.data(), env.ctx);
+                ee.bindMainContextForSyscall(env.ctx, env.rdram.data());
+                setRegU32(env.ctx, 4, 0u);
+                bool transferred = false;
+                try
+                {
+                    if (interruptSafe)
+                        iRotateThreadReadyQueue(env.rdram.data(), &env.ctx, &env.runtime);
+                    else
+                        RotateThreadReadyQueue(env.rdram.data(), &env.ctx, &env.runtime);
+                }
+                catch (const EeDispatcherTransfer &)
+                {
+                    transferred = true;
+                }
+                t.IsFalse(transferred, "rotating a singleton must not unwind an unchanged guest context");
+                t.Equals(ee.currentThreadId(), EeScheduler::kMainThreadId,
+                         "the same thread must remain the executor when no FIFO peer can run");
+                t.IsTrue(ee.thread(EeScheduler::kMainThreadId)->status == EeThreadStatus::Running,
+                         "singleton rotation must not leave the current context marked ready");
+                t.Equals(getRegS32(env.ctx, 2), KE_OK, "the no-op rotation still returns success");
+            }
+        });
+
+        tc.Run("singleton rotation preserves pending higher-priority preemption", [](TestCase &t)
+        {
+            TestEnv env;
+            EeScheduler &ee = env.runtime.eeScheduler();
+            ee.reset(env.rdram.data(), env.ctx);
+            ee.bindMainContextForSyscall(env.ctx, env.rdram.data());
+            int oldPriority = 0;
+            t.Equals(ee.changePriority(EeScheduler::kMainThreadId, 20, false, oldPriority), KE_OK,
+                     "the current thread should accept an ordinary priority");
+            const int higher = ee.createThread(EeThreadCreateParams{0u, K_SCHED_HIGH, 0x24000u,
+                                                                   0x800u, 0u, 5, 0u});
+            ee.startThread(higher, 0u, env.ctx, false);
+            setRegU32(env.ctx, 4, 20u);
+            bool transferred = false;
+            try
+            {
+                RotateThreadReadyQueue(env.rdram.data(), &env.ctx, &env.runtime);
+            }
+            catch (const EeDispatcherTransfer &)
+            {
+                transferred = true;
+            }
+            t.IsTrue(transferred, "a no-peer rotation must not cancel an existing higher-priority preemption");
+            t.Equals(ee.currentThreadId(), 0, "the dispatcher must select the pending higher-priority thread");
+            t.IsTrue(ee.thread(higher)->status == EeThreadStatus::Ready,
+                     "the higher-priority thread must remain available for dispatch");
+        });
+
         tc.Run("RotateThreadReadyQueue is the only same-priority rotation", [](TestCase &t)
         {
             TestEnv env;

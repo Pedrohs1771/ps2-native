@@ -498,7 +498,8 @@ namespace ps2_syscalls
             return false;
         }
 
-        if (!runtime->hasFunction(handler))
+        if (runtime->missingFunctionPolicy() != PS2Runtime::MissingFunctionPolicy::Stop &&
+            !runtime->hasFunction(handler))
         {
             setReturnS32(ctx, KE_ERROR);
             return true;

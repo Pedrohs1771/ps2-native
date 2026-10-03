@@ -61,20 +61,93 @@ namespace
         expectEqual(f.sample(), kGreen, "CLD=1 reloads the palette");
     }
 
-    void clutUsesPageCache()
+    void appendU64(std::vector<uint8_t>& packet, uint64_t value)
     {
-        FrontendFixture f;
-        auto tex = texture(GS_PSM_T4, 64);
-        f.index(tex, 8);
-        f.palette(tex, 8, kRed);
+        const size_t offset = packet.size();
+        packet.resize(offset + sizeof(value));
+        std::memcpy(packet.data() + offset, &value, sizeof(value));
+    }
+
+    void uploadGifImage(FrontendFixture& f, uint32_t base, uint32_t widthInPixels,
+                        uint32_t height, uint32_t bufferWidth, uint8_t psm,
+                        const std::vector<uint8_t>& payload)
+    {
+        require(payload.size() % 16u == 0u, "GIF IMAGE payload must contain complete QWORDs");
+        const uint64_t bitbltbuf = (static_cast<uint64_t>(base) << 32u) |
+                                   (static_cast<uint64_t>(bufferWidth) << 48u) |
+                                   (static_cast<uint64_t>(psm) << 56u);
+        f.gs.writeRegister(GS_REG_BITBLTBUF, bitbltbuf);
+        f.gs.writeRegister(GS_REG_TRXPOS, 0u);
+        f.gs.writeRegister(GS_REG_TRXREG, static_cast<uint64_t>(widthInPixels) |
+                                              (static_cast<uint64_t>(height) << 32u));
+        f.gs.writeRegister(GS_REG_TRXDIR, 0u);
+
+        const uint64_t qwords = payload.size() / 16u;
+        require(qwords <= 0x7FFFu, "GIF IMAGE test payload exceeds NLOOP");
+        std::vector<uint8_t> packet;
+        appendU64(packet, qwords | (1ull << 15u) | (2ull << 58u));
+        appendU64(packet, 0u);
+        packet.insert(packet.end(), payload.begin(), payload.end());
+        f.gs.processGIFPacket(packet.data(), static_cast<uint32_t>(packet.size()));
+    }
+
+    std::vector<uint8_t> ct16PaletteImage(uint16_t entry1, uint16_t entry9)
+    {
+        std::vector<uint16_t> pixels(16u * 2u, 0x801Fu);
+        // CSM1 swaps index bits 3 and 4, placing logical entry 9 at row 1, x 1.
+        pixels[1] = entry1;
+        pixels[16u + 1u] = entry9;
+        std::vector<uint8_t> bytes(pixels.size() * sizeof(uint16_t));
+        std::memcpy(bytes.data(), pixels.data(), bytes.size());
+        return bytes;
+    }
+
+    GSTex0Reg crossLikeTexture()
+    {
+        auto tex = texture(GS_PSM_T4, 6656u);
+        tex.tbw = 4u;
+        tex.tw = 8u;
+        tex.th = 7u;
+        tex.cbp = 6400u;
+        tex.cpsm = GS_PSM_CT16;
+        return tex;
+    }
+
+    void prepareCrossLikeTexture(FrontendFixture& f, GSTex0Reg& tex)
+    {
+        auto palette = ct16PaletteImage(0x83E0u, 0x801Fu);
+        uploadGifImage(f, tex.cbp, 16u, 2u, 1u, GS_PSM_CT16, palette);
+        std::vector<uint8_t> indices(256u * 128u / 2u, 0x10u);
+        uploadGifImage(f, tex.tbp0, 256u, 128u, 4u, GS_PSM_T4, indices);
+        expectEqual(f.gs.ReadVram(GS_PSM_CT16, tex.cbp, 1u, 1u, 0u), 0x83E0u,
+                    "GIF IMAGE writes the initial CT16 palette entry");
+        expectEqual(f.gs.ReadVram(GS_PSM_T4, tex.tbp0, tex.tbw, 1u, 0u), 1u,
+                    "GIF IMAGE writes T4 pixel index 1 at the large atlas base");
         f.bind(tex);
-        // No texture sampling between loads: the CLUT source page is still resident.
-        f.palette(tex, 8, kGreen);
-        f.bind(tex);
-        expectEqual(f.sample(), kRed, "CLD=1 alone does not invalidate the texture page buffer");
-        f.flush();
-        f.bind(tex);
-        expectEqual(f.sample(), kGreen, "identical TEX0 write still loads after TEXFLUSH");
+    }
+
+    void clutReloadUsesCurrentVramAfterGifImage()
+    {
+        FrontendFixture retained;
+        auto retainedTex = crossLikeTexture();
+        prepareCrossLikeTexture(retained, retainedTex);
+        auto updatedPalette = ct16PaletteImage(0xFC00u, 0x83E0u);
+        uploadGifImage(retained, retainedTex.cbp, 16u, 2u, 1u, GS_PSM_CT16, updatedPalette);
+        expectEqual(retained.gs.ReadVram(GS_PSM_CT16, retainedTex.cbp, 1u, 1u, 0u), 0xFC00u,
+                    "GIF IMAGE writes the replacement CT16 palette entry");
+        retainedTex.cld = 0u;
+        retained.bind(retainedTex);
+        expectEqual(retained.sample(1u), kGreen, "CLD=0 retains the previously loaded CLUT");
+
+        FrontendFixture reloaded;
+        auto reloadedTex = crossLikeTexture();
+        prepareCrossLikeTexture(reloaded, reloadedTex);
+        uploadGifImage(reloaded, reloadedTex.cbp, 16u, 2u, 1u, GS_PSM_CT16, updatedPalette);
+        expectEqual(reloaded.gs.ReadVram(GS_PSM_CT16, reloadedTex.cbp, 1u, 1u, 0u), 0xFC00u,
+                    "GIF IMAGE writes the replacement CT16 palette entry before CLD=1");
+        reloaded.bind(reloadedTex);
+        expectEqual(reloaded.sample(1u), kBlue,
+                    "CLD=1 reloads CT16 palette data after a GIF IMAGE transfer");
     }
 
     template<unsigned Bank>
@@ -272,7 +345,7 @@ int main(int argc, char** argv)
         {"unaligned_csm1_ct16", unalignedCsm1<GS_PSM_CT16>},
         {"unaligned_csm1_ct16s", unalignedCsm1<GS_PSM_CT16S>},
         {"wrapped_clut", wrappedClut}, {"unaligned_csm2", unalignedCsm2},
-        {"retained_palette", retainedPalette}, {"clut_uses_page_cache", clutUsesPageCache},
+        {"retained_palette", retainedPalette}, {"clut_reload_current_vram", clutReloadUsesCurrentVramAfterGifImage},
         {"cbp0_conditional", conditionalLoad<0>}, {"cbp1_conditional", conditionalLoad<1>},
         {"reserved_cld", reservedCld}, {"nonindexed_cld", nonIndexedCld},
         {"tex2_reload", tex2Reload}, {"shared_contexts", sharedContexts},

@@ -49,7 +49,16 @@ if(PS2X_ENABLE_SCCACHE)
     endif()
 endif()
 
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReleaseMode.cmake")
+set(PS2X_RELEASE_MODE_HELPER "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReleaseMode.cmake")
+if(EXISTS "${PS2X_RELEASE_MODE_HELPER}")
+    include("${PS2X_RELEASE_MODE_HELPER}")
+elseif(PS2X_ENABLE_RELEASE_IPO)
+    # Source packages created from older/incomplete checkouts may omit this
+    # optional helper. Keep the project buildable and retain the compiler's
+    # normal Release flags, but do not request helper-provided IPO settings.
+    message(WARNING "${PS2X_RELEASE_MODE_HELPER} is missing; disabling PS2X_ENABLE_RELEASE_IPO for this configure")
+    set(PS2X_ENABLE_RELEASE_IPO OFF)
+endif()
 
 set(PS2X_IS_VITA OFF)
 
@@ -674,10 +683,12 @@ target_include_directories(ps2_runtime PUBLIC
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
 if(PS2X_RUNTIME_AOT_EE_OVERLAYS)
     if(NOT NEXO_EE_BANK_MANIFEST)
-        message(FATAL_ERROR "AOT EE overlays require an offline catalog")
+        set(ee_sources src/lib/ps2_empty_ee_catalog.cpp)
+        message(STATUS "AOT EE bootstrap: empty catalog; uncovered entries stop for offline recovery")
+    else()
+        include(cmake/ee_native_catalog.cmake)
+        ee_catalog_sources("${NEXO_EE_BANK_MANIFEST}" ee_sources)
     endif()
-    include(cmake/ee_native_catalog.cmake)
-    ee_catalog_sources("${NEXO_EE_BANK_MANIFEST}" ee_sources)
     add_library(ps2_ee_compiled_catalog STATIC ${ee_sources})
     target_include_directories(ps2_ee_compiled_catalog PRIVATE
         "$<TARGET_PROPERTY:ps2_runtime,INCLUDE_DIRECTORIES>" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib")

@@ -10,6 +10,8 @@ namespace
     constexpr uint32_t mcSid = 0x80000400u;
     constexpr uint32_t loadfileSid = 0x80000006u;
     constexpr uint32_t cdSearchSid = 0x80000597u;
+    constexpr uint32_t cdDiskReadySid = 0x8000059Au;
+    constexpr uint32_t cdDiskReadyAliasSid = 0x8000059Cu;
 
     void loadfileBootService()
     {
@@ -34,6 +36,69 @@ namespace
 
         iop.reset();
         require(iop.canBindRpc(cdSearchSid), "IOP reset did not register its CDVDFSV search service");
+        require(iop.canBindRpc(cdDiskReadySid), "IOP reset did not register CDVDFSV DiskReady");
+        require(iop.canBindRpc(cdDiskReadyAliasSid), "IOP reset did not register the alternate CDVDFSV DiskReady endpoint");
+    }
+
+    void cdvdfsvDiskReadyRpc()
+    {
+        Host host;
+        IopSubsystem iop(host);
+        require(!iop.canBindRpc(cdDiskReadySid), "DiskReady appeared before IOP boot");
+        iop.reset();
+        require(iop.canBindRpc(cdDiskReadySid), "IOP boot did not register DiskReady");
+        for (const uint32_t sid : {cdDiskReadySid, cdDiskReadyAliasSid})
+        {
+            auto ready = request(sid, 0u, 4u);
+            ready.send = {0x1000u, 4u};
+            for (const bool mediaReady : {false, true, false})
+            {
+                host.cdMediaReady = mediaReady;
+                for (const uint32_t mode : {0u, 1u, 2u, 8u})
+                {
+                    require(host.writeGuest(ready.send.address, &mode, sizeof(mode)), "DiskReady mode setup failed");
+                    require(iop.handleRpc(ready).handled, "DiskReady RPC was not handled");
+                    const uint32_t expected = mode == 8u ? (mediaReady ? 0x40u : 0u) : (mediaReady ? 2u : 6u);
+                    require(host.word(ready.receive.address) == expected, "DiskReady ignored the current media state");
+                    require(host.cdDiskReadyMode == mode, "DiskReady mode was not passed to CDVDMAN");
+                    require(host.guest[ready.receive.address + 4u] == 0xCCu, "DiskReady overwrote its one-word reply");
+                }
+            }
+        }
+        require(host.cdDiskReadyCalls == 24u, "DiskReady did not query the drive for each endpoint call");
+    }
+
+    void cdvdfsvDiskReadyRejectsMalformedRequests()
+    {
+        Host host;
+        host.cdMediaReady = true;
+        IopSubsystem iop(host);
+        iop.reset();
+        for (const GuestBuffer send : {GuestBuffer{0u, 4u}, GuestBuffer{0x1000u, 3u},
+                                      GuestBuffer{0x1000u, 5u}, GuestBuffer{0xFFFFFFFFu, 4u}})
+        {
+            auto ready = request(cdDiskReadyAliasSid, 0u, 4u);
+            ready.send = send;
+            require(iop.handleRpc(ready).handled, "Malformed DiskReady RPC was not rejected by its service");
+            require(host.word(ready.receive.address) == 6u, "Malformed DiskReady RPC reported ready");
+        }
+        auto wrongFunction = request(cdDiskReadySid, 1u, 4u);
+        wrongFunction.send = {0x1000u, 4u};
+        require(iop.handleRpc(wrongFunction).handled, "Unsupported DiskReady function was not handled");
+        require(host.word(wrongFunction.receive.address) == 6u, "Unsupported DiskReady function reported ready");
+
+        require(host.cdDiskReadyCalls == 0u, "Malformed DiskReady request reached the drive");
+        auto ready = request(cdDiskReadyAliasSid, 0u, 3u);
+        ready.send = {0x1000u, 4u};
+        require(iop.handleRpc(ready).handled, "Short DiskReady reply was not handled");
+        require(host.word(ready.receive.address) == 6u, "Short reply changed the previous status word");
+        require(host.cdDiskReadyCalls == 0u, "Short DiskReady reply reached the drive");
+
+        ready = request(cdDiskReadySid, 0u, 4u);
+        ready.send = {0x1000u, 4u};
+        ready.receive = {0xFFFFFFFFu, 4u};
+        require(iop.handleRpc(ready).handled, "Invalid DiskReady reply address was not handled");
+        require(host.cdDiskReadyCalls == 0u, "Invalid DiskReady reply address reached the drive");
     }
 
     void cdvdfsvSearchFileRpc()
@@ -419,6 +484,8 @@ int main()
     const Test tests[] = {
         {"LOADFILE boot service registration and version", loadfileBootService},
         {"CDVDFSV search service is registered after IOP reset", cdvdfsvBootService},
+        {"CDVDFSV DiskReady reflects media and forwards CDVD modes", cdvdfsvDiskReadyRpc},
+        {"CDVDFSV DiskReady rejects malformed requests and bounds replies", cdvdfsvDiskReadyRejectsMalformedRequests},
         {"CDVDFSV search RPC writes sceCdlFILE metadata", cdvdfsvSearchFileRpc},
         {"CDVDFSV supports extended 296/300-byte search packets", cdvdfsvExtendedSearchFileRpc},
         {"CDVDFSV rejects unknown search packet layouts", cdvdfsvRejectsUnknownSearchLayouts},

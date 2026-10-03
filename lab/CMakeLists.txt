@@ -31,6 +31,12 @@ target_sources(ps2_iop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/iop_capture.cpp"
 target_include_directories(ps2_iop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions(ps2_iop PRIVATE PS2X_NEXO_LAB=1)
 
+# Converted desktop packages need capture hooks for offline adaptation, but
+# contain no recompiler/codegen targets or laboratory replay dependencies.
+if(PS2X_NEXO_CAPTURE_ONLY)
+    return()
+endif()
+
 add_executable(nexo_iop_runtime_probe src/iop_runtime_probe_main.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_iop_runtime_probe PRIVATE include ../ps2xRuntime/src/lib)
 target_compile_definitions(nexo_iop_runtime_probe PRIVATE NEXO_IOP_RUNTIME_PROBE_NATIVE=$<BOOL:${PS2X_RUNTIME_NATIVE_IOP}>)
@@ -68,6 +74,26 @@ target_link_libraries(nexo_ee_snapshot_tests PRIVATE ps2_runtime)
 add_executable(nexo_ee_miss_capture_fixture tests/ee_miss_capture_fixture.cpp tests/empty_ee_table.cpp)
 target_include_directories(nexo_ee_miss_capture_fixture PRIVATE include ../ps2xRuntime/src/lib)
 target_link_libraries(nexo_ee_miss_capture_fixture PRIVATE ps2_runtime)
+
+# A headless synthetic consumer for the actual capture -> codegen -> native
+# compile -> relink -> replay pipeline, without commercial game data.
+set(NEXO_AUTOMATION_FIXTURE_MANIFEST "" CACHE FILEPATH "Offline catalog for the automatic-recovery fixture")
+if(NEXO_AUTOMATION_FIXTURE_MANIFEST)
+    include(../ps2xRuntime/cmake/ee_native_catalog.cmake)
+    ee_catalog_sources("${NEXO_AUTOMATION_FIXTURE_MANIFEST}" automation_sources)
+else()
+    set(automation_sources ../ps2xRuntime/src/lib/ps2_empty_ee_catalog.cpp)
+endif()
+add_executable(nexo_ee_autoadapt_fixture tests/ee_autoadapt_fixture.cpp tests/empty_ee_table.cpp
+    ../ps2xRuntime/src/lib/ps2_ee_overlay_backend.cpp ${automation_sources})
+target_include_directories(nexo_ee_autoadapt_fixture PRIVATE include ../ps2xRuntime/src/lib)
+target_compile_definitions(nexo_ee_autoadapt_fixture PRIVATE
+    PS2X_RUNTIME_AOT_EE_OVERLAYS=1 PS2X_RUNTIME_EE_DATA_FAMILIES=0)
+target_compile_features(nexo_ee_autoadapt_fixture PRIVATE cxx_std_20)
+target_link_libraries(nexo_ee_autoadapt_fixture PRIVATE ps2_runtime)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    target_compile_options(nexo_ee_autoadapt_fixture PRIVATE -msse4.1)
+endif()
 
 add_library(nexo_vu_snapshot INTERFACE)
 target_include_directories(nexo_vu_snapshot INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")

@@ -603,6 +603,54 @@ void register_ps2_runtime_interrupt_tests()
             t.IsFalse(g_invocationQueueSpChanged, "sequential callbacks should reuse the same stack depth");
         });
 
+        for (const auto kind : {GuestInvocationKind::RpcCallback,
+                                GuestInvocationKind::Interrupt,
+                                GuestInvocationKind::GsCallback})
+        {
+            const char *name = kind == GuestInvocationKind::RpcCallback
+                ? "missing async callback stops instead of completing silently"
+                : kind == GuestInvocationKind::Interrupt
+                    ? "missing enabled IRQ stops instead of being filtered out"
+                    : "missing GS VSync callback stops instead of being filtered out";
+            tc.Run(name, [kind](TestCase &t)
+            {
+                TestEnv env;
+                constexpr uint32_t unseen = 0x00160560u;
+                env.runtime.activateLoadedEeModule("synthetic-unbound-callback", {{unseen, unseen + 4u}});
+                env.runtime.setMissingFunctionPolicy(PS2Runtime::MissingFunctionPolicy::Stop);
+                env.runtime.registerFunction(kIrqResumePc, schedulerIrqResume);
+                t.IsFalse(env.runtime.hasFunction(unseen), "callback must really be unbound");
+                g_dispatchTrace.clear();
+                R5900Context mainContext{};
+                mainContext.pc = kIrqResumePc;
+                auto &scheduler = env.runtime.eeScheduler();
+                scheduler.reset(env.rdram.data(), mainContext);
+                bool completed = false;
+                if (kind == GuestInvocationKind::Interrupt)
+                {
+                    scheduler.addIrqHandler(false, 2u, unseen, true, 0xCAFEu, 0u, 0u);
+                    scheduler.dispatchIrq(false, 2u);
+                }
+                else if (kind == GuestInvocationKind::GsCallback)
+                {
+                    scheduler.setGsVSyncCallback(unseen, 0u, 0u);
+                    scheduler.postEvent({EeEventType::VBlankStart, 0u, 0u});
+                }
+                else
+                {
+                    GuestInvocation invocation{};
+                    invocation.kind = kind;
+                    invocation.context.pc = unseen;
+                    invocation.onComplete = [&](const R5900Context &, R5900Context &) { completed = true; };
+                    scheduler.queueInvocation(std::move(invocation));
+                }
+                scheduler.run();
+                t.IsTrue(env.runtime.hasMissingFunctionReport(), "missing callback must enter recovery reporting");
+                t.IsTrue(g_dispatchTrace.empty(), "base guest must not resume after the missing callback");
+                t.IsFalse(completed, "unexecuted callback must not be reported complete");
+            });
+        }
+
         tc.Run("iSignalSema defers selection until IRQ return", [](TestCase &t)
         {
             TestEnv env;

@@ -60,12 +60,17 @@ public:
                       uint32_t function,
                       ps2x::iop::GuestBuffer send,
                       ps2x::iop::GuestBuffer receive) override;
+    void writeSpu2Register(uint32_t address, uint16_t value) override;
+    bool writeSpu2Dma(uint32_t core, uint32_t iopAddress,
+                      std::span<const uint8_t> data, bool autoDma) override;
+    void resetSpu2() override;
 
     std::string hostPath(ps2x::iop::HostPathKind kind) const override;
     std::string translateGuestPath(std::string_view path) const override;
     bool searchCdFile(std::string_view path,
                       uint32_t layer,
                       ps2x::iop::CdFileInfo &result) override;
+    int32_t cdDiskReady(uint32_t mode) override;
     uint64_t openHostFile(std::string_view path) override;
     bool hostFileSize(uint64_t handle, uint64_t &size) const override;
     bool readHostFile(uint64_t handle,

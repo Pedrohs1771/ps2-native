@@ -1,6 +1,7 @@
 #include "MiniTest.h"
 #include "ps2recomp/native_overlay.h"
 #include "ps2_native_overlay.h"
+#include "ps2_ee_aot.h"
 #include "ps2_runtime_macros.h"
 #include <cstdlib>
 #include <cstring>
@@ -19,12 +20,46 @@ namespace
         }
         return bytes;
     }
+
+    void physicalBody(uint8_t *, R5900Context *, PS2Runtime *) {}
+    void cachedBody(uint8_t *, R5900Context *, PS2Runtime *) {}
+    void uncachedBody(uint8_t *, R5900Context *, PS2Runtime *) {}
 }
 
 void register_native_overlay_tests()
 {
     MiniTest::Case("Native overlay", [](TestCase &suite)
     {
+    suite.Run("kernel_alias_banks_keep_distinct_PC_bindings_and_guard_physical_writes", [](TestCase &tc)
+    {
+        using namespace ps2native::ee_aot;
+        const auto image = words({0x2402002Au,0x03E00008u,0u});
+        const std::array<PS2NativeOverlayBinding,3> bindings{{
+            {0x10000u,physicalBody,0x10000u,12u,image.data()},
+            {0x80010000u,cachedBody,0x80010000u,12u,image.data()},
+            {0xA0010000u,uncachedBody,0xA0010000u,12u,image.data()}}};
+        const std::array<Bank,3> banks{{
+            {0x10000u,image,std::span(bindings.data(),1)},
+            {0x80010000u,image,std::span(bindings.data()+1,1)},
+            {0xA0010000u,image,std::span(bindings.data()+2,1)}}};
+        Dispatcher dispatcher(Program{banks});
+        std::vector<uint8_t> ram(PS2_RAM_SIZE,0u);
+        std::memcpy(ram.data()+0x10000u,image.data(),image.size());
+        tc.IsTrue(dispatcher.lookup(ram.data(),0x10000u).function==physicalBody,"physical PC selects its own body");
+        tc.IsTrue(dispatcher.lookup(ram.data(),0x80010000u).function==cachedBody,"KSEG0 PC selects its own body");
+        tc.IsTrue(dispatcher.lookup(ram.data(),0xA0010000u).function==uncachedBody,"KSEG1 PC selects its own body");
+        tc.Equals(dispatcher.lookup(ram.data(),0x80010004u).status,Status::MissingEntry,"alias must not invent an interior binding");
+        for (uint32_t bad : {0xC0010000u,0x82010000u,0x9FC00000u,0x70000000u})
+            tc.Equals(dispatcher.lookup(ram.data(),bad).status,Status::OutsideRam,"other segments do not wrap to RDRAM");
+        ram[0x10000u]^=1u;
+        for (uint32_t pc : {0x10000u,0x80010000u,0xA0010000u})
+        {
+            tc.Equals(dispatcher.lookup(ram.data(),pc).status,Status::CodeChanged,"physical write invalidates every compiled alias");
+            const auto diagnosis=dispatcher.diagnose(ram.data(),pc);
+            tc.Equals(diagnosis.candidates.size(),size_t{1},"diagnosis selects the virtual PC case");
+            if (!diagnosis.candidates.empty()) tc.Equals(diagnosis.candidates[0].mismatchBytes,1u,"diagnosis reads physical bytes safely");
+        }
+    });
     suite.Run("native_overlay_emits_real_code_and_all_resume_entries", [](TestCase &tc)
     {
         const auto bytes = words({0x2402002a, 0x03e00008, 0x24420001});

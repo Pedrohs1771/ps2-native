@@ -157,6 +157,102 @@ static bool writeMinimalMipsElfWithJalFallbackTarget(const std::filesystem::path
     return writer.save(elfPath.string());
 }
 
+static bool writeMinimalMipsElfWithMixedExecutableData(const std::filesystem::path &elfPath,
+                                                     bool reservedBeforeCall = false)
+{
+    ELFIO::elfio writer;
+    writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
+    writer.set_type(ELFIO::ET_EXEC);
+    writer.set_machine(ELFIO::EM_MIPS);
+    writer.set_entry(0x00100000u);
+    auto *text = writer.sections.add(".mixed");
+    text->set_type(ELFIO::SHT_PROGBITS);
+    text->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR | ELFIO::SHF_WRITE);
+    text->set_addr_align(4);
+    text->set_address(0x00100000u);
+    std::array<uint32_t, 28> words{};
+    words[0] = 0x0C040008u; // reachable JAL to a leaf at +0x20
+    words[2] = 0x1000000Du; // unconditional BEQ to +0x40, over embedded data
+    words[4] = 0x0C040018u; // data resembling JAL to +0x60; never executed
+    words[6] = 0x03E00008u;
+    words[8] = 0x24420001u; // ordinary leaf without a prologue
+    words[9] = 0x03E00008u;
+    words[16] = 0x0C040014u; // JAL reached through the branch to +0x40
+    words[18] = 0x03E00008u;
+    words[20] = 0x03E00008u;
+    words[24] = 0x0E0E0E0Eu; // repeated data, like the observed giant false entry
+    words[25] = 0x0E0E0E0Eu;
+    words[26] = 0x0E0E0E0Eu;
+    words[27] = 0x0E0E0E0Eu;
+    if (reservedBeforeCall)
+    {
+        words[8] = 0x00000005u; // reserved SPECIAL encoding: not a normal CFG successor
+        words[9] = 0x0C040018u; // JAL-shaped data following the reserved instruction
+        words[10] = 0;
+        words[11] = 0x03E00008u;
+        words[24] = 0x27BDFFF0u; // data resembling a prologue, followed by a reserved word
+        words[25] = 0x00000005u;
+    }
+    text->set_data(reinterpret_cast<const char *>(words.data()), sizeof(words));
+    auto *segment = writer.segments.add();
+    segment->set_type(ELFIO::PT_LOAD);
+    segment->set_flags(ELFIO::PF_R | ELFIO::PF_W | ELFIO::PF_X);
+    segment->set_align(0x1000);
+    segment->add_section_index(text->get_index(), 4);
+    return writer.save(elfPath.string());
+}
+
+static bool writeMinimalMipsElfWithSwitchTable(const std::filesystem::path &elfPath, int variant)
+{
+    ELFIO::elfio writer;
+    writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
+    writer.set_type(ELFIO::ET_EXEC);
+    writer.set_machine(ELFIO::EM_MIPS);
+    writer.set_entry(0x00100000u);
+    auto *text = writer.sections.add(".text");
+    text->set_type(ELFIO::SHT_PROGBITS);
+    text->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR);
+    text->set_address(0x00100000u);
+    text->set_addr_align(4);
+    std::array<uint32_t, 32> words{};
+    words[0] = 0x2C8F0003u; // sltiu t7,a0,3
+    words[1] = 0x11E0000Au; // beqz t7,default (+0x30)
+    words[2] = 0x3C0E0021u; // lui t6,0x21 (delay slot)
+    words[3] = 0x00047880u; // sll t7,a0,2
+    words[4] = 0x25CEF000u; // addiu t6,t6,-0x1000: table at 0x20f000
+    words[5] = 0x01EE7821u; // addu t7,t7,t6
+    words[6] = 0x8DED0000u; // lw t5,0(t7)
+    words[7] = 0x01A00008u; // jr t5
+    words[12] = 0x03E00008u; // default
+    words[16] = 0x03E00008u; // first case
+    words[20] = 0x24420001u; // second case
+    words[21] = 0x03E00008u;
+    words[24] = 0x0C04001Cu; // final case calls a leaf at +0x70
+    words[26] = 0x03E00008u;
+    words[28] = 0x24420002u; // no prologue: only the table makes this call reachable
+    words[29] = 0x1000FFFEu; // non-returning loop, not a callable-shape hint
+    if (variant == 1) words[0] = 0x240F0001u; // no index bound
+    if (variant == 2) words[4] = 0x240F0000u; // clobber scaled index
+    if (variant == 4) words[0] = 0x2C8F0004u; // table shorter than the proven bound
+    if (variant == 5)
+    {
+        words[2] = 0x3C0E0020u;
+        words[4] = 0x35CEF000u; // ORI must zero-extend the low half
+    }
+    text->set_data(reinterpret_cast<const char *>(words.data()), sizeof(words));
+    auto *table = writer.sections.add(".rodata");
+    table->set_type(ELFIO::SHT_PROGBITS);
+    // Retail linker scripts also place switch data in read-only executable
+    // sections. It must be discovered through the dispatch, not vtable hints.
+    table->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR);
+    table->set_address(0x0020F000u);
+    table->set_addr_align(4);
+    std::array<uint32_t, 3> targets{0x00100040u, 0x00100050u, 0x00100060u};
+    if (variant == 3) targets[1] = 0xFFFFFFFFu;
+    table->set_data(reinterpret_cast<const char *>(targets.data()), sizeof(targets));
+    return writer.save(elfPath.string());
+}
+
 static bool writeMinimalMipsElfWithVuMicroprogramSection(const std::filesystem::path &elfPath)
 {
     ELFIO::elfio writer;
@@ -272,7 +368,8 @@ static bool writeMinimalMipsElfWithUnmappedEntryHint(const std::filesystem::path
 }
 
 static bool writeMinimalMipsElfWithAddressTakenCallbacks(const std::filesystem::path &elfPath,
-                                                         bool includePartialDwarf = false)
+                                                         bool includePartialDwarf = false,
+                                                         bool mixedPointerTable = false)
 {
     ELFIO::elfio writer;
     writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
@@ -525,7 +622,8 @@ static bool writeMinimalMipsElfWithAddressTakenCallbacks(const std::filesystem::
 
     ELFIO::section *rodata = writer.sections.add(".rodata");
     rodata->set_type(ELFIO::SHT_PROGBITS);
-    rodata->set_flags(ELFIO::SHF_ALLOC);
+    rodata->set_flags(ELFIO::SHF_ALLOC | (mixedPointerTable
+                          ? ELFIO::SHF_EXECINSTR | ELFIO::SHF_WRITE : 0));
     rodata->set_addr_align(4);
     rodata->set_address(0x00200000u);
 
@@ -1555,6 +1653,86 @@ void register_ps2_recompiler_tests()
             std::filesystem::remove(elfPath, removeError);
         });
 
+        tc.Run("fallback follows calls and branches without promoting embedded JAL-shaped data", [](TestCase &t) {
+            const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+            const auto path = std::filesystem::temp_directory_path() / ("ps2recomp-mixed-" + suffix + ".elf");
+            t.IsTrue(writeMinimalMipsElfWithMixedExecutableData(path), "mixed executable fixture must be written");
+            ElfParser parser(path.string());
+            t.IsTrue(parser.parse(), "mixed executable fixture must parse");
+            const auto functions = parser.extractFunctions();
+            const auto contains = [&](uint32_t address) {
+                return std::any_of(functions.begin(), functions.end(),
+                                   [&](const Function &function) { return function.start == address; });
+            };
+            t.IsTrue(contains(0x00100020u), "reachable leaf must not require a guessed prologue");
+            t.IsTrue(contains(0x00100050u), "calls on a reachable branch path must be discovered");
+            t.IsFalse(contains(0x00100060u), "embedded data must not introduce a false function");
+            const auto leaf = std::find_if(functions.begin(), functions.end(),
+                                           [](const Function &function) { return function.start == 0x00100050u; });
+            if (leaf != functions.end())
+                t.Equals(leaf->end, 0x00100058u, "last fallback function must end after its reachable return delay slot");
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        });
+
+        tc.Run("fallback retains a reserved instruction but does not traverse its data successors", [](TestCase &t) {
+            const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+            const auto path = std::filesystem::temp_directory_path() / ("ps2recomp-reserved-" + suffix + ".elf");
+            t.IsTrue(writeMinimalMipsElfWithMixedExecutableData(path, true), "reserved encoding fixture must be written");
+            ElfParser parser(path.string());
+            t.IsTrue(parser.parse(), "reserved encoding fixture must parse");
+            const auto functions = parser.extractFunctions();
+            const auto invalid = std::find_if(functions.begin(), functions.end(),
+                                              [](const Function &function) { return function.start == 0x00100020u; });
+            t.IsTrue(invalid != functions.end(), "the reachable invalid entry must remain visible for a translation failure");
+            if (invalid != functions.end())
+                t.Equals(invalid->end, 0x00100024u, "the invalid word must be retained without decoding its unrelated successors");
+            t.IsFalse(std::any_of(functions.begin(), functions.end(),
+                                 [](const Function &function) { return function.start == 0x00100060u; }),
+                      "a call-shaped word after a reserved instruction must not promote data");
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        });
+
+        tc.Run("fallback follows bounded switch cases beyond the linear return", [](TestCase &t) {
+            for (int variant : {0, 5})
+            {
+                const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+                const auto path = std::filesystem::temp_directory_path() / ("ps2recomp-switch-" + suffix + ".elf");
+                t.IsTrue(writeMinimalMipsElfWithSwitchTable(path, variant), "switch fixture must be written");
+                ElfParser parser(path.string());
+                t.IsTrue(parser.parse(), "switch fixture must parse");
+                const auto functions = parser.extractFunctions();
+                const auto entry = std::find_if(functions.begin(), functions.end(),
+                                               [](const Function &fn) { return fn.start == 0x00100000u; });
+                t.IsTrue(entry != functions.end(), "dispatch entry must be retained");
+                if (entry != functions.end())
+                    t.Equals(entry->end, 0x00100070u, "all cases and their delay slots must be translated");
+                t.IsTrue(std::any_of(functions.begin(), functions.end(),
+                                    [](const Function &fn) { return fn.start == 0x00100070u; }),
+                         "the leaf called exclusively by the final case must be discovered");
+                std::error_code error;
+                std::filesystem::remove(path, error);
+            }
+        });
+
+        tc.Run("fallback rejects unbounded clobbered malformed and truncated switch tables", [](TestCase &t) {
+            for (int variant : {1, 2, 3, 4})
+            {
+                const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+                const auto path = std::filesystem::temp_directory_path() / ("ps2recomp-switch-invalid-" + suffix + ".elf");
+                t.IsTrue(writeMinimalMipsElfWithSwitchTable(path, variant), "invalid switch fixture must be written");
+                ElfParser parser(path.string());
+                t.IsTrue(parser.parse(), "invalid switch ELF must parse");
+                const auto functions = parser.extractFunctions();
+                t.IsFalse(std::any_of(functions.begin(), functions.end(),
+                                     [](const Function &fn) { return fn.start == 0x00100070u; }),
+                          "unproven table contents must not introduce code roots");
+                std::error_code error;
+                std::filesystem::remove(path, error);
+            }
+        });
+
         tc.Run("elf parser keeps VU microprograms out of EE code discovery", [](TestCase &t) {
             const auto uniqueSuffix = std::to_string(
                 static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -1731,6 +1909,29 @@ void register_ps2_recompiler_tests()
             std::filesystem::remove(elfPath, removeError);
         });
 
+        tc.Run("elf parser discovers pointer tables in writable executable sections", [](TestCase &t) {
+            const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+            const auto path = std::filesystem::temp_directory_path() / ("ps2recomp-mixed-table-" + suffix + ".elf");
+            t.IsTrue(writeMinimalMipsElfWithAddressTakenCallbacks(path, false, true),
+                     "mixed code/data fixture should be written");
+            ElfParser parser(path.string());
+            t.IsTrue(parser.parse(), "mixed code/data fixture should parse");
+            const auto functions = parser.extractFunctions();
+            const auto contains = [&](uint32_t address) {
+                return std::any_of(functions.begin(), functions.end(), [&](const Function &function) {
+                    return function.start == address;
+                });
+            };
+            t.IsTrue(contains(0x00100000u), "reachable entrypoint must remain discoverable with mixed storage");
+            t.IsTrue(contains(0x00100060u), "embedded table must retain its first callback");
+            t.IsTrue(contains(0x00100068u), "embedded table must retain its second callback");
+            t.IsTrue(contains(0x00100120u), "embedded class descriptor must retain its long leaf");
+            t.IsFalse(contains(0x00100300u), "isolated pointers must remain unconfirmed");
+            t.IsFalse(contains(0x00100548u), "an unreferenced prologue must remain unconfirmed");
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        });
+
         tc.Run("elf parser supplements partial DWARF with address-taken callbacks", [](TestCase &t) {
             const auto uniqueSuffix = std::to_string(
                 static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -1765,8 +1966,10 @@ void register_ps2_recompiler_tests()
                          "the last inferred callback should still be discovered");
                 if (lastFallbackIt != functions.end())
                 {
-                    t.Equals(0x001003F0u, lastFallbackIt->end,
-                             "later partial DWARF should bound an inferred callback");
+                    t.IsTrue(lastFallbackIt->end <= 0x001003F0u,
+                             "inferred callback must not overlap the later partial DWARF function");
+                    t.IsTrue(lastFallbackIt->end >= 0x001003E8u,
+                             "tighter inferred bounds must retain the callback return delay slot");
                 }
             }
 

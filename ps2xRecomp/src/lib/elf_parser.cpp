@@ -2,6 +2,7 @@
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/recompiler_reporter.h"
 #include "ps2recomp/types.h"
+#include "rabbitizer.h"
 #include <iostream>
 #include <stdexcept>
 #include <unordered_set>
@@ -23,6 +24,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 
 namespace
 {
@@ -499,6 +501,16 @@ namespace
     bool HasReachableReturnByControlFlow(const ps2recomp::Section &section,
                                          uint32_t startOffset);
 
+    bool IsValidR5900Encoding(uint32_t address, uint32_t raw)
+    {
+        RabbitizerInstruction instruction;
+        RabbitizerInstructionR5900_init(&instruction, raw, address);
+        RabbitizerInstructionR5900_processUniqueId(&instruction);
+        const bool valid = RabbitizerInstruction_isValid(&instruction);
+        RabbitizerInstructionR5900_destroy(&instruction);
+        return valid;
+    }
+
     bool LooksLikeCallableEntry(const std::vector<ps2recomp::Section> &sections,
                                 uint32_t address,
                                 bool allowLeafThunk,
@@ -518,6 +530,26 @@ namespace
 
         const uint32_t startOffset = address - section->address;
         constexpr uint32_t kStandardProbeWords = 8;
+        // A prologue-looking word inside a mixed data region is insufficient.
+        // Check the entry window before accepting that shape, stopping at a
+        // genuine return/tail transfer and retaining its delay instruction.
+        for (uint32_t index = 0; index < kStandardProbeWords; ++index)
+        {
+            uint32_t raw = 0;
+            if (!ReadSectionWord(*section, startOffset + index * MIPS_INSTRUCTION_SIZE, raw))
+                break;
+            if (!IsValidR5900Encoding(address + index * MIPS_INSTRUCTION_SIZE, raw))
+                return false;
+            if (OPCODE(raw) == OPCODE_J ||
+                (OPCODE(raw) == OPCODE_SPECIAL && FUNCTION(raw) == SPECIAL_JR))
+            {
+                uint32_t delayRaw = 0;
+                if (!ReadSectionWord(*section, startOffset + (index + 1u) * MIPS_INSTRUCTION_SIZE, delayRaw) ||
+                    !IsValidR5900Encoding(address + (index + 1u) * MIPS_INSTRUCTION_SIZE, delayRaw))
+                    return false;
+                break;
+            }
+        }
         // Retail initializer tables sometimes point at functions that materialize
         // a sizeable block of constants before allocating their stack frame.
         // Keep the broader window exclusive to that LUI-preamble pattern so leaf
@@ -533,6 +565,8 @@ namespace
             {
                 break;
             }
+            if (!IsValidR5900Encoding(address + index * MIPS_INSTRUCTION_SIZE, raw))
+                return false;
 
             const uint32_t opcode = OPCODE(raw);
             const uint32_t rs = RS(raw);
@@ -1405,6 +1439,13 @@ namespace
         return name == ".ctors" || name == ".dtors" || name == ".init_array" || name == ".fini_array";
     }
 
+    bool IsPointerDataSection(const ps2recomp::Section &section)
+    {
+        return !section.isBSS && section.data &&
+               ((section.isData && !section.isCode) ||
+                (section.isCode && !section.isReadOnly));
+    }
+
     void ScanDataFunctionPointerTables(const std::vector<ps2recomp::Section> &sections, std::unordered_set<uint32_t> &starts)
     {
         struct PointerCandidate
@@ -1418,8 +1459,7 @@ namespace
 
         for (const auto &section : sections)
         {
-            if (!section.isData || section.isCode || section.isBSS ||
-                !section.data || section.size < MIPS_INSTRUCTION_SIZE)
+            if (!IsPointerDataSection(section) || section.size < MIPS_INSTRUCTION_SIZE)
             {
                 continue;
             }
@@ -1494,7 +1534,7 @@ namespace
                 }
 
                 const ps2recomp::Section *nameSection = FindSectionByAddress(sections, nameAddress);
-                return nameSection && nameSection->isData && !nameSection->isCode &&
+                return nameSection && IsPointerDataSection(*nameSection) &&
                        LooksLikeCallableEntry(sections, conservativeMethod, true);
             };
 
@@ -1605,6 +1645,228 @@ namespace
         }
     }
 
+    std::vector<uint32_t> ReadBoundedSwitchTargets(const std::vector<ps2recomp::Section> &sections,
+                                                  uint32_t jumpPc, uint32_t jumpReg)
+    {
+        // Backward-slice the index*4 + constant / LW / JR dispatch. Do not
+        // guess table length from adjacent pointers: the unsigned range guard
+        // and every table entry must be present before any case is followed.
+        constexpr uint32_t kProbeBytes = 24u * MIPS_INSTRUCTION_SIZE;
+        const auto *code = FindCodeSectionByAddress(sections, jumpPc);
+        if (!code || jumpReg == GPR_ZERO || jumpReg == GPR_RA)
+            return {};
+        const uint32_t firstPc = jumpPc - std::min(kProbeBytes, jumpPc - code->address);
+        auto definition = [&](uint32_t reg, uint32_t before, uint32_t &pc, uint32_t &raw)
+        {
+            if (reg == GPR_ZERO)
+                return false;
+            for (uint32_t cursor = before; cursor > firstPc;)
+            {
+                cursor -= MIPS_INSTRUCTION_SIZE;
+                if (!ReadWordByAddress(sections, cursor, raw) || !IsValidR5900Encoding(cursor, raw))
+                    return false;
+                if (WritesGpr(raw, reg))
+                {
+                    pc = cursor;
+                    return true;
+                }
+            }
+            return false;
+        };
+        uint32_t loadPc = 0, load = 0;
+        if (!definition(jumpReg, jumpPc, loadPc, load) ||
+            (OPCODE(load) != OPCODE_LW && OPCODE(load) != OPCODE_LWU))
+            return {};
+        uint32_t addPc = 0, add = 0;
+        if (!definition(RS(load), loadPc, addPc, add) ||
+            OPCODE(add) != OPCODE_SPECIAL || FUNCTION(add) != SPECIAL_ADDU)
+            return {};
+
+        for (int order = 0; order < 2; ++order)
+        {
+            const uint32_t scaledReg = order == 0 ? RS(add) : RT(add);
+            const uint32_t baseReg = order == 0 ? RT(add) : RS(add);
+            uint32_t shiftPc = 0, shift = 0, lowPc = 0, low = 0;
+            if (!definition(scaledReg, addPc, shiftPc, shift) ||
+                OPCODE(shift) != OPCODE_SPECIAL || FUNCTION(shift) != SPECIAL_SLL || SA(shift) != 2 ||
+                !definition(baseReg, addPc, lowPc, low) ||
+                (OPCODE(low) != OPCODE_ADDIU && OPCODE(low) != OPCODE_ORI))
+                continue;
+            uint32_t highPc = 0, high = 0;
+            if (!definition(RS(low), lowPc, highPc, high) || OPCODE(high) != OPCODE_LUI)
+                continue;
+
+            uint32_t guardPc = 0, boundPc = 0, bound = 0;
+            for (uint32_t cursor = shiftPc; cursor > firstPc;)
+            {
+                cursor -= MIPS_INSTRUCTION_SIZE;
+                uint32_t branch = 0;
+                if (!ReadWordByAddress(sections, cursor, branch))
+                    break;
+                // BEQ predicate,zero,default: only its fallthrough is bounded.
+                if (OPCODE(branch) != OPCODE_BEQ ||
+                    (RS(branch) != GPR_ZERO && RT(branch) != GPR_ZERO) || RS(branch) == RT(branch))
+                    continue;
+                const uint32_t predicate = RS(branch) == GPR_ZERO ? RT(branch) : RS(branch);
+                uint32_t candidatePc = 0, candidate = 0;
+                if (!definition(predicate, cursor, candidatePc, candidate) ||
+                    OPCODE(candidate) != OPCODE_SLTIU || RS(candidate) != RT(shift) ||
+                    SIMMEDIATE(candidate) <= 0 || SIMMEDIATE(candidate) > 1024)
+                    continue;
+                const uint32_t defaultPc = cursor + MIPS_INSTRUCTION_SIZE +
+                    static_cast<uint32_t>(SIMMEDIATE(branch) * static_cast<int32_t>(MIPS_INSTRUCTION_SIZE));
+                if (defaultPc > candidatePc && defaultPc <= jumpPc + MIPS_INSTRUCTION_SIZE)
+                    continue;
+                guardPc = cursor;
+                boundPc = candidatePc;
+                bound = candidate;
+                break;
+            }
+            if (guardPc == 0)
+                continue;
+
+            bool validPath = true;
+            for (uint32_t pc = std::min(boundPc, highPc); pc < jumpPc; pc += MIPS_INSTRUCTION_SIZE)
+            {
+                uint32_t raw = 0;
+                if (!ReadWordByAddress(sections, pc, raw) || !IsValidR5900Encoding(pc, raw) ||
+                    (IsControlTransfer(raw) && pc != guardPc) ||
+                    (pc > boundPc && pc < shiftPc && WritesGpr(raw, RT(shift))))
+                {
+                    validPath = false;
+                    break;
+                }
+                // Unknown register side effects cannot justify a static slice.
+                const uint32_t op = OPCODE(raw);
+                if (op == OPCODE_COP0 || op == OPCODE_COP1 || op == OPCODE_COP2)
+                {
+                    validPath = false;
+                    break;
+                }
+            }
+            if (!validPath)
+                continue;
+            const uint32_t highValue = static_cast<uint32_t>(static_cast<uint16_t>(IMMEDIATE(high))) << 16;
+            const uint32_t base = OPCODE(low) == OPCODE_ORI
+                ? highValue | static_cast<uint16_t>(IMMEDIATE(low))
+                : highValue + static_cast<uint32_t>(SIMMEDIATE(low));
+            const uint32_t tableAddress = base + static_cast<uint32_t>(SIMMEDIATE(load));
+            const uint32_t count = static_cast<uint32_t>(SIMMEDIATE(bound));
+            const auto *table = FindSectionByAddress(sections, tableAddress);
+            if (!table || !table->data || tableAddress % MIPS_INSTRUCTION_SIZE != 0 ||
+                static_cast<uint64_t>(tableAddress - table->address) + count * MIPS_INSTRUCTION_SIZE > table->size)
+                continue;
+            std::vector<uint32_t> targets;
+            targets.reserve(count);
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                uint32_t target = 0, raw = 0;
+                if (!ReadSectionWord(*table, tableAddress - table->address + index * MIPS_INSTRUCTION_SIZE, target) ||
+                    target % MIPS_INSTRUCTION_SIZE != 0 || !FindCodeSectionByAddress(sections, target) ||
+                    !ReadWordByAddress(sections, target, raw) || !IsValidR5900Encoding(target, raw))
+                {
+                    targets.clear();
+                    break;
+                }
+                targets.push_back(target);
+            }
+            if (!targets.empty())
+                return targets;
+        }
+        return {};
+    }
+
+    void ScanReachableCallTargets(const std::vector<ps2recomp::Section> &sections,
+                                  std::unordered_set<uint32_t> &starts,
+                                  std::unordered_set<uint32_t> &visited,
+                                  std::unordered_set<uint32_t> &reachableInstructions)
+    {
+        // A stripped PS2 ELF can mark code, textures and embedded ROM bytes as
+        // one executable region. Prefer JAL instructions reachable from known
+        // entries over an unconditional scan of all file words. Keep this
+        // traversal independent of prologue/return heuristics: real callees may
+        // be leaf functions, tail calls or non-returning loops.
+        std::vector<uint32_t> pending(starts.begin(), starts.end());
+        auto enqueue = [&](uint32_t address)
+        {
+            const auto *section = FindCodeSectionByAddress(sections, address);
+            if (section && section->data && address % MIPS_INSTRUCTION_SIZE == 0 &&
+                section->size - (address - section->address) >= MIPS_INSTRUCTION_SIZE &&
+                !visited.contains(address))
+            {
+                pending.push_back(address);
+            }
+        };
+        while (!pending.empty())
+        {
+            const uint32_t pc = pending.back();
+            pending.pop_back();
+            if (!visited.insert(pc).second)
+                continue;
+            uint32_t raw = 0;
+            if (!ReadWordByAddress(sections, pc, raw))
+                continue;
+            reachableInstructions.insert(pc);
+            // Preserve the invalid word so translation still reports/refuses
+            // it. A reserved encoding has no ordinary fallthrough; traversing
+            // its successors would turn unrelated data into code roots.
+            if (!IsValidR5900Encoding(pc, raw))
+                continue;
+            const uint32_t opcode = OPCODE(raw);
+            const bool copBranch = (opcode == OPCODE_COP0 || opcode == OPCODE_COP1 || opcode == OPCODE_COP2) &&
+                                   RS(raw) == COP0_BC;
+            if (IsControlTransfer(raw) || copBranch)
+            {
+                const auto *delaySection = FindCodeSectionByAddress(sections, pc + MIPS_INSTRUCTION_SIZE);
+                uint32_t delayRaw = 0;
+                if (delaySection && ReadSectionWord(*delaySection,
+                        pc + MIPS_INSTRUCTION_SIZE - delaySection->address, delayRaw))
+                    reachableInstructions.insert(pc + MIPS_INSTRUCTION_SIZE);
+            }
+            if (opcode == OPCODE_J || opcode == OPCODE_JAL)
+            {
+                const uint32_t target = ((pc + MIPS_INSTRUCTION_SIZE) & MIPS_JUMP_REGION_MASK) |
+                                        (TARGET(raw) << MIPS_JUMP_TARGET_SHIFT);
+                if (opcode == OPCODE_JAL)
+                {
+                    if (FindCodeSectionByAddress(sections, target))
+                        starts.insert(target);
+                    enqueue(pc + 2u * MIPS_INSTRUCTION_SIZE);
+                }
+                enqueue(target);
+                continue;
+            }
+            if (IsConditionalBranch(raw) || copBranch)
+            {
+                const uint32_t target = pc + MIPS_INSTRUCTION_SIZE +
+                    static_cast<uint32_t>(SIMMEDIATE(raw) * static_cast<int32_t>(MIPS_INSTRUCTION_SIZE));
+                const bool branchAlways = opcode == OPCODE_BEQ && RS(raw) == RT(raw);
+                const bool branchNever = opcode == OPCODE_BNE && RS(raw) == RT(raw);
+                if (!branchNever)
+                    enqueue(target);
+                if (!branchAlways)
+                    enqueue(pc + 2u * MIPS_INSTRUCTION_SIZE);
+                continue;
+            }
+            if (opcode == OPCODE_SPECIAL && FUNCTION(raw) == SPECIAL_JR)
+            {
+                for (uint32_t target : ReadBoundedSwitchTargets(sections, pc, RS(raw)))
+                    enqueue(target);
+                continue;
+            }
+            if (opcode == OPCODE_SPECIAL && FUNCTION(raw) == SPECIAL_JALR)
+            {
+                // Unknown indirect callees stay unresolved; the caller resumes
+                // after its delay slot. Address-taken discovery supplies roots.
+                enqueue(pc + 2u * MIPS_INSTRUCTION_SIZE);
+                continue;
+            }
+            if (opcode == OPCODE_COP0 && RS(raw) == COP0_CO && FUNCTION(raw) == COP0_CO_ERET)
+                continue;
+            enqueue(pc + MIPS_INSTRUCTION_SIZE);
+        }
+    }
+
     void ScanFunctionStartsFallback(ps2recomp::ElfParser *parser, std::vector<ps2recomp::Function> &outFunctions)
     {
         std::unordered_set<uint32_t> starts;
@@ -1616,45 +1878,64 @@ namespace
             starts.insert(entry);
         }
 
-        const auto &sections = parser->getSections();
+        const auto sections = parser->getSections();
+        for (const auto &symbol : parser->extractSymbols())
+        {
+            if (symbol.isFunction && !symbol.isImported && FindCodeSectionByAddress(sections, symbol.address))
+                starts.insert(symbol.address);
+        }
+        for (const auto &function : outFunctions)
+            if (FindCodeSectionByAddress(sections, function.start))
+                starts.insert(function.start);
+
+        std::unordered_set<uint32_t> visited;
+        std::unordered_set<uint32_t> reachableInstructions;
+        const auto traceStep = [&](const char *stage)
+        {
+            if (std::getenv("PS2X_DISCOVERY_TRACE"))
+                std::cerr << "[elf-discovery] stage=" << stage << " roots=" << starts.size()
+                          << " reachable=" << reachableInstructions.size() << '\n';
+        };
+        ScanReachableCallTargets(sections, starts, visited, reachableInstructions);
+        traceStep("initial-cfg");
+
+        // Indirect dispatch leaves some real callers outside the initial CFG.
+        // Retain those hints only when their target has a conventional callable
+        // shape; do not promote arbitrary in-range addresses from mixed data.
+        // Reachable calls above have no prologue requirement.
         for (const auto &section : sections)
         {
             if (!section.isCode || !section.data || section.size < MIPS_INSTRUCTION_SIZE)
-            {
                 continue;
-            }
-
-            for (uint32_t offset = 0; offset + MIPS_INSTRUCTION_SIZE <= section.size; offset += MIPS_INSTRUCTION_SIZE)
+            for (uint32_t offset = 0; offset <= section.size - MIPS_INSTRUCTION_SIZE; offset += MIPS_INSTRUCTION_SIZE)
             {
-                const uint32_t pc = section.address + offset;
-
                 uint32_t raw = 0;
-                std::memcpy(&raw, section.data + offset, sizeof(uint32_t));
-
-                const uint32_t op = OPCODE(raw);
-                if (op != OPCODE_JAL)
-                {
+                if (!ReadSectionWord(section, offset, raw) || OPCODE(raw) != OPCODE_JAL)
                     continue;
-                }
-
-                const uint32_t index = TARGET(raw);
-                const uint32_t target =
-                    ((pc + MIPS_INSTRUCTION_SIZE) & MIPS_JUMP_REGION_MASK) |
-                    (index << MIPS_JUMP_TARGET_SHIFT);
-
-                if (FindCodeSectionByAddress(sections, target))
-                {
+                const uint32_t target = ((section.address + offset + MIPS_INSTRUCTION_SIZE) & MIPS_JUMP_REGION_MASK) |
+                                        (TARGET(raw) << MIPS_JUMP_TARGET_SHIFT);
+                if (!starts.contains(target) && LooksLikeCallableEntry(sections, target, true))
                     starts.insert(target);
-                }
             }
         }
+        ScanReachableCallTargets(sections, starts, visited, reachableInstructions);
+        traceStep("callable-hints");
 
         ScanMaterializedCodeAddresses(sections, starts);
+        traceStep("materialized-addresses");
         ScanDataFunctionPointerTables(sections, starts);
+        traceStep("pointer-tables");
+        ScanReachableCallTargets(sections, starts, visited, reachableInstructions);
+        traceStep("callback-cfg");
         ScanAdjacentLeafThunkRuns(sections, starts);
+        traceStep("adjacent-thunks");
+        ScanReachableCallTargets(sections, starts, visited, reachableInstructions);
+        traceStep("final-cfg");
 
         std::vector<uint32_t> sortedStarts(starts.begin(), starts.end());
         std::sort(sortedStarts.begin(), sortedStarts.end());
+        std::vector<uint32_t> sortedReachable(reachableInstructions.begin(), reachableInstructions.end());
+        std::sort(sortedReachable.begin(), sortedReachable.end());
 
         for (size_t i = 0; i < sortedStarts.size(); ++i)
         {
@@ -1669,7 +1950,18 @@ namespace
             ps2recomp::Function func{};
             func.name = MakeAutoFunctionName(start);
             func.start = start;
-            func.end = 0;
+            uint32_t nextStart = ClampFunctionEndToSection(sec, start, 0);
+            if (i + 1 < sortedStarts.size() && sortedStarts[i + 1] < nextStart)
+                nextStart = sortedStarts[i + 1];
+            const auto endIt = std::lower_bound(sortedReachable.begin(), sortedReachable.end(), nextStart);
+            // Do not decode the unused tail of a mixed code/data region merely
+            // because no later function start bounds the final real function.
+            func.end = (endIt != sortedReachable.begin() && *(endIt - 1) >= start)
+                           ? *(endIt - 1) + MIPS_INSTRUCTION_SIZE
+                           : start + MIPS_INSTRUCTION_SIZE;
+            uint32_t entryRaw = 0;
+            if (ReadWordByAddress(sections, start, entryRaw) && !IsValidR5900Encoding(start, entryRaw))
+                func.end = start + MIPS_INSTRUCTION_SIZE;
             func.isRecompiled = false;
             func.isStub = false;
             func.isSkipped = false;
