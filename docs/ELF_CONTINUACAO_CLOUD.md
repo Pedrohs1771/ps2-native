@@ -43,8 +43,13 @@ reprodução do contrato. Nenhuma função foi adicionada a `skip`.
 > Priorize os contratos compartilhados de scheduler, GS, SIF/IOP e SPU2.
 > Reproduza cada divergência com código próprio, corrija e teste.
 
-ELF e módulos isolados permitem inspeção estática. Menus, música e navegação
-reais podem carregar arquivos adicionais do disco; a ausência de mídia não
-qualifica esse percurso. O estado comercial permanece 0/5 menus aprovados.
+ELF e módulos isolados permitem inspeção estática e recompilação. Para testes
+com as imagens completas de disco (avaliação de áudio, menus e navegação), o corpus
+completo de teste pode ser baixado diretamente da Release privada:
+
+```sh
+gh release download test-corpus-v1.0 --dir test-data/isos
+```
+
 Para testes sem binários comerciais, use os comandos das fixtures próprias
 em [VPS_CONTINUACAO.md](VPS_CONTINUACAO.md).

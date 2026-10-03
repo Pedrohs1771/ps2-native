@@ -1,8 +1,9 @@
 Continue na raiz do checkout atual. No PC original ela fica em
 /home/pedrohs/Downloads/ps2-native-recompiler; no Cloud/VPS use o caminho do clone.
-Não tente baixar ISOs externas. Utilize o pacote de teste descompactado em ./fixtures/metal_slug_4.
-Rode o analisador estático diretamente sobre o executável ELF para continuar implementando os contratos de kernel e runtime pendentes.
-O agente passará direto para a desmontagem MIPS e compilação em C++ sem tentar acessar links da web.
+Não tente baixar ISOs externas da web pública.
+Para análise direta sem mídia pesada, utilize o pacote de teste descompactado em ./fixtures/metal_slug_4.
+Para executar o pipeline completo com as 5 imagens de teste (menus, áudio e vídeo reais), baixe o corpus diretamente da release privada do repositório:
+gh release download test-corpus-v1.0 --dir test-data/isos
 Verifique o ELF localmente: file fixtures/metal_slug_4/SLES_*.
 Para os insumos do corpus e fixtures, leia docs/CODEX_CLOUD.md e test-data/corpus-manifest.json.
 Há um levantamento estático local de Metal Slug 4 em test-data/metal-slug-4-static-analysis.json; veja docs/ELF_CONTINUACAO_CLOUD.md.

@@ -20,17 +20,18 @@ ponteiros. Isso não garante espaço suficiente para builds ou acesso no Cloud.
 [Limites do GitHub](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github),
 [Git LFS](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-git-large-file-storage).
 
-## Preparar e continuar
+## Preparar e baixar o corpus de teste completo
 
 Selecione `Pedrohs1771/ps2-native` e a revisão desejada no ambiente Cloud.
-Use as dependências e os targets mínimos de
-[`VPS_CONTINUACAO.md`](VPS_CONTINUACAO.md), verificando os recursos disponíveis.
-No Codex Cloud atual, a configuração permite preparar dependências e assets
-com um Install script; publicar o ambiente captura o filesystem preparado.
-Mudanças do ambiente devem ser republicadas e verificadas numa tarefa nova.
-[Documentação oficial do Codex Cloud](https://learn.chatgpt.com/docs/environments/cloud-environments).
+Para obter as 5 ISOs completas do corpus de teste sem depender de download externo de links da web:
 
-Com ISOs efetivamente disponíveis nesse diretório, execute na raiz do checkout:
+```sh
+gh release download test-corpus-v1.0 --dir test-data/isos
+```
+
+Isso faz o download autenticado das 5 imagens para `test-data/isos/`, com integridade e hashes correspondendo a `test-data/corpus-manifest.json`.
+
+Com as ISOs disponíveis, execute na raiz do checkout:
 
 ```sh
 python3 -m tools.ps2native.corpus_batch plan --iso-dir test-data/isos
