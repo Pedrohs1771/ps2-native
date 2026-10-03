@@ -40,6 +40,9 @@ ps2_log.txt
 /test-data/isos/*
 !/test-data/isos/README.md
 
+# Locally extracted commercial executables and modules
+/fixtures/metal_slug_4/
+
 # Local credentials and Android signing keys
 .env
 .env.*

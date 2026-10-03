@@ -3,6 +3,8 @@ Continue na raiz do checkout atual. No PC original ela fica em
 Para os insumos do corpus, leia docs/CODEX_CLOUD.md e
 test-data/corpus-manifest.json. O manifesto contém somente metadados: as ISOs
 privadas não acompanham o clone. Confira a disponibilidade real antes de testar.
+Há um levantamento estático local de Metal Slug 4 em
+test-data/metal-slug-4-static-analysis.json; veja docs/ELF_CONTINUACAO_CLOUD.md.
 Trabalhe sozinho: o usuário revogou workers, Luna, Hyper e sessões auxiliares.
 Não altere o modelo ou esforço da sessão atual. Preserve o diff e os insumos.
 

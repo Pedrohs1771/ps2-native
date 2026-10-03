@@ -5,6 +5,9 @@ SHA-256 estão em [`../test-data/corpus-manifest.json`](../test-data/corpus-mani
 Os caminhos são relativos à raiz do checkout. Esse manifesto é **somente
 metadados**: os bytes das ISOs não foram enviados ao GitHub ou ao Cloud.
 
+Para a análise direta por ELF já executada localmente e a continuação com
+fixtures próprias, veja [ELF_CONTINUACAO_CLOUD.md](ELF_CONTINUACAO_CLOUD.md).
+
 O diretório `test-data/isos/` separa insumos privados de fontes e builds. Os
 arquivos reais precisam ser fornecidos legalmente ao ambiente onde os testes
 rodam. Não presumir que caminhos `/home/pedrohs/...` ou recibos em `build/`

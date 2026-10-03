@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "status": "STATIC_ANALYSIS_ONLY",
+  "source_revision": "9c879f959b4594b236c45423a778538ee44cb569",
+  "iso_sha256": "1515e1ed9250036b7568d87d1833ccfefc3762de53b845e5f595403fa3bdd6fc",
+  "fixture_directory": "fixtures/metal_slug_4",
+  "commercial_binaries_included": false,
+  "file_count": 11,
+  "total_bytes": 6880516,
+  "files": [
+    {
+      "path": "fixtures/metal_slug_4/MODULES/CDVDSTM.IRX",
+      "size_bytes": 33521,
+      "sha256": "276c175fe4a6d83d43baeb86b40cd5a7c3fc7b13b15df6da541040f926d5eb07"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/EZADPCM.IRX",
+      "size_bytes": 32992,
+      "sha256": "c3d418ea92a8f0c0783174f865f41138e477e78a5f93ca1c8488af7223dfcae1"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/IOPRP300.IMG",
+      "size_bytes": 275345,
+      "sha256": "02d314464c17c715d7e809297b0aba184173a98616b1fafeac27fe33fc480c82"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/LIBSD.IRX",
+      "size_bytes": 28661,
+      "sha256": "d26a8dcd121ff4ded9c819b72864ea7f4e723932cc2eab1b4f0f1c93faad43ef"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/MCMAN.IRX",
+      "size_bytes": 95909,
+      "sha256": "1fe154231adbd587f9fb6ec1c7d4201c87c76ffcc91c8615474f24d26c05c7b0"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/MCSERV.IRX",
+      "size_bytes": 7417,
+      "sha256": "9c9a7d8fff21ccd11eae79592842bef1c4d1ddb716f918b1facb9d2b03a76800"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/PADMAN.IRX",
+      "size_bytes": 44869,
+      "sha256": "78ca085ba4d0719b6753c271d9f911b37bcb8dd8ac910924e504b0e99c7f8816"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/SDRDRV.IRX",
+      "size_bytes": 9161,
+      "sha256": "85a465ab251bde0c3d33151b3a67ec2780d57cc40ebb7df9d5ecb7bad3396b16"
+    },
+    {
+      "path": "fixtures/metal_slug_4/MODULES/SIO2MAN.IRX",
+      "size_bytes": 6641,
+      "sha256": "565ec77e75f174cfddf72c41ccc446c1c07a3d5fb0a2ccfefad337cb8a7d0728"
+    },
+    {
+      "path": "fixtures/metal_slug_4/SLES_533.80",
+      "size_bytes": 6345944,
+      "sha256": "421e617355238f3cb5dd73f5522ef3ba8acc7c595daa69ae8ad062ea67401ebe"
+    },
+    {
+      "path": "fixtures/metal_slug_4/SYSTEM.CNF",
+      "size_bytes": 56,
+      "sha256": "88cb86e986601dd8e4a642953113e766ba1bfce910454895cb16e78b8774b19c"
+    }
+  ],
+  "boot_elf": {
+    "path": "fixtures/metal_slug_4/SLES_533.80",
+    "format": "ELF32 little-endian MIPS",
+    "elf_type": 2,
+    "machine": 8,
+    "entry_pc": "0x00100008"
+  },
+  "analysis": {
+    "analyzer_sha256": "f0f20ee924bede2d4bc399833be46e3002660a71d637d6f6ec7669742b63a7cb",
+    "exit_code": 0,
+    "generated_toml_sha256": "712700123654bf57db06d005f65969a79d8bf1a35834965a82f787f08396d823",
+    "configured_runtime_stubs": 220,
+    "detected_library_functions_without_runtime_handlers": 360,
+    "configured_entry_points": 370,
+    "configured_skip_functions": 0,
+    "potential_instruction_patches": 10,
+    "detected_jump_tables": 3,
+    "scope": "Static scanner findings; matches and suggested patches require review, not menu approval."
+  },
+  "menu_approved": false,
+  "native_execution_qualified": false,
+  "strict_approval": false,
+  "closure_proved": false,
+  "scope": "Metadata and local-analysis receipt only; no executable bytes, media or disassembly included."
+}
