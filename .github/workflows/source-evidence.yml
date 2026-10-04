@@ -1,0 +1,48 @@
+name: source evidence
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-iop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check public source
+        run: |
+          python3 -m unittest discover -s tools/tests
+          python3 tools/check_public_source.py
+      - name: CLI and laboratory contracts
+        run: |
+          python3 -m unittest discover -s tools/ps2native/tests
+          python3 -m unittest lab.tests.test_ee_data_families lab.tests.test_ee_family_catalog lab.tests.test_prepare_ee_family_batch lab.tests.test_ee_context_inventory
+      - name: IOP build and tests
+        run: |
+          cmake -S ps2xIOP -B build-iop -DCMAKE_BUILD_TYPE=Release -DPS2X_IOP_BUILD_TESTS=ON -DPS2X_IOP_BUILD_LAB=ON
+          cmake --build build-iop --parallel 4
+          ctest --test-dir build-iop --output-on-failure
+
+  native-ee-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install native and headless dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev xvfb xdotool imagemagick pulseaudio-utils
+      - name: Build owned native fixture
+        run: |
+          cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-msse4.1 -DPS2X_BUILD_STUDIO=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_ENABLE_DEBUG_UI=OFF -DPS2X_BUILD_NEXO_LAB=ON -DPS2X_RUNTIME_AOT_EE_OVERLAYS=ON
+          cmake --build build --target ps2_native_overlay nexo_ee_autoadapt_fixture --parallel 4
+      - name: Prove recovery and reuse without skipped tests
+        run: python3 tools/check_native_demo.py

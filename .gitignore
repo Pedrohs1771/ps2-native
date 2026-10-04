@@ -40,9 +40,17 @@ ps2_log.txt
 /test-data/isos/*
 !/test-data/isos/README.md
 
-# Non-commercial static analysis and compiler test fixtures
-!/fixtures/
-!/fixtures/**
+# Private extracted inputs and optional unverified binaries
+/fixtures/
+/ps2xRuntime/vita/module/
+/ps2xStudio/external/Font/
+/build-iop/
+*.elf
+*.ELF
+*.irx
+*.IRX
+*.suprx
+*.tar.gz
 
 # Local credentials and Android signing keys
 .env

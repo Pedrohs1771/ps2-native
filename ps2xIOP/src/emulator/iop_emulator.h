@@ -18,6 +18,8 @@ namespace ps2x::iop::detail
     public:
         explicit IopEmulator(IopHost &host);
         IopEmulator(IopHost &host, const IopNativeProgram &program);
+        // Construct in place; the emulator owns state and is not copyable.
+        IopEmulator(IopHost &host, const IopNativeProgram *program);
         ~IopEmulator();
 
         IopEmulator(const IopEmulator &) = delete;

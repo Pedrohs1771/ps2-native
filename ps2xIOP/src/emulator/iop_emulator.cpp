@@ -913,12 +913,17 @@ namespace ps2x::iop::detail
     };
 
     IopEmulator::IopEmulator(IopHost &host)
-        : m_impl(std::make_unique<Impl>(host))
+        : IopEmulator(host, static_cast<const IopNativeProgram *>(nullptr))
     {
     }
 
     IopEmulator::IopEmulator(IopHost &host, const IopNativeProgram &program)
-        : m_impl(std::make_unique<Impl>(host, &program))
+        : IopEmulator(host, &program)
+    {
+    }
+
+    IopEmulator::IopEmulator(IopHost &host, const IopNativeProgram *program)
+        : m_impl(std::make_unique<Impl>(host, program))
     {
     }
 

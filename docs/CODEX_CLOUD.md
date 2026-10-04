@@ -1,54 +1,14 @@
 # PS2Native no Codex Cloud
 
-O corpus local tem cinco imagens comerciais. Seus nomes originais, tamanhos e
-SHA-256 estão em [`../test-data/corpus-manifest.json`](../test-data/corpus-manifest.json).
-Os caminhos são relativos à raiz do checkout. Esse manifesto registra os metadados
-das imagens completas. Para permitir que o agente no Cloud trabalhe sem depender de
-downloads externos ou montagem de ISOs de gigabytes, os pacotes leves de teste contendo
-apenas os ELFs e módulos de sistema estão disponíveis diretamente no repositório em
-`fixtures/` (ex.: `fixtures/metal_slug_4/`), totalizando menos de 20 MB e servindo
-como fixtures de validação do compilador e do kernel.
-
-Para a análise direta por ELF já configurada e o workflow de execução, veja
-[ELF_CONTINUACAO_CLOUD.md](ELF_CONTINUACAO_CLOUD.md) e [fixtures/README.md](../fixtures/README.md).
-
-As cinco imagens somam 3.089.043.456 bytes, aproximadamente 2,88 GiB, antes de
-extração e compilação. Todas excedem o limite de 100 MiB por arquivo do GitHub
-com Git comum. Para conteúdo próprio ou com licença de redistribuição, Git LFS
-é uma opção; seu checkout precisa baixar os objetos reais, não apenas os
-ponteiros. Isso não garante espaço suficiente para builds ou acesso no Cloud.
-[Limites do GitHub](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github),
-[Git LFS](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-git-large-file-storage).
-
-## Preparar e baixar o corpus de teste completo
-
-Selecione `Pedrohs1771/ps2-native` e a revisão desejada no ambiente Cloud.
-Para obter as 5 ISOs completas do corpus de teste sem depender de download externo de links da web:
-
-```sh
-gh release download test-corpus-v1.0 --dir test-data/isos
-```
-
-Isso faz o download autenticado das 5 imagens para `test-data/isos/`, com integridade e hashes correspondendo a `test-data/corpus-manifest.json`.
-
-Com as ISOs disponíveis, execute na raiz do checkout:
-
-```sh
-python3 -m tools.ps2native.corpus_batch plan --iso-dir test-data/isos
-```
-
-Compare `iso_sha256` e `iso_bytes` com o manifesto. Caminhos absolutos no recibo
-correspondem ao ambiente atual. O inventário apenas identifica os arquivos;
-conversão e aprovação de menus são etapas distintas.
-
-Sem ISOs, continue pelas fixtures próprias do projeto:
+Use o repositório original `Pedrohs1771/ps2-native` e o [guia de avaliação](REVIEWER_GUIDE.md) para testes próprios sem jogos ou BIOS.
 
 ```sh
 python3 -m unittest discover -s tools/ps2native/tests
-python3 -m unittest lab.tests.test_autoadaptation_execution
+python3 -m unittest lab.tests.test_ee_data_families lab.tests.test_ee_family_catalog lab.tests.test_prepare_ee_family_batch lab.tests.test_ee_context_inventory
 ```
 
-A segunda suíte requer o build descrito no guia da VPS. As fixtures não
-qualificam compatibilidade comercial. O estado publicado continua experimental,
-com 0/5 menus qualificados; siga `PROMPT_CONTINUAR_CODEX.txt` usando a raiz
-do checkout atual.
+CMake deve estar no PATH. A demonstração EE exige o build indicado no guia; `python3 tools/check_native_demo.py` recusa testes pulados.
+
+O clone público não fornece corpus comercial nem extrações de ELFs/IRX. A antiga release de corpus não integra a distribuição pública. Metadados em `test-data/` documentam experimentos privados; não contêm os jogos nem autorizam redistribuição.
+
+Mantenha insumos privados autorizados fora do Git e use um diretório novo por rodada. Não busque jogos externos. Build, replay, menu, áudio, input e natividade são resultados distintos. Estado atual: 0/5 menus qualificados.

@@ -2,8 +2,7 @@
   "schema_version": 1,
   "status": "METADATA_ONLY",
   "bytes_included": false,
-  "fixtures_included": true,
-  "release_tag": "test-corpus-v1.0",
+  "fixtures_included": false,
   "iso_directory": "test-data/isos",
   "unique_images": 5,
   "total_iso_bytes": 3089043456,
@@ -11,7 +10,6 @@
     {
       "original_filename": "Metal Slug 4 (Europe).iso",
       "iso_path": "test-data/isos/Metal Slug 4 (Europe).iso",
-      "fixture_path": "fixtures/metal_slug_4",
       "iso_sha256": "1515e1ed9250036b7568d87d1833ccfefc3762de53b845e5f595403fa3bdd6fc",
       "iso_bytes": 120061952,
       "disc_serial": "SLES_533.80"
@@ -19,7 +17,6 @@
     {
       "original_filename": "Monster House (BR-USA) (T2.0) (www.romsportugues.com).iso",
       "iso_path": "test-data/isos/Monster House (BR-USA) (T2.0) (www.romsportugues.com).iso",
-      "fixture_path": "fixtures/monster_house",
       "iso_sha256": "cb596f3249f48e392bc20ec04cdf29074805ae6ef8469c3c18b1abca0c865f74",
       "iso_bytes": 1328349184,
       "disc_serial": "SLUS_214.00"
@@ -27,7 +24,6 @@
     {
       "original_filename": "R-Type Final (Japan) (Taikenban).iso",
       "iso_path": "test-data/isos/R-Type Final (Japan) (Taikenban).iso",
-      "fixture_path": "fixtures/r_type_final",
       "iso_sha256": "3c23e4c4149f7b439db0c328852ed6a1d18c881090bf9281d30a08636d66b083",
       "iso_bytes": 546449408,
       "disc_serial": "SLPM_602.02"
@@ -35,7 +31,6 @@
     {
       "original_filename": "RoboCop (Europe) (En,Fr,De,Es,It).iso",
       "iso_path": "test-data/isos/RoboCop (Europe) (En,Fr,De,Es,It).iso",
-      "fixture_path": "fixtures/robocop",
       "iso_sha256": "f723d72b7b89a5395a2ac87a97c742a8cdb0041bc9e493dc0b80a6b271660ad8",
       "iso_bytes": 496517120,
       "disc_serial": "SLES_513.74"
@@ -43,7 +38,6 @@
     {
       "original_filename": "Sega Ages 2500 Series Vol. 21 - SDI & Quartet - Sega System 16 Collection (Japan).iso",
       "iso_path": "test-data/isos/Sega Ages 2500 Series Vol. 21 - SDI & Quartet - Sega System 16 Collection (Japan).iso",
-      "fixture_path": "fixtures/sega_ages_2500",
       "iso_sha256": "41151118600ecf12c1307b48c80553c63b75f1f1ae5997a020f1175d8a60b3cb",
       "iso_bytes": 597665792,
       "disc_serial": "SLPM_626.92"
@@ -51,5 +45,5 @@
   ],
   "strict_approval": false,
   "closure_proved": false,
-  "scope": "Private corpus identities; non-commercial lightweight ELF test fixtures included in fixtures/."
+  "scope": "Historical private corpus identities only. No disc bytes, extracted executables, or download source are included."
 }

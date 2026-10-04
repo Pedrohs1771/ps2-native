@@ -1,0 +1,35 @@
+name: prepare public source history
+
+on:
+  push:
+    branches: [codex/reviewer-ready]
+    paths: [.github/workflows/prepare-public-source.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  sanitize-review-branch:
+    if: github.repository == 'Pedrohs1771/ps2-native'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: codex/reviewer-ready
+      - name: Remove private payloads while retaining development commits
+        run: |
+          python3 -m pip install git-filter-repo==2.47.0
+          git filter-repo --force --refs refs/heads/codex/reviewer-ready --prune-empty never --prune-degenerate never --preserve-commit-hashes --preserve-commit-encoding --replace-refs delete-no-add --invert-paths --path fixtures/ --path ps2xRuntime/vita/module/ --path ps2xStudio/external/Font/ --path-glob '*.iso' --path-glob '*.ISO' --path-glob '*.chd' --path-glob '*.cso' --path-glob '*.zso' --path-glob '*.elf' --path-glob '*.ELF' --path-glob '*.irx' --path-glob '*.IRX' --blob-callback 'if blob.data.startswith(b"\x7fELF") or blob.data[32769:32774] == b"CD001": blob.skip()'
+          python3 tools/check_public_source.py
+          python3 -m unittest discover -s tools/tests
+          cp .git/filter-repo/commit-map "$RUNNER_TEMP/ps2-native-commit-map.txt"
+          git rm .github/workflows/prepare-public-source.yml
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Remove completed one-time publication preparation workflow'
+          git push origin HEAD:refs/heads/codex/reviewer-ready --force-with-lease
+      - name: Preserve commit mapping for the maintainer
+        uses: actions/upload-artifact@v6
+        with:
+          name: publication-commit-map
+          path: ${{ runner.temp }}/ps2-native-commit-map.txt

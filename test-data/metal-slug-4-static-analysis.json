@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "status": "STATIC_ANALYSIS_ONLY",
+  "status": "HISTORICAL_METADATA_ONLY",
   "source_revision": "9c879f959b4594b236c45423a778538ee44cb569",
   "iso_sha256": "1515e1ed9250036b7568d87d1833ccfefc3762de53b845e5f595403fa3bdd6fc",
   "fixture_directory": "fixtures/metal_slug_4",
@@ -88,5 +88,7 @@
   "native_execution_qualified": false,
   "strict_approval": false,
   "closure_proved": false,
-  "scope": "Test fixture receipt and execution analysis; stripped non-commercial ELF fixture included in fixtures/ for compiler testing."
+  "scope": "Test fixture receipt and execution analysis; stripped non-commercial ELF fixture included in fixtures/ for compiler testing.",
+  "payloads_included": false,
+  "publication_note": "Paths refer to the former private extraction; no listed binaries are supplied."
 }

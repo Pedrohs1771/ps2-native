@@ -23,7 +23,7 @@ namespace ps2x::iop
     public:
         explicit Impl(IopHost &hostRef, const detail::IopNativeProgram *program = nullptr)
             : host(hostRef),
-              emulator(program ? detail::IopEmulator(hostRef, *program) : detail::IopEmulator(hostRef))
+              emulator(hostRef, program)
         {
             coreServices.emplace_back(detail::createLoadfileService(
                 host,
