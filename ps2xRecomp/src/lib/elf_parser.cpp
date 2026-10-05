@@ -6,14 +6,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <unordered_set>
-#define NOMINMAX
 
 #include <fcntl.h>
 
 #if defined(_WIN32)
 #include <io.h>
-#include <direct.h>
-#include <windows.h>
 #else
 #include <unistd.h>
 #endif
