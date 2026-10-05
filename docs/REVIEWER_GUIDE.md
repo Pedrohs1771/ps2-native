@@ -42,7 +42,7 @@ A fresh CMake build fetches the declared third-party dependencies. The existing 
 
 Assertions verify one contextual miss capture and exit `73`, two offline recoveries producing `123`, two reused cases and zero recoveries on the next conversion, thread/KSEG0/KSEG1 behavior, and false menu/native-qualification/live-compiler fields.
 
-This proves the fixture's compiler/runtime contract, not commercial compatibility. Earlier executions are reported in the dated adaptation note. The complete EE integration build was not rerun locally during publication preparation; a dedicated CI job runs it from source.
+This proves the fixture's compiler/runtime contract, not commercial compatibility. During publication preparation, the [source evidence workflow](https://github.com/Pedrohs1771/ps2-native/actions/runs/37245389803) built the fixture from source and passed all four integration tests with no skips. Linux GCC and Clang also passed the full 525-test C++ suite. These results apply to the preparation revision; consult current CI for later changes.
 
 ## Follow the implementation
 
@@ -50,7 +50,7 @@ This proves the fixture's compiler/runtime contract, not commercial compatibilit
 |---|---|
 | Miss capture and replay | `tools/ps2native/autoadapt.py`, `lab/tests/test_autoadaptation_execution.py` |
 | Demonstration code | `lab/tests/ee_autoadapt_fixture.cpp` |
-| Guards and catalog generation | `lab/prepare_ee_miss.py`, `lab/generate_ee_native_catalog.py` |
+| Guards and catalog generation | `lab/prepare_ee_miss.py`, `lab/generate_ee_bank_catalog.py` |
 | Conservative package qualification | `tools/ps2native/conversion.py`, `tools/ps2native/pipeline.py` |
 | Scheduler and IOP regressions | `ps2xTest/`, `ps2xIOP/tests/`, `lab/tests/` |
 
