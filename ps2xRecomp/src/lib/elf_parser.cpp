@@ -14,9 +14,8 @@
 #else
 #include <unistd.h>
 #endif
-#include "libdwarf_private.h"
-#include <libdwarf.h>
 #include <dwarf.h>
+#include <libdwarf.h>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -443,7 +442,7 @@ namespace
 
             // Next sibling
             Dwarf_Die sibling = nullptr;
-            const int siblingResult = dwarf_siblingof_b(dbg, current, TRUE, &sibling, &error);
+            const int siblingResult = dwarf_siblingof_b(dbg, current, true, &sibling, &error);
             dwarf_dealloc(dbg, current, DW_DLA_DIE);
 
             if (siblingResult != DW_DLV_OK)
@@ -2824,7 +2823,7 @@ namespace ps2recomp
 
                         const int cuResult = dwarf_next_cu_header_e(
                             dbg,
-                            TRUE,
+                            true,
                             &cuDie,
                             &cuHeaderLength,
                             &versionStamp,
